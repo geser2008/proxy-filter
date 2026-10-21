@@ -7,6 +7,7 @@ import sys
 
 import yaml
 
+from proxyfilter.batch_latency import check_latency_batched
 from proxyfilter.singbox_backend import SingBoxBackend
 from proxyfilter.ingest import detect_and_parse
 from proxyfilter.io import fetch_url, write_json, write_jsonl
@@ -113,15 +114,32 @@ def process_source(source, cfg, data_dir: Path, until: str, engine):
         return core_ok
 
     latency_cfg = cfg.get("filters", {}).get("latency", {})
-    latency_ok, latency_rejected = check_latency_many(
-        core_ok,
-        engine,
-        url=str(latency_cfg.get("test_url", "https://www.gstatic.com/generate_204")),
-        timeout=float(latency_cfg.get("timeout_seconds", 8)),
-        max_ms=float(latency_cfg.get("max_ms", 800)),
-        workers=int(latency_cfg.get("workers", 16)),
-        curl_command=str(latency_cfg.get("command", "curl")),
-    )
+    latency_mode = str(latency_cfg.get("mode", "singbox-api")).lower()
+    common_latency_args = {
+        "url": str(latency_cfg.get("test_url", "https://www.gstatic.com/generate_204")),
+        "timeout": float(latency_cfg.get("timeout_seconds", 8)),
+        "max_ms": float(latency_cfg.get("max_ms", 800)),
+        "workers": int(latency_cfg.get("workers", 32)),
+    }
+
+    print(f"[{source_id}] latency_mode={latency_mode}")
+    if latency_mode in {"singbox-api", "api", "batch"}:
+        latency_ok, latency_rejected = check_latency_batched(
+            core_ok,
+            engine,
+            **common_latency_args,
+            batch_size=int(latency_cfg.get("batch_size", 128)),
+        )
+    elif latency_mode == "curl":
+        latency_ok, latency_rejected = check_latency_many(
+            core_ok,
+            engine,
+            **common_latency_args,
+            curl_command=str(latency_cfg.get("command", "curl")),
+        )
+    else:
+        raise ValueError(f"unsupported latency mode: {latency_mode}")
+
     latency_ok.sort(key=lambda proxy: proxy.tests.latency_ms if proxy.tests.latency_ms is not None else float("inf"))
     write_jsonl(work / "06-latency-ok.jsonl", latency_ok)
     write_jsonl(work / "06-rejected-latency.jsonl", latency_rejected)
