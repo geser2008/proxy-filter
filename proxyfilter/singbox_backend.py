@@ -61,7 +61,6 @@ _XHTTP_XMUX_FIELDS = {
     "maxConcurrency": "max_concurrency",
     "maxConnections": "max_connections",
     "cMaxReuseTimes": "c_max_reuse_times",
-    "cMaxLifetimeMs": "c_max_lifetime_ms",
     "hMaxRequestTimes": "h_max_request_times",
     "hMaxReusableSecs": "h_max_reusable_secs",
     "hKeepAlivePeriod": "h_keep_alive_period",
@@ -157,8 +156,8 @@ class SingBoxBackend(_BaseSingBoxBackend):
     def _render_xhttp_transport(self, p: dict[str, Any]) -> dict[str, Any]:
         transport: dict[str, Any] = {"type": "xhttp"}
 
-        # These are the four XHTTP share-link fields defined by Xray. parse_qs
-        # in ingest.py has already performed the one required URI decoding pass.
+        # These are the XHTTP share-link fields defined by Xray. parse_qs in
+        # ingest.py has already performed the one required URI decoding pass.
         for source_name in ("host", "path", "mode"):
             value = p.get(source_name)
             if value not in (None, ""):
