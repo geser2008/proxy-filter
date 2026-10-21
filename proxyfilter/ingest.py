@@ -12,6 +12,7 @@ from .model import ProxyConfig, SourceInfo
 
 SUPPORTED_SCHEMES = {"vless", "vmess", "trojan", "ss", "hysteria2", "hy2", "tuic"}
 URI_RE = re.compile(r"^(vless|vmess|trojan|ss|hysteria2|hy2|tuic)://", re.I)
+_INVALID_PERCENT_ESCAPE_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 
 
 def _contains_proxy_uri(text: str) -> bool:
@@ -87,10 +88,23 @@ def _parse_plain(text: str, source_id: str, source_name: str, fmt: str) -> tuple
     return proxies, errors
 
 
+def _validate_percent_escapes(uri: str) -> None:
+    """Reject malformed percent escapes instead of letting tolerant parsers guess.
+
+    URI percent-encoding is syntactic: every literal percent sign must be followed
+    by exactly two hexadecimal digits.  This check is protocol-independent and
+    intentionally does not repair malformed input (for example ``%`` -> ``%25``).
+    """
+    match = _INVALID_PERCENT_ESCAPE_RE.search(uri)
+    if match:
+        raise ValueError(f"invalid URI percent escape at offset {match.start()}")
+
+
 def parse_uri(uri: str, source: SourceInfo) -> ProxyConfig:
     scheme = uri.split(":", 1)[0].lower()
     if scheme not in SUPPORTED_SCHEMES:
         raise ValueError(f"unsupported protocol: {scheme}")
+    _validate_percent_escapes(uri)
     if scheme == "vmess":
         return _parse_vmess_uri(uri, source)
     if scheme == "ss":
