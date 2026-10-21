@@ -32,6 +32,7 @@ class XHTTPTransportTests(unittest.TestCase):
             transport,
             {
                 "type": "xhttp",
+                "x_padding_bytes": "100-1000",
                 "mode": "stream-up",
                 "host": "cdn.example.com",
                 "path": "/api",
@@ -40,7 +41,7 @@ class XHTTPTransportTests(unittest.TestCase):
 
     def test_extra_and_xmux_are_mapped_explicitly(self) -> None:
         extra = {
-            "xPaddingBytes": "100-1000",
+            "xPaddingBytes": "200-800",
             "scMinPostsIntervalMs": 30,
             "xmux": {
                 "maxConcurrency": "16-32",
@@ -52,7 +53,7 @@ class XHTTPTransportTests(unittest.TestCase):
             "encryption=none&type=xhttp&extra="
             + quote(json.dumps(extra, separators=(",", ":")), safe="")
         )
-        self.assertEqual(transport["x_padding_bytes"], "100-1000")
+        self.assertEqual(transport["x_padding_bytes"], "200-800")
         self.assertEqual(transport["sc_min_posts_interval_ms"], 30)
         self.assertEqual(
             transport["xmux"],
