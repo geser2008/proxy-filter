@@ -14,6 +14,15 @@ SUPPORTED_SCHEMES = {"vless", "vmess", "trojan", "ss", "hysteria2", "hy2", "tuic
 URI_RE = re.compile(r"^(vless|vmess|trojan|ss|hysteria2|hy2|tuic)://", re.I)
 
 
+def _contains_proxy_uri(text: str) -> bool:
+    """Return True when at least one non-empty line starts with a supported URI.
+
+    Subscription containers often prepend metadata comments before proxy lines, so
+    checking only the beginning of the whole decoded document is incorrect.
+    """
+    return any(URI_RE.match(line.strip()) for line in text.splitlines())
+
+
 def detect_and_parse(raw: bytes | str, source_id: str, source_name: str) -> tuple[list[ProxyConfig], list[dict], str]:
     text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
     text = text.lstrip("\ufeff").strip()
@@ -34,7 +43,7 @@ def detect_and_parse(raw: bytes | str, source_id: str, source_name: str) -> tupl
     except yaml.YAMLError:
         pass
 
-    if any(URI_RE.match(line.strip()) for line in text.splitlines()):
+    if _contains_proxy_uri(text):
         proxies, errors = _parse_plain(text, source_id, source_name, "plain")
         return proxies, errors, "plain"
 
@@ -57,7 +66,8 @@ def _try_base64_text(text: str) -> str | None:
         try:
             blob = base64.b64decode(padded, altchars=altchars, validate=False)
             decoded = blob.decode("utf-8")
-            if URI_RE.search(decoded.strip()) or "proxies:" in decoded or '"outbounds"' in decoded:
+            # Base64 subscriptions may begin with profile metadata comments.
+            if _contains_proxy_uri(decoded) or "proxies:" in decoded or '"outbounds"' in decoded:
                 return decoded
         except (binascii.Error, UnicodeDecodeError, ValueError):
             continue
