@@ -7,8 +7,9 @@ import sys
 
 import yaml
 
+from proxyfilter.engine import SingBoxBackend
 from proxyfilter.ingest import detect_and_parse
-from proxyfilter.io import fetch_url, write_json, write_jsonl, write_text
+from proxyfilter.io import fetch_url, write_json, write_jsonl
 from proxyfilter.security import check_static_security
 from proxyfilter.tcpcheck import check_many
 
@@ -26,7 +27,21 @@ def deduplicate(proxies):
     return list(unique.values()), duplicates
 
 
-def process_source(source, cfg, data_dir: Path, until: str):
+def build_engine(cfg, data_dir: Path):
+    engine_cfg = cfg.get("engine", {})
+    backend = str(engine_cfg.get("backend", "sing-box")).lower()
+    if backend != "sing-box":
+        raise ValueError(f"unsupported engine backend: {backend}")
+    return SingBoxBackend(
+        command=str(engine_cfg.get("command", "sing-box")),
+        runtime_dir=str(engine_cfg.get("runtime_dir", data_dir / "runtime")),
+        listen_host=str(engine_cfg.get("listen_host", "127.0.0.1")),
+        startup_timeout=float(engine_cfg.get("startup_timeout_seconds", 5)),
+        shutdown_timeout=float(engine_cfg.get("shutdown_timeout_seconds", 3)),
+    )
+
+
+def process_source(source, cfg, data_dir: Path, until: str, engine):
     source_id = source["id"]
     source_name = source.get("name", source_id)
     work = data_dir / "work" / source_id
@@ -79,13 +94,27 @@ def process_source(source, cfg, data_dir: Path, until: str):
     write_jsonl(work / "04-tcp-ok.jsonl", passed)
     write_jsonl(work / "04-rejected-tcp.jsonl", tcp_rejected)
     print(f"[{source_id}] tcp_pass={len(passed)} rejected={len(tcp_rejected)}")
-    return passed
+    if until == "tcp":
+        return passed
+
+    core_ok, core_rejected = [], []
+    for idx, proxy in enumerate(passed, 1):
+        ok, error = engine.validate(proxy)
+        proxy.tests.core = {"status": "pass" if ok else "fail", "error": error}
+        proxy.tests.status = "core_valid" if ok else "rejected_core"
+        (core_ok if ok else core_rejected).append(proxy)
+        if idx % 100 == 0:
+            print(f"[{source_id}] core_checked={idx}/{len(passed)}")
+    write_jsonl(work / "05-core-ok.jsonl", core_ok)
+    write_jsonl(work / "05-rejected-core.jsonl", core_rejected)
+    print(f"[{source_id}] core_pass={len(core_ok)} rejected={len(core_rejected)}")
+    return core_ok
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Filter public proxy subscriptions")
     parser.add_argument("--config", required=True)
-    parser.add_argument("--until", choices=("parse", "dedup", "security", "tcp"), default="tcp")
+    parser.add_argument("--until", choices=("parse", "dedup", "security", "tcp", "core"), default="core")
     args = parser.parse_args()
 
     cfg_path = Path(args.config)
@@ -93,12 +122,16 @@ def main() -> int:
         cfg = yaml.safe_load(fh) or {}
 
     data_dir = Path(cfg.get("paths", {}).get("data_dir", "/srv/proxy-filter/data"))
+    engine = build_engine(cfg, data_dir) if args.until == "core" else None
+    if engine is not None:
+        print("[engine] " + engine.version().splitlines()[0])
+
     all_survivors = []
     summary = {"sources": {}}
 
     for source in cfg.get("sources", []):
         try:
-            survivors = process_source(source, cfg, data_dir, args.until)
+            survivors = process_source(source, cfg, data_dir, args.until, engine)
             all_survivors.extend(survivors)
             summary["sources"][source["id"]] = {"status": "ok", "survivors": len(survivors)}
         except Exception as exc:
