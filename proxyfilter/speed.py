@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import subprocess
 import tempfile
@@ -18,6 +18,8 @@ class SpeedResult:
     time_seconds: float | None = None
     http_code: int | None = None
     error: str | None = None
+    url: str | None = None
+    attempts: list[dict] = field(default_factory=list)
 
 
 def _parse_curl_metrics(stdout: str) -> tuple[int, float, int]:
@@ -34,8 +36,33 @@ def _parse_curl_metrics(stdout: str) -> tuple[int, float, int]:
     return size, elapsed, http_code
 
 
+def _parse_curl_writeout(stdout: str) -> tuple[int | None, float | None, int | None]:
+    fields = stdout.strip().split("\t")
+    if len(fields) != 3:
+        return None, None, None
+    try:
+        size = int(float(fields[0]))
+        elapsed = float(fields[1])
+        http_code = int(fields[2])
+    except ValueError:
+        return None, None, None
+    return size, elapsed, http_code
+
+
 def _mbps(size_bytes: int, elapsed_seconds: float) -> float:
     return (float(size_bytes) * 8.0) / elapsed_seconds / 1_000_000.0
+
+
+def _attempt_dict(result: SpeedResult) -> dict:
+    return {
+        "url": result.url,
+        "ok": result.ok,
+        "mbps": result.mbps,
+        "bytes": result.bytes_transferred,
+        "time_seconds": result.time_seconds,
+        "http_code": result.http_code,
+        "error": result.error,
+    }
 
 
 def _download_one(
@@ -72,14 +99,66 @@ def _download_one(
             timeout=timeout + 5,
         )
         if proc.returncode != 0:
-            return SpeedResult(False, error=(proc.stderr or proc.stdout).strip() or f"curl exited {proc.returncode}")
+            size, elapsed, http_code = _parse_curl_writeout(proc.stdout)
+            error = (proc.stderr or proc.stdout).strip() or f"curl exited {proc.returncode}"
+            return SpeedResult(
+                False,
+                bytes_transferred=size,
+                time_seconds=elapsed,
+                http_code=http_code,
+                error=error,
+                url=url,
+            )
         size, elapsed, http_code = _parse_curl_metrics(proc.stdout)
-        return SpeedResult(True, _mbps(size, elapsed), size, elapsed, http_code)
+        return SpeedResult(True, _mbps(size, elapsed), size, elapsed, http_code, url=url)
     except (EngineError, subprocess.TimeoutExpired, OSError, ValueError) as exc:
-        return SpeedResult(False, error=str(exc))
+        return SpeedResult(False, error=str(exc), url=url)
     finally:
         if session is not None:
             engine.stop(session)
+
+
+def _download_with_fallbacks(
+    proxy: ProxyConfig,
+    engine: EngineBackend,
+    *,
+    url: str,
+    fallback_urls: list[str],
+    fallback_http_codes: set[int],
+    timeout: float,
+    curl_command: str,
+) -> SpeedResult:
+    attempts: list[dict] = []
+    urls = [url, *fallback_urls]
+    result: SpeedResult | None = None
+
+    for index, candidate_url in enumerate(urls):
+        result = _download_one(
+            proxy,
+            engine,
+            url=candidate_url,
+            timeout=timeout,
+            curl_command=curl_command,
+        )
+        attempts.append(_attempt_dict(result))
+
+        if result.ok:
+            result.attempts = attempts
+            return result
+
+        if result.http_code not in fallback_http_codes:
+            result.attempts = attempts
+            return result
+
+        if index + 1 < len(urls):
+            print(
+                f"[download] fallback proxy={proxy.ensure_id()[:12]} "
+                f"http={result.http_code} next={urls[index + 1]}"
+            )
+
+    assert result is not None
+    result.attempts = attempts
+    return result
 
 
 def _upload_one(
@@ -121,11 +200,19 @@ def _upload_one(
             timeout=timeout + 5,
         )
         if proc.returncode != 0:
-            return SpeedResult(False, error=(proc.stderr or proc.stdout).strip() or f"curl exited {proc.returncode}")
+            size, elapsed, http_code = _parse_curl_writeout(proc.stdout)
+            return SpeedResult(
+                False,
+                bytes_transferred=size,
+                time_seconds=elapsed,
+                http_code=http_code,
+                error=(proc.stderr or proc.stdout).strip() or f"curl exited {proc.returncode}",
+                url=url,
+            )
         size, elapsed, http_code = _parse_curl_metrics(proc.stdout)
-        return SpeedResult(True, _mbps(size, elapsed), size, elapsed, http_code)
+        return SpeedResult(True, _mbps(size, elapsed), size, elapsed, http_code, url=url)
     except (EngineError, subprocess.TimeoutExpired, OSError, ValueError) as exc:
-        return SpeedResult(False, error=str(exc))
+        return SpeedResult(False, error=str(exc), url=url)
     finally:
         if session is not None:
             engine.stop(session)
@@ -166,12 +253,25 @@ def check_download_many(
     min_mbps: float,
     workers: int = 1,
     curl_command: str = "curl",
+    fallback_urls: list[str] | None = None,
+    fallback_http_codes: set[int] | None = None,
 ) -> tuple[list[ProxyConfig], list[ProxyConfig]]:
     if not url:
         raise ValueError("speed.download_url is required")
 
+    clean_fallbacks = [item for item in (fallback_urls or []) if item and item != url]
+    retry_codes = set(fallback_http_codes or {429})
+
     def probe(proxy: ProxyConfig) -> SpeedResult:
-        return _download_one(proxy, engine, url=url, timeout=timeout, curl_command=curl_command)
+        return _download_with_fallbacks(
+            proxy,
+            engine,
+            url=url,
+            fallback_urls=clean_fallbacks,
+            fallback_http_codes=retry_codes,
+            timeout=timeout,
+            curl_command=curl_command,
+        )
 
     passed: list[ProxyConfig] = []
     rejected: list[ProxyConfig] = []
@@ -185,6 +285,8 @@ def check_download_many(
             "time_seconds": result.time_seconds,
             "http_code": result.http_code,
             "error": result.error,
+            "url": result.url,
+            "attempts": result.attempts,
             "method": "curl-socks5h",
         }
         if not result.ok:
@@ -246,6 +348,7 @@ def check_upload_many(
             "time_seconds": result.time_seconds,
             "http_code": result.http_code,
             "error": result.error,
+            "url": result.url,
             "method": "curl-socks5h",
         }
         if not result.ok:
