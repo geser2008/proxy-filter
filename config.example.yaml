@@ -21,6 +21,7 @@ filters:
     workers: 64
 
   latency:
+    command: curl
     test_url: https://www.gstatic.com/generate_204
     timeout_seconds: 8
     max_ms: 800
