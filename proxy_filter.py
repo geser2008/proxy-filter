@@ -8,6 +8,7 @@ import sys
 import yaml
 
 from proxyfilter.batch_latency import check_latency_batched
+from proxyfilter.debug_latency import debug_latency_proxy, find_proxy_in_work
 from proxyfilter.singbox_backend import SingBoxBackend
 from proxyfilter.ingest import detect_and_parse
 from proxyfilter.io import fetch_url, write_json, write_jsonl
@@ -152,6 +153,7 @@ def main() -> int:
     parser.add_argument("--config", required=True)
     parser.add_argument("--until", choices=("parse", "dedup", "security", "tcp", "core", "latency"), default="core")
     parser.add_argument("--source", action="append", help="Process only the given source id; may be repeated")
+    parser.add_argument("--debug-proxy", help="Re-run latency diagnostics for one existing proxy id or unique id prefix")
     args = parser.parse_args()
 
     cfg_path = Path(args.config)
@@ -159,18 +161,46 @@ def main() -> int:
         cfg = yaml.safe_load(fh) or {}
 
     data_dir = Path(cfg.get("paths", {}).get("data_dir", "/srv/proxy-filter/data"))
+    configured_sources = cfg.get("sources", [])
+    selected = set(args.source or [])
+    if selected:
+        configured_ids = {source.get("id") for source in configured_sources}
+        missing = sorted(selected - configured_ids)
+        if missing:
+            parser.error("unknown source id(s): " + ", ".join(missing))
+
+    if args.debug_proxy:
+        engine = build_engine(cfg, data_dir)
+        print("[engine] " + engine.version().splitlines()[0])
+        try:
+            proxy, source_path = find_proxy_in_work(data_dir, args.debug_proxy, sorted(selected) if selected else None)
+        except ValueError as exc:
+            parser.error(str(exc))
+
+        latency_cfg = cfg.get("filters", {}).get("latency", {})
+        test_url = str(latency_cfg.get("test_url", "https://www.gstatic.com/generate_204"))
+        timeout = float(latency_cfg.get("timeout_seconds", 8))
+        result, runtime = debug_latency_proxy(
+            proxy,
+            engine,
+            url=test_url,
+            timeout=timeout,
+            source_path=source_path,
+        )
+        print(f"[debug] proxy={proxy.id}")
+        print(f"[debug] source_work_file={source_path}")
+        print(f"[debug] runtime={runtime}")
+        if result.get("ok"):
+            print(f"[debug] latency_ms={result.get('latency_ms')}")
+        else:
+            print(f"[debug] error={result.get('error')}")
+        return 0
+
     engine = build_engine(cfg, data_dir) if args.until in {"core", "latency"} else None
     if engine is not None:
         print("[engine] " + engine.version().splitlines()[0])
 
-    configured_sources = cfg.get("sources", [])
-    selected = set(args.source or [])
     sources = [source for source in configured_sources if not selected or source.get("id") in selected]
-    if selected:
-        found = {source.get("id") for source in sources}
-        missing = sorted(selected - found)
-        if missing:
-            parser.error("unknown source id(s): " + ", ".join(missing))
 
     all_survivors = []
     summary = {"sources": {}}
