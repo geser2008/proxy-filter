@@ -154,6 +154,17 @@ def process_source(source, cfg, data_dir: Path, until: str, engine):
     speed_workers = int(speed_cfg.get("workers", 1))
     speed_curl = str(speed_cfg.get("command", "curl"))
 
+    fallback_urls_raw = speed_cfg.get("download_fallback_urls", [])
+    if isinstance(fallback_urls_raw, str):
+        download_fallback_urls = [fallback_urls_raw] if fallback_urls_raw else []
+    else:
+        download_fallback_urls = [str(item) for item in (fallback_urls_raw or []) if str(item)]
+
+    fallback_codes_raw = speed_cfg.get("download_fallback_http_codes", [429])
+    if isinstance(fallback_codes_raw, (int, str)):
+        fallback_codes_raw = [fallback_codes_raw]
+    download_fallback_http_codes = {int(item) for item in (fallback_codes_raw or [])}
+
     download_ok, download_rejected = check_download_many(
         latency_ok,
         engine,
@@ -162,6 +173,8 @@ def process_source(source, cfg, data_dir: Path, until: str, engine):
         min_mbps=float(speed_cfg.get("min_download_mbps", 30)),
         workers=speed_workers,
         curl_command=speed_curl,
+        fallback_urls=download_fallback_urls,
+        fallback_http_codes=download_fallback_http_codes,
     )
     write_jsonl(work / "07-download-ok.jsonl", download_ok)
     write_jsonl(work / "07-rejected-download.jsonl", download_rejected)
