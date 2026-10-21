@@ -115,6 +115,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Filter public proxy subscriptions")
     parser.add_argument("--config", required=True)
     parser.add_argument("--until", choices=("parse", "dedup", "security", "tcp", "core"), default="core")
+    parser.add_argument("--source", action="append", help="Process only the given source id; may be repeated")
     args = parser.parse_args()
 
     cfg_path = Path(args.config)
@@ -126,10 +127,19 @@ def main() -> int:
     if engine is not None:
         print("[engine] " + engine.version().splitlines()[0])
 
+    configured_sources = cfg.get("sources", [])
+    selected = set(args.source or [])
+    sources = [source for source in configured_sources if not selected or source.get("id") in selected]
+    if selected:
+        found = {source.get("id") for source in sources}
+        missing = sorted(selected - found)
+        if missing:
+            parser.error("unknown source id(s): " + ", ".join(missing))
+
     all_survivors = []
     summary = {"sources": {}}
 
-    for source in cfg.get("sources", []):
+    for source in sources:
         try:
             survivors = process_source(source, cfg, data_dir, args.until, engine)
             all_survivors.extend(survivors)
