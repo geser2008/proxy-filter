@@ -19,6 +19,11 @@ from .engine import EngineError, SingBoxBackend as _BaseSingBoxBackend
 from .engine import _first, _list_value, _truthy
 
 
+def _clean_hostname(value: Any) -> str:
+    """Normalize common subscription escaping without touching general strings."""
+    return str(value).strip().replace(r"\.", ".")
+
+
 class SingBoxBackend(_BaseSingBoxBackend):
     def _apply_tls(
         self,
@@ -31,6 +36,8 @@ class SingBoxBackend(_BaseSingBoxBackend):
         if isinstance(native_tls, dict):
             tls = dict(native_tls)
             tls.setdefault("enabled", True)
+            if tls.get("server_name"):
+                tls["server_name"] = _clean_hostname(tls["server_name"])
             out["tls"] = tls
             return
 
@@ -54,7 +61,7 @@ class SingBoxBackend(_BaseSingBoxBackend):
         if not server_name:
             server_name = _first(p, "host")
         if server_name:
-            tls["server_name"] = str(server_name)
+            tls["server_name"] = _clean_hostname(server_name)
 
         insecure = _first(p, "allowInsecure", "allow_insecure", "skip-cert-verify", "insecure")
         if insecure is not None:
@@ -99,4 +106,32 @@ class SingBoxBackend(_BaseSingBoxBackend):
         network = str(_first(p, "network", "net", "type", default="")).strip().lower()
         if network in {"xhttp", "splithttp", "split-http"}:
             raise EngineError(f"unsupported V2Ray transport in sing-box 1.14: {network}")
-        super()._apply_transport(out, p)
+
+        # Normalize only hostname-bearing fields. Some public URI generators
+        # escape dots as ``\.`` even though URI query values do not require it.
+        normalized = dict(p)
+        for key in ("host", "sni", "server_name", "servername", "server-name"):
+            if normalized.get(key):
+                normalized[key] = _clean_hostname(normalized[key])
+
+        # For WebSocket profiles that specify only TLS SNI, use it as the HTTP
+        # Host fallback. This matches the common CDN/virtual-host intent and
+        # avoids sending an edge IP as the WebSocket Host header.
+        if network in {"ws", "websocket"} and not normalized.get("host"):
+            sni = _first(normalized, "sni", "server_name", "servername", "server-name")
+            if sni:
+                normalized["host"] = _clean_hostname(sni)
+
+        ws_opts = normalized.get("ws-opts")
+        if isinstance(ws_opts, dict):
+            ws_opts = dict(ws_opts)
+            headers = ws_opts.get("headers")
+            if isinstance(headers, dict):
+                headers = dict(headers)
+                for key in list(headers):
+                    if str(key).lower() == "host" and headers[key]:
+                        headers[key] = _clean_hostname(headers[key])
+                ws_opts["headers"] = headers
+            normalized["ws-opts"] = ws_opts
+
+        super()._apply_transport(out, normalized)
