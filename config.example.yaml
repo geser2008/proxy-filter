@@ -1,0 +1,34 @@
+paths:
+  data_dir: /srv/proxy-filter/data
+
+sources:
+  - id: radikal
+    name: Free-v2ray-Configs verified
+    url: https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/verified/configs_base64.txt
+
+  - id: delta
+    name: Delta-Kronecker all configs
+    url: https://github.com/Delta-Kronecker/V2ray-Config/raw/refs/heads/main/config/all_configs.txt
+
+filters:
+  security:
+    reject_allow_insecure: true
+    reject_unknown_protocols: true
+  tcp:
+    enabled: true
+    timeout_seconds: 3
+    workers: 64
+  latency:
+    max_ms: 800
+  speed:
+    min_download_mbps: 30
+    min_upload_mbps: 10
+
+throne:
+  enabled: false
+  command: thronectl
+  timeout_seconds: 900
+
+output:
+  rename_template: "{flag} [{source}] {name}"
+  include_original_name: true
