@@ -15,7 +15,7 @@ silently rewritten to a different semantic mode.
 
 from typing import Any
 
-from .engine import SingBoxBackend as _BaseSingBoxBackend
+from .engine import EngineError, SingBoxBackend as _BaseSingBoxBackend
 from .engine import _first, _list_value, _truthy
 
 
@@ -35,12 +35,24 @@ class SingBoxBackend(_BaseSingBoxBackend):
             return
 
         security = str(_first(p, "security", default="")).lower()
-        enabled = default_enabled or security in {"tls", "reality"} or _truthy(native_tls)
+        native_tls_text = "" if native_tls is None else str(native_tls).strip().lower()
+        is_reality = security == "reality" or native_tls_text == "reality"
+        enabled = (
+            default_enabled
+            or security in {"tls", "reality"}
+            or native_tls_text in {"tls", "reality"}
+            or _truthy(native_tls)
+        )
         if not enabled:
             return
 
         tls: dict[str, Any] = {"enabled": True}
         server_name = _first(p, "sni", "server_name", "servername", "server-name")
+        # Common V2Ray/Clash subscriptions put the TLS name only in the WS Host
+        # field. Falling back to host preserves the intended virtual host instead
+        # of validating a CDN edge IP as the certificate name.
+        if not server_name:
+            server_name = _first(p, "host")
         if server_name:
             tls["server_name"] = str(server_name)
 
@@ -53,7 +65,7 @@ class SingBoxBackend(_BaseSingBoxBackend):
             tls["alpn"] = alpn
 
         reality_opts = p.get("reality-opts") if isinstance(p.get("reality-opts"), dict) else {}
-        is_reality = security == "reality" or bool(reality_opts)
+        is_reality = is_reality or bool(reality_opts)
 
         fp = _first(p, "fp", "client-fingerprint", "fingerprint")
         fp_text = "" if fp is None else str(fp).strip()
@@ -82,3 +94,9 @@ class SingBoxBackend(_BaseSingBoxBackend):
             tls["reality"] = reality
 
         out["tls"] = tls
+
+    def _apply_transport(self, out: dict[str, Any], p: dict[str, Any]) -> None:
+        network = str(_first(p, "network", "net", "type", default="")).strip().lower()
+        if network in {"xhttp", "splithttp", "split-http"}:
+            raise EngineError(f"unsupported V2Ray transport in sing-box 1.14: {network}")
+        super()._apply_transport(out, p)
