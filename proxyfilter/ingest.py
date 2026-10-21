@@ -27,7 +27,6 @@ def detect_and_parse(raw: bytes | str, source_id: str, source_name: str) -> tupl
     text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
     text = text.lstrip("\ufeff").strip()
 
-    # JSON / sing-box first.
     try:
         obj = json.loads(text)
         if isinstance(obj, dict) and isinstance(obj.get("outbounds"), list):
@@ -35,7 +34,6 @@ def detect_and_parse(raw: bytes | str, source_id: str, source_name: str) -> tupl
     except json.JSONDecodeError:
         pass
 
-    # Clash YAML: require a top-level proxies list to avoid treating arbitrary text as YAML.
     try:
         obj = yaml.safe_load(text)
         if isinstance(obj, dict) and isinstance(obj.get("proxies"), list):
@@ -66,7 +64,6 @@ def _try_base64_text(text: str) -> str | None:
         try:
             blob = base64.b64decode(padded, altchars=altchars, validate=False)
             decoded = blob.decode("utf-8")
-            # Base64 subscriptions may begin with profile metadata comments.
             if _contains_proxy_uri(decoded) or "proxies:" in decoded or '"outbounds"' in decoded:
                 return decoded
         except (binascii.Error, UnicodeDecodeError, ValueError):
@@ -85,7 +82,7 @@ def _parse_plain(text: str, source_id: str, source_name: str, fmt: str) -> tuple
             continue
         try:
             proxies.append(parse_uri(line, SourceInfo(source_id, source_name, fmt)))
-        except Exception as exc:  # malformed public input must not abort the source
+        except Exception as exc:
             errors.append({"line": lineno, "reason": type(exc).__name__, "detail": str(exc), "raw": line})
     return proxies, errors
 
@@ -129,6 +126,27 @@ def _parse_vmess_uri(uri: str, source: SourceInfo) -> ProxyConfig:
     return proxy
 
 
+def _normalize_ss_query(query: str) -> dict[str, str]:
+    params = {k: v[-1] for k, v in parse_qs(query, keep_blank_values=True).items()}
+    plugin = params.get("plugin")
+    if plugin:
+        # Some public feeds double-encode the SIP002 plugin value. Decode a
+        # bounded number of extra layers rather than passing %3B/%3D literally.
+        normalized = plugin
+        for _ in range(2):
+            decoded = unquote(normalized)
+            if decoded == normalized:
+                break
+            normalized = decoded
+        if ";" in normalized:
+            name, opts = normalized.split(";", 1)
+            params["plugin"] = name
+            params["plugin_opts"] = opts
+        else:
+            params["plugin"] = normalized
+    return params
+
+
 def _parse_ss_uri(uri: str, source: SourceInfo) -> ProxyConfig:
     # SIP002 supports both base64 userinfo and plain method:password userinfo.
     parts = urlsplit(uri)
@@ -139,8 +157,10 @@ def _parse_ss_uri(uri: str, source: SourceInfo) -> ProxyConfig:
         if ":" not in decoded:
             raise ValueError("ss missing method/password")
         method, password = decoded.split(":", 1)
+        if method.strip().lower() == "ss":
+            raise ValueError("invalid shadowsocks method: ss")
         params = {"method": method, "password": password}
-        params.update({k: v[-1] for k, v in parse_qs(parts.query).items()})
+        params.update(_normalize_ss_query(parts.query))
         proxy = ProxyConfig(source, "ss", parts.hostname, parts.port, name, params, "ss-uri", uri)
         proxy.ensure_id()
         return proxy
@@ -150,7 +170,14 @@ def _parse_ss_uri(uri: str, source: SourceInfo) -> ProxyConfig:
     reparsed = urlsplit("ss://" + decoded)
     if not reparsed.hostname or reparsed.port is None or not reparsed.username or reparsed.password is None:
         raise ValueError("invalid legacy ss URI")
-    params = {"method": unquote(reparsed.username), "password": unquote(reparsed.password)}
+    method = unquote(reparsed.username)
+    if method.strip().lower() == "ss":
+        raise ValueError("invalid shadowsocks method: ss")
+    params = {"method": method, "password": unquote(reparsed.password)}
+    # Query parameters belong to the original URI, not to the base64 token.
+    original_query = urlsplit(uri).query
+    if original_query:
+        params.update(_normalize_ss_query(original_query))
     proxy = ProxyConfig(source, "ss", reparsed.hostname, reparsed.port, name, params, "ss-uri", uri)
     proxy.ensure_id()
     return proxy
