@@ -77,3 +77,41 @@ class ProxyConfig:
             "raw": d.pop("original_raw"),
         }
         return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ProxyConfig":
+        source_data = data.get("source") or {}
+        config = data.get("config") or {}
+        original = data.get("original") or {}
+        tests_data = data.get("tests") or {}
+        tests = TestState(
+            security=tests_data.get("security", {"status": "pending", "reasons": []}),
+            tcp=tests_data.get("tcp", {"status": "pending", "latency_ms": None}),
+            core=tests_data.get("core", {"status": "pending", "error": None}),
+            latency=tests_data.get("latency", {"status": "pending", "latency_ms": None, "http_code": None, "error": None}),
+            latency_ms=tests_data.get("latency_ms"),
+            download_mbps=tests_data.get("download_mbps"),
+            upload_mbps=tests_data.get("upload_mbps"),
+            exit_ip=tests_data.get("exit_ip"),
+            country=tests_data.get("country"),
+            status=tests_data.get("status", "parsed"),
+        )
+        proxy = cls(
+            source=SourceInfo(
+                str(source_data.get("id", "")),
+                str(source_data.get("name", "")),
+                str(source_data.get("format", "unknown")),
+            ),
+            protocol=str(config.get("protocol", "")),
+            server=str(config.get("server", "")),
+            port=int(config.get("port", 0)),
+            name=str(config.get("name", "")),
+            params=dict(config.get("params") or {}),
+            original_format=str(original.get("format", "")),
+            original_raw=str(original.get("raw", "")),
+            tests=tests,
+            id=str(data.get("id", "")),
+        )
+        if not proxy.id:
+            proxy.ensure_id()
+        return proxy
