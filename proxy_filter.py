@@ -14,6 +14,7 @@ from proxyfilter.ingest import detect_and_parse
 from proxyfilter.io import fetch_url, write_json, write_jsonl
 from proxyfilter.probes import check_latency_many
 from proxyfilter.security import check_static_security
+from proxyfilter.speed import check_download_many, check_upload_many
 from proxyfilter.tcpcheck import check_many
 
 
@@ -145,13 +146,53 @@ def process_source(source, cfg, data_dir: Path, until: str, engine):
     write_jsonl(work / "06-latency-ok.jsonl", latency_ok)
     write_jsonl(work / "06-rejected-latency.jsonl", latency_rejected)
     print(f"[{source_id}] latency_pass={len(latency_ok)} rejected={len(latency_rejected)}")
-    return latency_ok
+    if until == "latency":
+        return latency_ok
+
+    speed_cfg = cfg.get("filters", {}).get("speed", {})
+    speed_timeout = float(speed_cfg.get("timeout_seconds", 30))
+    speed_workers = int(speed_cfg.get("workers", 1))
+    speed_curl = str(speed_cfg.get("command", "curl"))
+
+    download_ok, download_rejected = check_download_many(
+        latency_ok,
+        engine,
+        url=str(speed_cfg.get("download_url", "")),
+        timeout=speed_timeout,
+        min_mbps=float(speed_cfg.get("min_download_mbps", 30)),
+        workers=speed_workers,
+        curl_command=speed_curl,
+    )
+    write_jsonl(work / "07-download-ok.jsonl", download_ok)
+    write_jsonl(work / "07-rejected-download.jsonl", download_rejected)
+    print(f"[{source_id}] download_pass={len(download_ok)} rejected={len(download_rejected)}")
+    if until == "download":
+        return download_ok
+
+    upload_ok, upload_rejected = check_upload_many(
+        download_ok,
+        engine,
+        url=str(speed_cfg.get("upload_url", "")),
+        upload_bytes=int(speed_cfg.get("upload_bytes", 10_000_000)),
+        timeout=speed_timeout,
+        min_mbps=float(speed_cfg.get("min_upload_mbps", 10)),
+        workers=speed_workers,
+        curl_command=speed_curl,
+    )
+    write_jsonl(work / "08-upload-ok.jsonl", upload_ok)
+    write_jsonl(work / "08-rejected-upload.jsonl", upload_rejected)
+    print(f"[{source_id}] upload_pass={len(upload_ok)} rejected={len(upload_rejected)}")
+    return upload_ok
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Filter public proxy subscriptions")
+    parser.add_argument(
+        "--until",
+        choices=("parse", "dedup", "security", "tcp", "core", "latency", "download", "upload"),
+        default="core",
+    )
     parser.add_argument("--config", required=True)
-    parser.add_argument("--until", choices=("parse", "dedup", "security", "tcp", "core", "latency"), default="core")
     parser.add_argument("--source", action="append", help="Process only the given source id; may be repeated")
     parser.add_argument("--debug-proxy", help="Re-run latency diagnostics for one existing proxy id or unique id prefix")
     args = parser.parse_args()
@@ -196,7 +237,7 @@ def main() -> int:
             print(f"[debug] error={result.get('error')}")
         return 0
 
-    engine = build_engine(cfg, data_dir) if args.until in {"core", "latency"} else None
+    engine = build_engine(cfg, data_dir) if args.until in {"core", "latency", "download", "upload"} else None
     if engine is not None:
         print("[engine] " + engine.version().splitlines()[0])
 
@@ -217,6 +258,10 @@ def main() -> int:
     merged, duplicates = deduplicate(all_survivors)
     if args.until == "latency":
         merged.sort(key=lambda proxy: proxy.tests.latency_ms if proxy.tests.latency_ms is not None else float("inf"))
+    elif args.until == "download":
+        merged.sort(key=lambda proxy: proxy.tests.download_mbps if proxy.tests.download_mbps is not None else -1, reverse=True)
+    elif args.until == "upload":
+        merged.sort(key=lambda proxy: proxy.tests.upload_mbps if proxy.tests.upload_mbps is not None else -1, reverse=True)
     write_jsonl(data_dir / "work" / "all" / f"{args.until}.jsonl", merged)
     write_json(data_dir / "reports" / "summary.json", summary)
     print(f"[all] survivors={len(merged)} cross_source_duplicates={len(duplicates)}")
