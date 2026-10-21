@@ -21,11 +21,14 @@ filters:
     workers: 64
 
   latency:
-    command: curl
+    mode: singbox-api
     test_url: https://www.gstatic.com/generate_204
     timeout_seconds: 8
     max_ms: 800
-    workers: 16
+    batch_size: 128
+    workers: 32
+    # Fallback/debug mode only:
+    command: curl
 
   speed:
     download_url: ""
