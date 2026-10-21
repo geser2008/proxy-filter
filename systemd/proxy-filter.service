@@ -8,13 +8,13 @@ Type=oneshot
 User=proxyfilter
 Group=proxyfilter
 WorkingDirectory=/srv/proxy-filter/app
-ExecStart=/usr/bin/python3 /srv/proxy-filter/app/proxy_filter.py --config /srv/proxy-filter/config/config.yaml --until tcp
+ExecStart=/usr/bin/python3 /srv/proxy-filter/app/proxy_filter.py --config /srv/proxy-filter/config/config.yaml --until core
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/srv/proxy-filter/data
-ReadOnlyPaths=/srv/proxy-filter/app /srv/proxy-filter/config
+ReadOnlyPaths=/srv/proxy-filter/app /srv/proxy-filter/config /usr/bin/sing-box
 RestrictSUIDSGID=true
 LockPersonality=true
 
