@@ -7,7 +7,7 @@ import sys
 
 import yaml
 
-from proxyfilter.engine import SingBoxBackend
+from proxyfilter.singbox_backend import SingBoxBackend
 from proxyfilter.ingest import detect_and_parse
 from proxyfilter.io import fetch_url, write_json, write_jsonl
 from proxyfilter.security import check_static_security
