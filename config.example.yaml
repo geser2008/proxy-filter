@@ -31,12 +31,16 @@ filters:
     command: curl
 
   speed:
-    download_url: ""
-    upload_url: ""
+    # Cloudflare Speed Test endpoints. The download URL requests a fixed 10 MB
+    # object; upload_bytes controls the generated POST body size.
+    download_url: https://speed.cloudflare.com/__down?bytes=10000000
+    upload_url: https://speed.cloudflare.com/__up
+    upload_bytes: 10000000
     timeout_seconds: 30
     min_download_mbps: 30
     min_upload_mbps: 10
     workers: 1
+    command: curl
 
   exit_ip:
     url: https://api.ipify.org
