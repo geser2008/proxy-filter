@@ -1,0 +1,22 @@
+[Unit]
+Description=Proxy subscription filter
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=proxyfilter
+Group=proxyfilter
+WorkingDirectory=/srv/proxy-filter/app
+ExecStart=/usr/bin/python3 /srv/proxy-filter/app/proxy_filter.py --config /srv/proxy-filter/config/config.yaml --until tcp
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/proxy-filter/data
+ReadOnlyPaths=/srv/proxy-filter/app /srv/proxy-filter/config
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
