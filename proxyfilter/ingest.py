@@ -127,23 +127,20 @@ def _parse_vmess_uri(uri: str, source: SourceInfo) -> ProxyConfig:
 
 
 def _normalize_ss_query(query: str) -> dict[str, str]:
+    """Parse SIP002 query parameters with exactly one URI-decoding pass.
+
+    ``parse_qs`` performs the URI percent-decoding required for the query.  The
+    decoded ``plugin`` value is then split according to SIP002's
+    ``plugin;option=value`` syntax.  Extra percent-decoding layers are not
+    guessed: a double-encoded feed remains double-encoded and is rejected later
+    if the resulting plugin cannot be represented by the backend.
+    """
     params = {k: v[-1] for k, v in parse_qs(query, keep_blank_values=True).items()}
     plugin = params.get("plugin")
-    if plugin:
-        # Some public feeds double-encode the SIP002 plugin value. Decode a
-        # bounded number of extra layers rather than passing %3B/%3D literally.
-        normalized = plugin
-        for _ in range(2):
-            decoded = unquote(normalized)
-            if decoded == normalized:
-                break
-            normalized = decoded
-        if ";" in normalized:
-            name, opts = normalized.split(";", 1)
-            params["plugin"] = name
-            params["plugin_opts"] = opts
-        else:
-            params["plugin"] = normalized
+    if plugin and ";" in plugin:
+        name, opts = plugin.split(";", 1)
+        params["plugin"] = name
+        params["plugin_opts"] = opts
     return params
 
 
