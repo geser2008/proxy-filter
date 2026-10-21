@@ -14,20 +14,38 @@ filters:
   security:
     reject_allow_insecure: true
     reject_unknown_protocols: true
+
   tcp:
     enabled: true
     timeout_seconds: 3
     workers: 64
+
   latency:
+    test_url: https://www.gstatic.com/generate_204
+    timeout_seconds: 8
     max_ms: 800
+    workers: 16
+
   speed:
+    download_url: ""
+    upload_url: ""
+    timeout_seconds: 30
     min_download_mbps: 30
     min_upload_mbps: 10
+    workers: 1
 
-throne:
-  enabled: false
-  command: thronectl
-  timeout_seconds: 900
+  exit_ip:
+    url: https://api.ipify.org
+    timeout_seconds: 8
+    reject_direct_wan_ip: true
+
+engine:
+  backend: sing-box
+  command: sing-box
+  startup_timeout_seconds: 5
+  shutdown_timeout_seconds: 3
+  listen_host: 127.0.0.1
+  runtime_dir: /srv/proxy-filter/data/runtime
 
 output:
   rename_template: "{flag} [{source}] {name}"
