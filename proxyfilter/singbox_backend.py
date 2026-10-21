@@ -154,7 +154,9 @@ class SingBoxBackend(_BaseSingBoxBackend):
         out["tls"] = tls
 
     def _render_xhttp_transport(self, p: dict[str, Any]) -> dict[str, Any]:
-        transport: dict[str, Any] = {"type": "xhttp"}
+        # Xray's specified default is 100-1000. extended sing-box requires this
+        # value to be non-zero, so materialize the Xray default explicitly.
+        transport: dict[str, Any] = {"type": "xhttp", "x_padding_bytes": "100-1000"}
 
         # These are the XHTTP share-link fields defined by Xray. parse_qs in
         # ingest.py has already performed the one required URI decoding pass.
