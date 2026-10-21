@@ -10,6 +10,7 @@ import yaml
 from proxyfilter.singbox_backend import SingBoxBackend
 from proxyfilter.ingest import detect_and_parse
 from proxyfilter.io import fetch_url, write_json, write_jsonl
+from proxyfilter.probes import check_latency_many
 from proxyfilter.security import check_static_security
 from proxyfilter.tcpcheck import check_many
 
@@ -108,13 +109,30 @@ def process_source(source, cfg, data_dir: Path, until: str, engine):
     write_jsonl(work / "05-core-ok.jsonl", core_ok)
     write_jsonl(work / "05-rejected-core.jsonl", core_rejected)
     print(f"[{source_id}] core_pass={len(core_ok)} rejected={len(core_rejected)}")
-    return core_ok
+    if until == "core":
+        return core_ok
+
+    latency_cfg = cfg.get("filters", {}).get("latency", {})
+    latency_ok, latency_rejected = check_latency_many(
+        core_ok,
+        engine,
+        url=str(latency_cfg.get("test_url", "https://www.gstatic.com/generate_204")),
+        timeout=float(latency_cfg.get("timeout_seconds", 8)),
+        max_ms=float(latency_cfg.get("max_ms", 800)),
+        workers=int(latency_cfg.get("workers", 16)),
+        curl_command=str(latency_cfg.get("command", "curl")),
+    )
+    latency_ok.sort(key=lambda proxy: proxy.tests.latency_ms if proxy.tests.latency_ms is not None else float("inf"))
+    write_jsonl(work / "06-latency-ok.jsonl", latency_ok)
+    write_jsonl(work / "06-rejected-latency.jsonl", latency_rejected)
+    print(f"[{source_id}] latency_pass={len(latency_ok)} rejected={len(latency_rejected)}")
+    return latency_ok
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Filter public proxy subscriptions")
     parser.add_argument("--config", required=True)
-    parser.add_argument("--until", choices=("parse", "dedup", "security", "tcp", "core"), default="core")
+    parser.add_argument("--until", choices=("parse", "dedup", "security", "tcp", "core", "latency"), default="core")
     parser.add_argument("--source", action="append", help="Process only the given source id; may be repeated")
     args = parser.parse_args()
 
@@ -123,7 +141,7 @@ def main() -> int:
         cfg = yaml.safe_load(fh) or {}
 
     data_dir = Path(cfg.get("paths", {}).get("data_dir", "/srv/proxy-filter/data"))
-    engine = build_engine(cfg, data_dir) if args.until == "core" else None
+    engine = build_engine(cfg, data_dir) if args.until in {"core", "latency"} else None
     if engine is not None:
         print("[engine] " + engine.version().splitlines()[0])
 
@@ -149,6 +167,8 @@ def main() -> int:
             print(f"[{source.get('id', 'unknown')}] ERROR: {exc}", file=sys.stderr)
 
     merged, duplicates = deduplicate(all_survivors)
+    if args.until == "latency":
+        merged.sort(key=lambda proxy: proxy.tests.latency_ms if proxy.tests.latency_ms is not None else float("inf"))
     write_jsonl(data_dir / "work" / "all" / f"{args.until}.jsonl", merged)
     write_json(data_dir / "reports" / "summary.json", summary)
     print(f"[all] survivors={len(merged)} cross_source_duplicates={len(duplicates)}")
