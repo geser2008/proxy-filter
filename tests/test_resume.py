@@ -25,6 +25,28 @@ class ResumeTests(unittest.TestCase):
         self.assertEqual(loaded[0].id, proxy.id)
         self.assertEqual(loaded[0].identity_payload(), proxy.identity_payload())
 
+    def test_render_stage_can_be_loaded(self):
+        proxy = ProxyConfig(SourceInfo("test", "Test"), "vless", "example.com", 443, params={"uuid": "abc"})
+        proxy.tests.render = {
+            "status": "pass",
+            "name": "NL test",
+            "uri": "vless://abc@example.com:443#NL%20test",
+            "error": None,
+        }
+        proxy.tests.status = "render_pass"
+        proxy.ensure_id()
+
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "work" / "test" / "11-render-ok.jsonl"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(proxy.to_dict()) + "\n", encoding="utf-8")
+
+            loaded, loaded_path = load_stage(Path(tmp), "test", "render")
+
+        self.assertEqual(loaded_path.name, "11-render-ok.jsonl")
+        self.assertEqual(loaded[0].tests.render["status"], "pass")
+        self.assertEqual(loaded[0].tests.render["name"], "NL test")
+
     def test_missing_resume_file_fails(self):
         with TemporaryDirectory() as tmp:
             with self.assertRaises(FileNotFoundError):
@@ -41,7 +63,8 @@ class ResumeTests(unittest.TestCase):
     def test_only_later_stages_run(self):
         self.assertFalse(stage_should_run("geo", "geo"))
         self.assertFalse(stage_should_run("download", "geo"))
-        self.assertTrue(stage_should_run("geo", "exit-ip"))
+        self.assertTrue(stage_should_run("render", "geo"))
+        self.assertFalse(stage_should_run("render", "render"))
 
     def test_until_before_resume_is_rejected(self):
         with self.assertRaises(ValueError):
@@ -49,6 +72,7 @@ class ResumeTests(unittest.TestCase):
 
     def test_until_equal_resume_is_allowed(self):
         validate_resume_range("geo", "geo")
+        validate_resume_range("render", "render")
 
 
 if __name__ == "__main__":
