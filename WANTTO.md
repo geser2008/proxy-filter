@@ -9,6 +9,14 @@ Deferred improvements to revisit after the end-to-end pipeline is working reliab
 - Candidate checks include protocol-required fields, enum values, parameter combinations, ranges, and other semantic constraints that can be validated without guessing or repairing source data.
 - Preserve the project rule: parse exactly what the declared format means; reject malformed/unsupported configurations explicitly; do not infer intended values.
 
+## Security policy
+
+- Revisit whether VMess without TLS should be rejected by policy or retained with an explicit security warning/risk classification.
+- Keep this decision protocol- and configuration-driven; do not use feed-specific exceptions or heuristic repairs.
+- Add generic DNS-leak checks so accepted proxies can be verified not to expose resolver traffic outside the intended proxy path.
+- Add generic IPv6/direct-route leak checks so a proxy cannot pass application tests while some traffic still escapes through the host's direct network path.
+- Keep reputation, ASN, hosting-provider, and geography data informational by default; avoid hard rejection based only on reputation metadata because of likely false positives.
+
 ## Speed-test validation
 
 - Validate successful speed-test responses against the expected payload size, not only HTTP status and non-zero transferred bytes.
