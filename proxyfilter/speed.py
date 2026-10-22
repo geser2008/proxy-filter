@@ -246,6 +246,20 @@ def _is_incomplete_upload_after_continue(result: SpeedResult) -> bool:
     )
 
 
+def _is_transient_upload_failure(result: SpeedResult) -> bool:
+    """Return True for failures before any HTTP response or payload transfer.
+
+    This intentionally uses transport state rather than curl error strings, so
+    SOCKS/connect/TLS failures and zero-byte connection timeouts get one retry
+    without treating HTTP errors or partial uploads as transient.
+    """
+    return (
+        not result.ok
+        and result.http_code in {None, 0}
+        and result.bytes_transferred in {None, 0}
+    )
+
+
 def _upload_with_fallbacks(
     proxy: ProxyConfig,
     engine: EngineBackend,
@@ -286,6 +300,26 @@ def _upload_with_fallbacks(
             timeout=timeout,
             curl_command=curl_command,
             disable_expect=True,
+        )
+        attempts.append(_attempt_dict(result))
+        if result.ok:
+            result.attempts = attempts
+            return result
+
+    if _is_transient_upload_failure(result):
+        print(
+            f"[upload] retry proxy={proxy.ensure_id()[:12]} "
+            "reason=transient-zero-byte"
+        )
+        retry_disable_expect = result.expect_disabled
+        result = _upload_one(
+            proxy,
+            engine,
+            url=url,
+            payload_path=payload_path,
+            timeout=timeout,
+            curl_command=curl_command,
+            disable_expect=retry_disable_expect,
         )
         attempts.append(_attempt_dict(result))
         if result.ok:
