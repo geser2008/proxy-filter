@@ -9,6 +9,7 @@ import yaml
 
 from proxyfilter.batch_latency import check_latency_batched
 from proxyfilter.debug_latency import debug_latency_proxy, find_proxy_in_work
+from proxyfilter.exit_ip import check_exit_ip_many, discover_direct_ip
 from proxyfilter.singbox_backend import SingBoxBackend
 from proxyfilter.ingest import detect_and_parse
 from proxyfilter.io import fetch_url, write_json, write_jsonl
@@ -208,14 +209,45 @@ def process_source(source, cfg, data_dir: Path, until: str, engine):
     write_jsonl(work / "08-upload-ok.jsonl", upload_ok)
     write_jsonl(work / "08-rejected-upload.jsonl", upload_rejected)
     print(f"[{source_id}] upload_pass={len(upload_ok)} rejected={len(upload_rejected)}")
-    return upload_ok
+    if until == "upload":
+        return upload_ok
+
+    exit_cfg = cfg.get("filters", {}).get("exit_ip", {})
+    exit_url = str(exit_cfg.get("url", "https://api.ipify.org"))
+    exit_timeout = float(exit_cfg.get("timeout_seconds", 8))
+    exit_workers = int(exit_cfg.get("workers", 4))
+    exit_curl = str(exit_cfg.get("command", "curl"))
+    reject_direct = bool(exit_cfg.get("reject_direct_wan_ip", True))
+    direct_ips = set(_as_string_list(exit_cfg.get("direct_ips", [])))
+
+    if reject_direct and bool(exit_cfg.get("auto_discover_direct_ip", True)):
+        direct_ip = discover_direct_ip(url=exit_url, timeout=exit_timeout, curl_command=exit_curl)
+        direct_ips.add(direct_ip)
+        print(f"[{source_id}] direct_wan_ip={direct_ip}")
+    elif reject_direct and not direct_ips:
+        raise ValueError("exit_ip.direct_ips is required when auto_discover_direct_ip is false")
+
+    exit_ok, exit_rejected = check_exit_ip_many(
+        upload_ok,
+        engine,
+        url=exit_url,
+        timeout=exit_timeout,
+        reject_direct_wan_ip=reject_direct,
+        direct_ips=direct_ips,
+        workers=exit_workers,
+        curl_command=exit_curl,
+    )
+    write_jsonl(work / "09-exit-ip-ok.jsonl", exit_ok)
+    write_jsonl(work / "09-rejected-exit-ip.jsonl", exit_rejected)
+    print(f"[{source_id}] exit_ip_pass={len(exit_ok)} rejected={len(exit_rejected)}")
+    return exit_ok
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Filter public proxy subscriptions")
     parser.add_argument(
         "--until",
-        choices=("parse", "dedup", "security", "tcp", "core", "latency", "download", "upload"),
+        choices=("parse", "dedup", "security", "tcp", "core", "latency", "download", "upload", "exit-ip"),
         default="core",
     )
     parser.add_argument("--config", required=True)
@@ -263,7 +295,7 @@ def main() -> int:
             print(f"[debug] error={result.get('error')}")
         return 0
 
-    engine = build_engine(cfg, data_dir) if args.until in {"core", "latency", "download", "upload"} else None
+    engine = build_engine(cfg, data_dir) if args.until in {"core", "latency", "download", "upload", "exit-ip"} else None
     if engine is not None:
         print("[engine] " + engine.version().splitlines()[0])
 
@@ -288,6 +320,8 @@ def main() -> int:
         merged.sort(key=lambda proxy: proxy.tests.download_mbps if proxy.tests.download_mbps is not None else -1, reverse=True)
     elif args.until == "upload":
         merged.sort(key=lambda proxy: proxy.tests.upload_mbps if proxy.tests.upload_mbps is not None else -1, reverse=True)
+    elif args.until == "exit-ip":
+        merged.sort(key=lambda proxy: (proxy.tests.exit_ip or "", -(proxy.tests.download_mbps or 0)))
     write_jsonl(data_dir / "work" / "all" / f"{args.until}.jsonl", merged)
     write_json(data_dir / "reports" / "summary.json", summary)
     print(f"[all] survivors={len(merged)} cross_source_duplicates={len(duplicates)}")
