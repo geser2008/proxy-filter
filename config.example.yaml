@@ -64,7 +64,14 @@ filters:
     timeout_seconds: 8
     workers: 4
     command: curl
+
+    # Reject confirmed direct-WAN leaks.
     reject_direct_wan_ip: true
+
+    # If the exit-IP lookup itself fails, keep the proxy by default and mark
+    # the result as unknown. Set true for strict fail-closed behavior.
+    reject_unknown_exit_ip: false
+
     # Discover the server's current direct public IP using the same endpoint
     # without a proxy. For multi-WAN systems, list any additional public WAN
     # addresses in direct_ips so a leak through either ISP is rejected.
