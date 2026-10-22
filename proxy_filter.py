@@ -15,6 +15,7 @@ from proxyfilter.singbox_backend import SingBoxBackend
 from proxyfilter.ingest import detect_and_parse
 from proxyfilter.io import fetch_url, write_json, write_jsonl
 from proxyfilter.probes import check_latency_many
+from proxyfilter.publish import publish_merged, publish_source
 from proxyfilter.render import render_proxy
 from proxyfilter.resume import STAGE_ORDER, load_stage, stage_index, stage_should_run, validate_resume_range
 from proxyfilter.security import check_static_security
@@ -330,6 +331,15 @@ def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from:
         write_jsonl(work / "11-rejected-render.jsonl", render_rejected)
         print(f"[{source_id}] render_pass={len(render_ok)} rejected={len(render_rejected)}")
         current = render_ok
+        if until == "render":
+            return current
+
+    if stage_should_run("publish", resume_from):
+        for proxy in current:
+            proxy.tests.status = "published"
+        txt_path, jsonl_path = publish_source(data_dir, source_id, current)
+        write_jsonl(work / "12-published.jsonl", current)
+        print(f"[{source_id}] published={len(current)} txt={txt_path} jsonl={jsonl_path}")
 
     return current
 
@@ -354,9 +364,9 @@ def main() -> int:
 
     data_dir = Path(cfg.get("paths", {}).get("data_dir", "/srv/proxy-filter/data"))
     configured_sources = cfg.get("sources", [])
+    configured_ids = {source.get("id") for source in configured_sources}
     selected = set(args.source or [])
     if selected:
-        configured_ids = {source.get("id") for source in configured_sources}
         missing = sorted(selected - configured_ids)
         if missing:
             parser.error("unknown source id(s): " + ", ".join(missing))
@@ -423,7 +433,7 @@ def main() -> int:
         merged.sort(key=lambda proxy: proxy.tests.upload_mbps if proxy.tests.upload_mbps is not None else -1, reverse=True)
     elif args.until == "exit-ip":
         merged.sort(key=lambda proxy: (proxy.tests.exit_ip is None, proxy.tests.exit_ip or "", -(proxy.tests.download_mbps or 0)))
-    elif args.until in {"geo", "render"}:
+    elif args.until in {"geo", "render", "publish"}:
         merged.sort(
             key=lambda proxy: (
                 proxy.tests.geo.get("country_code") or "ZZ",
@@ -431,10 +441,23 @@ def main() -> int:
                 proxy.tests.exit_ip or "",
             )
         )
+
     write_jsonl(data_dir / "work" / "all" / f"{args.until}.jsonl", merged)
     write_json(data_dir / "reports" / "summary.json", summary)
+
+    all_sources_ok = bool(summary["sources"]) and all(v["status"] == "ok" for v in summary["sources"].values())
+    full_source_set = not selected or selected == configured_ids
+    if args.until == "publish":
+        if all_sources_ok and full_source_set:
+            txt_path, jsonl_path = publish_merged(data_dir, merged)
+            print(f"[all] published={len(merged)} txt={txt_path} jsonl={jsonl_path}")
+        elif not full_source_set:
+            print("[all] publish_skipped=partial_source_selection")
+        else:
+            print("[all] publish_skipped=source_error")
+
     print(f"[all] survivors={len(merged)} cross_source_duplicates={len(duplicates)}")
-    return 0 if all(v["status"] == "ok" for v in summary["sources"].values()) else 1
+    return 0 if all_sources_ok else 1
 
 
 if __name__ == "__main__":
