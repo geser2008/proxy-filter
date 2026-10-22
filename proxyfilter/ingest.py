@@ -163,11 +163,20 @@ def _parse_ss_uri(uri: str, source: SourceInfo) -> ProxyConfig:
     parts = urlsplit(uri)
     name = unquote(parts.fragment or "")
     if parts.hostname and parts.port is not None:
-        userinfo = parts.username or ""
-        decoded = _decode_b64_token(unquote(userinfo)) if ":" not in unquote(userinfo) else unquote(userinfo)
-        if ":" not in decoded:
+        if parts.username is None:
             raise ValueError("ss missing method/password")
-        method, password = decoded.split(":", 1)
+
+        if parts.password is not None:
+            method = unquote(parts.username)
+            password = unquote(parts.password)
+        else:
+            decoded = _decode_b64_token(unquote(parts.username))
+            if ":" not in decoded:
+                raise ValueError("ss missing method/password")
+            method, password = decoded.split(":", 1)
+
+        if not method or not password:
+            raise ValueError("ss missing method/password")
         if method.strip().lower() == "ss":
             raise ValueError("invalid shadowsocks method: ss")
         params = {"method": method, "password": password}
@@ -235,4 +244,3 @@ def _parse_singbox(obj: dict, source_id: str, source_name: str) -> list[ProxyCon
         proxy = ProxyConfig(SourceInfo(source_id, source_name, "sing-box"), protocol, str(server), int(port), str(item.get("tag", "")), params, "sing-box", json.dumps(item, ensure_ascii=False, separators=(",", ":")))
         proxy.ensure_id()
         out.append(proxy)
-    return out
