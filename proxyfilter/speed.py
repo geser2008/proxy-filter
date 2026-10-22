@@ -19,6 +19,7 @@ class SpeedResult:
     http_code: int | None = None
     error: str | None = None
     url: str | None = None
+    expect_disabled: bool = False
     attempts: list[dict] = field(default_factory=list)
 
 
@@ -62,6 +63,7 @@ def _attempt_dict(result: SpeedResult) -> dict:
         "time_seconds": result.time_seconds,
         "http_code": result.http_code,
         "error": result.error,
+        "expect_disabled": result.expect_disabled,
     }
 
 
@@ -169,32 +171,40 @@ def _upload_one(
     payload_path: Path,
     timeout: float,
     curl_command: str,
+    disable_expect: bool = False,
 ) -> SpeedResult:
     session = None
     try:
         session = engine.start(proxy)
-        proc = subprocess.run(
+        command = [
+            curl_command,
+            "--silent",
+            "--show-error",
+            "--fail",
+            "--output",
+            "/dev/null",
+            "--proxy",
+            session.socks_url,
+            "--connect-timeout",
+            str(timeout),
+            "--max-time",
+            str(timeout),
+            "--header",
+            "Content-Type: application/octet-stream",
+        ]
+        if disable_expect:
+            command.extend(["--header", "Expect:"])
+        command.extend(
             [
-                curl_command,
-                "--silent",
-                "--show-error",
-                "--fail",
-                "--output",
-                "/dev/null",
-                "--proxy",
-                session.socks_url,
-                "--connect-timeout",
-                str(timeout),
-                "--max-time",
-                str(timeout),
-                "--header",
-                "Content-Type: application/octet-stream",
                 "--data-binary",
                 f"@{payload_path}",
                 "--write-out",
                 "%{size_upload}\t%{time_total}\t%{http_code}",
                 url,
-            ],
+            ]
+        )
+        proc = subprocess.run(
+            command,
             text=True,
             capture_output=True,
             timeout=timeout + 5,
@@ -208,14 +218,108 @@ def _upload_one(
                 http_code=http_code,
                 error=(proc.stderr or proc.stdout).strip() or f"curl exited {proc.returncode}",
                 url=url,
+                expect_disabled=disable_expect,
             )
         size, elapsed, http_code = _parse_curl_metrics(proc.stdout)
-        return SpeedResult(True, _mbps(size, elapsed), size, elapsed, http_code, url=url)
+        return SpeedResult(
+            True,
+            _mbps(size, elapsed),
+            size,
+            elapsed,
+            http_code,
+            url=url,
+            expect_disabled=disable_expect,
+        )
     except (EngineError, subprocess.TimeoutExpired, OSError, ValueError) as exc:
-        return SpeedResult(False, error=str(exc), url=url)
+        return SpeedResult(False, error=str(exc), url=url, expect_disabled=disable_expect)
     finally:
         if session is not None:
             engine.stop(session)
+
+
+def _is_incomplete_upload_after_continue(result: SpeedResult) -> bool:
+    return (
+        not result.ok
+        and result.http_code == 100
+        and result.bytes_transferred is not None
+        and result.bytes_transferred > 0
+    )
+
+
+def _upload_with_fallbacks(
+    proxy: ProxyConfig,
+    engine: EngineBackend,
+    *,
+    url: str,
+    fallback_urls: list[str],
+    fallback_http_codes: set[int],
+    payload_path: Path,
+    timeout: float,
+    curl_command: str,
+) -> SpeedResult:
+    attempts: list[dict] = []
+
+    result = _upload_one(
+        proxy,
+        engine,
+        url=url,
+        payload_path=payload_path,
+        timeout=timeout,
+        curl_command=curl_command,
+        disable_expect=False,
+    )
+    attempts.append(_attempt_dict(result))
+    if result.ok:
+        result.attempts = attempts
+        return result
+
+    if _is_incomplete_upload_after_continue(result):
+        print(
+            f"[upload] retry proxy={proxy.ensure_id()[:12]} "
+            "reason=incomplete-after-100 expect=disabled"
+        )
+        result = _upload_one(
+            proxy,
+            engine,
+            url=url,
+            payload_path=payload_path,
+            timeout=timeout,
+            curl_command=curl_command,
+            disable_expect=True,
+        )
+        attempts.append(_attempt_dict(result))
+        if result.ok:
+            result.attempts = attempts
+            return result
+
+    retryable = _is_incomplete_upload_after_continue(result) or result.http_code in fallback_http_codes
+    if not retryable:
+        result.attempts = attempts
+        return result
+
+    for fallback_url in fallback_urls:
+        print(
+            f"[upload] fallback proxy={proxy.ensure_id()[:12]} "
+            f"http={result.http_code} next={fallback_url}"
+        )
+        result = _upload_one(
+            proxy,
+            engine,
+            url=fallback_url,
+            payload_path=payload_path,
+            timeout=timeout,
+            curl_command=curl_command,
+            disable_expect=True,
+        )
+        attempts.append(_attempt_dict(result))
+        if result.ok:
+            result.attempts = attempts
+            return result
+        if not (_is_incomplete_upload_after_continue(result) or result.http_code in fallback_http_codes):
+            break
+
+    result.attempts = attempts
+    return result
 
 
 def _run_many(proxies: list[ProxyConfig], workers: int, probe, label: str) -> list[tuple[ProxyConfig, SpeedResult]]:
@@ -313,11 +417,16 @@ def check_upload_many(
     min_mbps: float,
     workers: int = 1,
     curl_command: str = "curl",
+    fallback_urls: list[str] | None = None,
+    fallback_http_codes: set[int] | None = None,
 ) -> tuple[list[ProxyConfig], list[ProxyConfig]]:
     if not url:
         raise ValueError("speed.upload_url is required")
     if upload_bytes <= 0:
         raise ValueError("speed.upload_bytes must be greater than zero")
+
+    clean_fallbacks = [item for item in (fallback_urls or []) if item and item != url]
+    retry_codes = set(fallback_http_codes or {429, 500, 502, 503, 504})
 
     with tempfile.NamedTemporaryFile(prefix="proxy-filter-upload-", delete=True) as payload:
         payload.truncate(upload_bytes)
@@ -325,10 +434,12 @@ def check_upload_many(
         payload_path = Path(payload.name)
 
         def probe(proxy: ProxyConfig) -> SpeedResult:
-            return _upload_one(
+            return _upload_with_fallbacks(
                 proxy,
                 engine,
                 url=url,
+                fallback_urls=clean_fallbacks,
+                fallback_http_codes=retry_codes,
                 payload_path=payload_path,
                 timeout=timeout,
                 curl_command=curl_command,
@@ -349,6 +460,7 @@ def check_upload_many(
             "http_code": result.http_code,
             "error": result.error,
             "url": result.url,
+            "attempts": result.attempts,
             "method": "curl-socks5h",
         }
         if not result.ok:
