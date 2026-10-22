@@ -25,3 +25,11 @@ Deferred improvements to revisit after the end-to-end pipeline is working reliab
 - Revisit fallback object sizing so primary and fallback downloads are comparable and do not transfer substantially more data than necessary.
 - Prefer a fallback object near the primary test size (currently about 50 MB) when a reliable fixed-size endpoint is available.
 
+## Upload transient retry / fallback
+
+- Consider one bounded retry for transient upload connection failures after a proxy has already passed download, especially SOCKS/TLS connection failures that may be temporary rather than evidence of poor throughput.
+- Do not retry upload threshold failures; they produced a valid measurement.
+- Keep the existing special retry for incomplete `HTTP 100 Continue` uploads with `Expect` disabled.
+- Add a second reliable upload endpoint when one is identified, so repeated EOF/HTTP infrastructure failures can be distinguished from proxy failures without guessing.
+- Keep retries bounded and explicit so unstable proxies are not repeatedly promoted through the pipeline.
+
