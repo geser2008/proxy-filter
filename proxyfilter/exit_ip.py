@@ -118,6 +118,7 @@ def check_exit_ip_many(
     url: str,
     timeout: float,
     reject_direct_wan_ip: bool,
+    reject_unknown_exit_ip: bool = False,
     direct_ips: set[str] | None = None,
     workers: int = 4,
     curl_command: str = "curl",
@@ -138,23 +139,36 @@ def check_exit_ip_many(
         nonlocal checked
         proxy.tests.exit_ip = result.ip
         leaked = bool(result.ok and result.ip and result.ip in normalized_direct_ips)
+
+        if not result.ok:
+            probe_status = "fail" if reject_unknown_exit_ip else "unknown"
+        elif reject_direct_wan_ip and leaked:
+            probe_status = "fail"
+        else:
+            probe_status = "pass"
+
         proxy.tests.exit_ip_probe = {
-            "status": "pass" if result.ok and not leaked else "fail",
+            "status": probe_status,
             "ip": result.ip,
             "http_code": result.http_code,
             "error": result.error,
             "direct_wan_match": leaked,
             "method": "curl-socks5h",
         }
-        if not result.ok:
+
+        if not result.ok and reject_unknown_exit_ip:
             proxy.tests.status = "rejected_exit_ip_error"
             rejected.append(proxy)
         elif reject_direct_wan_ip and leaked:
             proxy.tests.status = "rejected_exit_ip_direct_wan"
             rejected.append(proxy)
+        elif not result.ok:
+            proxy.tests.status = "exit_ip_unknown"
+            passed.append(proxy)
         else:
             proxy.tests.status = "exit_ip_pass"
             passed.append(proxy)
+
         checked += 1
         print(f"[exit-ip] checked={checked}/{total}")
 
