@@ -21,6 +21,7 @@ class TestState:
     latency: dict[str, Any] = field(default_factory=lambda: {"status": "pending", "latency_ms": None, "http_code": None, "error": None})
     download: dict[str, Any] = field(default_factory=lambda: {"status": "pending", "mbps": None, "error": None})
     upload: dict[str, Any] = field(default_factory=lambda: {"status": "pending", "mbps": None, "error": None})
+    exit_ip_probe: dict[str, Any] = field(default_factory=lambda: {"status": "pending", "ip": None, "error": None})
     latency_ms: float | None = None
     download_mbps: float | None = None
     upload_mbps: float | None = None
@@ -93,6 +94,7 @@ class ProxyConfig:
             latency=tests_data.get("latency", {"status": "pending", "latency_ms": None, "http_code": None, "error": None}),
             download=tests_data.get("download", {"status": "pending", "mbps": None, "error": None}),
             upload=tests_data.get("upload", {"status": "pending", "mbps": None, "error": None}),
+            exit_ip_probe=tests_data.get("exit_ip_probe", {"status": "pending", "ip": None, "error": None}),
             latency_ms=tests_data.get("latency_ms"),
             download_mbps=tests_data.get("download_mbps"),
             upload_mbps=tests_data.get("upload_mbps"),
