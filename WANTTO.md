@@ -9,14 +9,6 @@ Deferred improvements to revisit after the end-to-end pipeline is working reliab
 - Candidate checks include protocol-required fields, enum values, parameter combinations, ranges, and other semantic constraints that can be validated without guessing or repairing source data.
 - Preserve the project rule: parse exactly what the declared format means; reject malformed/unsupported configurations explicitly; do not infer intended values.
 
-## Latency 503 retry
-
-- Retry latency failures that return `clash_api_http_503` once before final rejection.
-- Prefer retrying the affected proxy individually or in a very small batch so a transient batch/runtime failure does not discard a working proxy.
-- Do not retry ordinary `504 Timeout` results by default; those already consumed the configured timeout.
-- Do not retry latency-threshold failures; they produced a valid measurement.
-- Motivation: a proxy that failed with 503 in the batch test later succeeded in single-proxy debug mode, so at least some 503 failures are transient.
-
 ## Speed-test validation
 
 - Validate successful speed-test responses against the expected payload size, not only HTTP status and non-zero transferred bytes.
@@ -25,11 +17,10 @@ Deferred improvements to revisit after the end-to-end pipeline is working reliab
 - Revisit fallback object sizing so primary and fallback downloads are comparable and do not transfer substantially more data than necessary.
 - Prefer a fallback object near the primary test size (currently about 50 MB) when a reliable fixed-size endpoint is available.
 
-## Upload transient retry / fallback
+## Upload fallback endpoint
 
-- Consider one bounded retry for transient upload connection failures after a proxy has already passed download, especially SOCKS/TLS connection failures that may be temporary rather than evidence of poor throughput.
+- Keep the existing bounded retries: one retry for incomplete `HTTP 100 Continue` uploads with `Expect` disabled, and one retry for zero-byte transport failures before any HTTP response.
 - Do not retry upload threshold failures; they produced a valid measurement.
-- Keep the existing special retry for incomplete `HTTP 100 Continue` uploads with `Expect` disabled.
 - Add a second reliable upload endpoint when one is identified, so repeated EOF/HTTP infrastructure failures can be distinguished from proxy failures without guessing.
 - Keep retries bounded and explicit so unstable proxies are not repeatedly promoted through the pipeline.
 
