@@ -26,6 +26,19 @@ class URIValidationTests(unittest.TestCase):
         proxy = parse_uri(uri, self.source)
         self.assertEqual(proxy.params["path"], "/api")
 
+    def test_accepts_plain_sip002_shadowsocks_userinfo(self) -> None:
+        uri = (
+            "ss://chacha20-ietf-poly1305:oZIoA69Q8yhcQV8ka3Pa3A@"
+            "193.29.139.202:8080#example"
+        )
+        proxy = parse_uri(uri, self.source)
+        self.assertEqual(proxy.protocol, "ss")
+        self.assertEqual(proxy.server, "193.29.139.202")
+        self.assertEqual(proxy.port, 8080)
+        self.assertEqual(proxy.params["method"], "chacha20-ietf-poly1305")
+        self.assertEqual(proxy.params["password"], "oZIoA69Q8yhcQV8ka3Pa3A")
+        self.assertEqual(proxy.name, "example")
+
 
 if __name__ == "__main__":
     unittest.main()
