@@ -56,6 +56,48 @@ class ExitIPTests(unittest.TestCase):
         self.assertEqual(proxy.tests.exit_ip, "198.51.100.9")
         self.assertEqual(proxy.tests.status, "exit_ip_pass")
 
+    def test_unknown_exit_ip_is_kept_by_default(self):
+        proxy = ProxyConfig(SourceInfo("test", "test"), "ss", "127.0.0.1", 443)
+        with patch(
+            "proxyfilter.exit_ip._probe_one",
+            return_value=ExitIPResult(False, http_code=0, error="timeout"),
+        ):
+            passed, rejected = check_exit_ip_many(
+                [proxy],
+                object(),
+                url="https://example.invalid/ip",
+                timeout=5,
+                reject_direct_wan_ip=True,
+                direct_ips={"203.0.113.7"},
+                workers=1,
+            )
+        self.assertEqual(passed, [proxy])
+        self.assertEqual(rejected, [])
+        self.assertIsNone(proxy.tests.exit_ip)
+        self.assertEqual(proxy.tests.status, "exit_ip_unknown")
+        self.assertEqual(proxy.tests.exit_ip_probe["status"], "unknown")
+
+    def test_unknown_exit_ip_can_be_rejected(self):
+        proxy = ProxyConfig(SourceInfo("test", "test"), "ss", "127.0.0.1", 443)
+        with patch(
+            "proxyfilter.exit_ip._probe_one",
+            return_value=ExitIPResult(False, http_code=0, error="timeout"),
+        ):
+            passed, rejected = check_exit_ip_many(
+                [proxy],
+                object(),
+                url="https://example.invalid/ip",
+                timeout=5,
+                reject_direct_wan_ip=True,
+                reject_unknown_exit_ip=True,
+                direct_ips={"203.0.113.7"},
+                workers=1,
+            )
+        self.assertEqual(passed, [])
+        self.assertEqual(rejected, [proxy])
+        self.assertEqual(proxy.tests.status, "rejected_exit_ip_error")
+        self.assertEqual(proxy.tests.exit_ip_probe["status"], "fail")
+
 
 if __name__ == "__main__":
     unittest.main()
