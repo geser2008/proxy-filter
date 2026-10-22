@@ -15,9 +15,13 @@ from proxyfilter.singbox_backend import SingBoxBackend
 from proxyfilter.ingest import detect_and_parse
 from proxyfilter.io import fetch_url, write_json, write_jsonl
 from proxyfilter.probes import check_latency_many
+from proxyfilter.resume import STAGE_ORDER, load_stage, stage_index, stage_should_run, validate_resume_range
 from proxyfilter.security import check_static_security
 from proxyfilter.speed import check_download_many, check_upload_many
 from proxyfilter.tcpcheck import check_many
+
+
+ENGINE_STAGES = {"core", "latency", "download", "upload", "exit-ip"}
 
 
 def deduplicate(proxies):
@@ -60,7 +64,7 @@ def _as_int_set(value, default):
     return {int(item) for item in (raw or [])}
 
 
-def process_source(source, cfg, data_dir: Path, until: str, engine):
+def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from: str | None = None):
     source_id = source["id"]
     source_name = source.get("name", source_id)
     work = data_dir / "work" / source_id
@@ -70,214 +74,246 @@ def process_source(source, cfg, data_dir: Path, until: str, engine):
     raw_dir.mkdir(parents=True, exist_ok=True)
     reports.mkdir(parents=True, exist_ok=True)
 
-    print(f"[{source_id}] download {source['url']}")
-    raw = fetch_url(source["url"])
-    (raw_dir / f"{source_id}.raw").write_bytes(raw)
+    current = None
+    if resume_from is not None:
+        current, resume_path = load_stage(data_dir, source_id, resume_from)
+        print(f"[{source_id}] resume_from={resume_from} records={len(current)} file={resume_path}")
+        if until == resume_from:
+            return current
 
-    proxies, parse_errors, detected_format = detect_and_parse(raw, source_id, source_name)
-    for proxy in proxies:
-        proxy.source.format = detected_format
-    write_jsonl(work / "01-parsed.jsonl", proxies)
-    write_json(reports / f"{source_id}-parse-errors.json", parse_errors)
-    print(f"[{source_id}] parsed={len(proxies)} errors={len(parse_errors)} format={detected_format}")
-    if until == "parse":
-        return proxies
+    if stage_should_run("parse", resume_from):
+        print(f"[{source_id}] download {source['url']}")
+        raw = fetch_url(source["url"])
+        (raw_dir / f"{source_id}.raw").write_bytes(raw)
 
-    proxies, duplicates = deduplicate(proxies)
-    write_jsonl(work / "02-unique.jsonl", proxies)
-    write_jsonl(work / "02-duplicates.jsonl", duplicates)
-    print(f"[{source_id}] unique={len(proxies)} duplicates={len(duplicates)}")
-    if until == "dedup":
-        return proxies
+        proxies, parse_errors, detected_format = detect_and_parse(raw, source_id, source_name)
+        for proxy in proxies:
+            proxy.source.format = detected_format
+        write_jsonl(work / "01-parsed.jsonl", proxies)
+        write_json(reports / f"{source_id}-parse-errors.json", parse_errors)
+        print(f"[{source_id}] parsed={len(proxies)} errors={len(parse_errors)} format={detected_format}")
+        current = proxies
+        if until == "parse":
+            return current
 
-    sec_cfg = cfg.get("filters", {}).get("security", {})
-    safe, rejected = [], []
-    for proxy in proxies:
-        ok, _ = check_static_security(proxy, reject_allow_insecure=sec_cfg.get("reject_allow_insecure", True))
-        (safe if ok else rejected).append(proxy)
-    write_jsonl(work / "03-safe.jsonl", safe)
-    write_jsonl(work / "03-rejected-security.jsonl", rejected)
-    print(f"[{source_id}] security_pass={len(safe)} rejected={len(rejected)}")
-    if until == "security":
-        return safe
+    if stage_should_run("dedup", resume_from):
+        current, duplicates = deduplicate(current)
+        write_jsonl(work / "02-unique.jsonl", current)
+        write_jsonl(work / "02-duplicates.jsonl", duplicates)
+        print(f"[{source_id}] unique={len(current)} duplicates={len(duplicates)}")
+        if until == "dedup":
+            return current
 
-    tcp_cfg = cfg.get("filters", {}).get("tcp", {})
-    if tcp_cfg.get("enabled", True):
-        passed, tcp_rejected = check_many(
-            safe,
-            timeout=float(tcp_cfg.get("timeout_seconds", 3)),
-            workers=int(tcp_cfg.get("workers", 64)),
-        )
-    else:
-        passed, tcp_rejected = safe, []
-    write_jsonl(work / "04-tcp-ok.jsonl", passed)
-    write_jsonl(work / "04-rejected-tcp.jsonl", tcp_rejected)
-    print(f"[{source_id}] tcp_pass={len(passed)} rejected={len(tcp_rejected)}")
-    if until == "tcp":
-        return passed
+    if stage_should_run("security", resume_from):
+        sec_cfg = cfg.get("filters", {}).get("security", {})
+        safe, rejected = [], []
+        for proxy in current:
+            ok, _ = check_static_security(proxy, reject_allow_insecure=sec_cfg.get("reject_allow_insecure", True))
+            (safe if ok else rejected).append(proxy)
+        write_jsonl(work / "03-safe.jsonl", safe)
+        write_jsonl(work / "03-rejected-security.jsonl", rejected)
+        print(f"[{source_id}] security_pass={len(safe)} rejected={len(rejected)}")
+        current = safe
+        if until == "security":
+            return current
 
-    core_ok, core_rejected = [], []
-    for idx, proxy in enumerate(passed, 1):
-        ok, error = engine.validate(proxy)
-        proxy.tests.core = {"status": "pass" if ok else "fail", "error": error}
-        proxy.tests.status = "core_valid" if ok else "rejected_core"
-        (core_ok if ok else core_rejected).append(proxy)
-        if idx % 100 == 0:
-            print(f"[{source_id}] core_checked={idx}/{len(passed)}")
-    write_jsonl(work / "05-core-ok.jsonl", core_ok)
-    write_jsonl(work / "05-rejected-core.jsonl", core_rejected)
-    print(f"[{source_id}] core_pass={len(core_ok)} rejected={len(core_rejected)}")
-    if until == "core":
-        return core_ok
+    if stage_should_run("tcp", resume_from):
+        tcp_cfg = cfg.get("filters", {}).get("tcp", {})
+        if tcp_cfg.get("enabled", True):
+            passed, tcp_rejected = check_many(
+                current,
+                timeout=float(tcp_cfg.get("timeout_seconds", 3)),
+                workers=int(tcp_cfg.get("workers", 64)),
+            )
+        else:
+            passed, tcp_rejected = current, []
+        write_jsonl(work / "04-tcp-ok.jsonl", passed)
+        write_jsonl(work / "04-rejected-tcp.jsonl", tcp_rejected)
+        print(f"[{source_id}] tcp_pass={len(passed)} rejected={len(tcp_rejected)}")
+        current = passed
+        if until == "tcp":
+            return current
 
-    latency_cfg = cfg.get("filters", {}).get("latency", {})
-    latency_mode = str(latency_cfg.get("mode", "singbox-api")).lower()
-    common_latency_args = {
-        "url": str(latency_cfg.get("test_url", "https://www.gstatic.com/generate_204")),
-        "timeout": float(latency_cfg.get("timeout_seconds", 8)),
-        "max_ms": float(latency_cfg.get("max_ms", 800)),
-        "workers": int(latency_cfg.get("workers", 32)),
-    }
+    if stage_should_run("core", resume_from):
+        core_ok, core_rejected = [], []
+        for idx, proxy in enumerate(current, 1):
+            ok, error = engine.validate(proxy)
+            proxy.tests.core = {"status": "pass" if ok else "fail", "error": error}
+            proxy.tests.status = "core_valid" if ok else "rejected_core"
+            (core_ok if ok else core_rejected).append(proxy)
+            if idx % 100 == 0:
+                print(f"[{source_id}] core_checked={idx}/{len(current)}")
+        write_jsonl(work / "05-core-ok.jsonl", core_ok)
+        write_jsonl(work / "05-rejected-core.jsonl", core_rejected)
+        print(f"[{source_id}] core_pass={len(core_ok)} rejected={len(core_rejected)}")
+        current = core_ok
+        if until == "core":
+            return current
 
-    print(f"[{source_id}] latency_mode={latency_mode}")
-    if latency_mode in {"singbox-api", "api", "batch"}:
-        latency_ok, latency_rejected = check_latency_batched(
-            core_ok,
+    if stage_should_run("latency", resume_from):
+        latency_cfg = cfg.get("filters", {}).get("latency", {})
+        latency_mode = str(latency_cfg.get("mode", "singbox-api")).lower()
+        common_latency_args = {
+            "url": str(latency_cfg.get("test_url", "https://www.gstatic.com/generate_204")),
+            "timeout": float(latency_cfg.get("timeout_seconds", 8)),
+            "max_ms": float(latency_cfg.get("max_ms", 800)),
+            "workers": int(latency_cfg.get("workers", 32)),
+        }
+
+        print(f"[{source_id}] latency_mode={latency_mode}")
+        if latency_mode in {"singbox-api", "api", "batch"}:
+            latency_ok, latency_rejected = check_latency_batched(
+                current,
+                engine,
+                **common_latency_args,
+                batch_size=int(latency_cfg.get("batch_size", 128)),
+            )
+        elif latency_mode == "curl":
+            latency_ok, latency_rejected = check_latency_many(
+                current,
+                engine,
+                **common_latency_args,
+                curl_command=str(latency_cfg.get("command", "curl")),
+            )
+        else:
+            raise ValueError(f"unsupported latency mode: {latency_mode}")
+
+        latency_ok.sort(key=lambda proxy: proxy.tests.latency_ms if proxy.tests.latency_ms is not None else float("inf"))
+        write_jsonl(work / "06-latency-ok.jsonl", latency_ok)
+        write_jsonl(work / "06-rejected-latency.jsonl", latency_rejected)
+        print(f"[{source_id}] latency_pass={len(latency_ok)} rejected={len(latency_rejected)}")
+        current = latency_ok
+        if until == "latency":
+            return current
+
+    if stage_should_run("download", resume_from):
+        speed_cfg = cfg.get("filters", {}).get("speed", {})
+        speed_timeout = float(speed_cfg.get("timeout_seconds", 30))
+        speed_workers = int(speed_cfg.get("workers", 1))
+        speed_curl = str(speed_cfg.get("command", "curl"))
+        download_fallback_urls = _as_string_list(speed_cfg.get("download_fallback_urls", []))
+        download_fallback_http_codes = _as_int_set(speed_cfg.get("download_fallback_http_codes"), [429])
+
+        download_ok, download_rejected = check_download_many(
+            current,
             engine,
-            **common_latency_args,
-            batch_size=int(latency_cfg.get("batch_size", 128)),
+            url=str(speed_cfg.get("download_url", "")),
+            timeout=speed_timeout,
+            min_mbps=float(speed_cfg.get("min_download_mbps", 30)),
+            workers=speed_workers,
+            curl_command=speed_curl,
+            fallback_urls=download_fallback_urls,
+            fallback_http_codes=download_fallback_http_codes,
         )
-    elif latency_mode == "curl":
-        latency_ok, latency_rejected = check_latency_many(
-            core_ok,
+        write_jsonl(work / "07-download-ok.jsonl", download_ok)
+        write_jsonl(work / "07-rejected-download.jsonl", download_rejected)
+        print(f"[{source_id}] download_pass={len(download_ok)} rejected={len(download_rejected)}")
+        current = download_ok
+        if until == "download":
+            return current
+
+    if stage_should_run("upload", resume_from):
+        speed_cfg = cfg.get("filters", {}).get("speed", {})
+        speed_timeout = float(speed_cfg.get("timeout_seconds", 30))
+        speed_workers = int(speed_cfg.get("workers", 1))
+        speed_curl = str(speed_cfg.get("command", "curl"))
+        upload_fallback_urls = _as_string_list(speed_cfg.get("upload_fallback_urls", []))
+        upload_fallback_http_codes = _as_int_set(
+            speed_cfg.get("upload_fallback_http_codes"),
+            [429, 500, 502, 503, 504],
+        )
+
+        upload_ok, upload_rejected = check_upload_many(
+            current,
             engine,
-            **common_latency_args,
-            curl_command=str(latency_cfg.get("command", "curl")),
+            url=str(speed_cfg.get("upload_url", "")),
+            upload_bytes=int(speed_cfg.get("upload_bytes", 10_000_000)),
+            timeout=speed_timeout,
+            min_mbps=float(speed_cfg.get("min_upload_mbps", 10)),
+            workers=speed_workers,
+            curl_command=speed_curl,
+            fallback_urls=upload_fallback_urls,
+            fallback_http_codes=upload_fallback_http_codes,
         )
-    else:
-        raise ValueError(f"unsupported latency mode: {latency_mode}")
+        write_jsonl(work / "08-upload-ok.jsonl", upload_ok)
+        write_jsonl(work / "08-rejected-upload.jsonl", upload_rejected)
+        print(f"[{source_id}] upload_pass={len(upload_ok)} rejected={len(upload_rejected)}")
+        current = upload_ok
+        if until == "upload":
+            return current
 
-    latency_ok.sort(key=lambda proxy: proxy.tests.latency_ms if proxy.tests.latency_ms is not None else float("inf"))
-    write_jsonl(work / "06-latency-ok.jsonl", latency_ok)
-    write_jsonl(work / "06-rejected-latency.jsonl", latency_rejected)
-    print(f"[{source_id}] latency_pass={len(latency_ok)} rejected={len(latency_rejected)}")
-    if until == "latency":
-        return latency_ok
+    if stage_should_run("exit-ip", resume_from):
+        exit_cfg = cfg.get("filters", {}).get("exit_ip", {})
+        exit_url = str(exit_cfg.get("url", "https://api.ipify.org"))
+        exit_timeout = float(exit_cfg.get("timeout_seconds", 8))
+        exit_workers = int(exit_cfg.get("workers", 4))
+        exit_curl = str(exit_cfg.get("command", "curl"))
+        reject_direct = bool(exit_cfg.get("reject_direct_wan_ip", True))
+        reject_unknown = bool(exit_cfg.get("reject_unknown_exit_ip", False))
+        direct_ips = set(_as_string_list(exit_cfg.get("direct_ips", [])))
 
-    speed_cfg = cfg.get("filters", {}).get("speed", {})
-    speed_timeout = float(speed_cfg.get("timeout_seconds", 30))
-    speed_workers = int(speed_cfg.get("workers", 1))
-    speed_curl = str(speed_cfg.get("command", "curl"))
+        if reject_direct and bool(exit_cfg.get("auto_discover_direct_ip", True)):
+            direct_ip = discover_direct_ip(url=exit_url, timeout=exit_timeout, curl_command=exit_curl)
+            direct_ips.add(direct_ip)
+            print(f"[{source_id}] direct_wan_ip={direct_ip}")
+        elif reject_direct and not direct_ips:
+            raise ValueError("exit_ip.direct_ips is required when auto_discover_direct_ip is false")
 
-    download_fallback_urls = _as_string_list(speed_cfg.get("download_fallback_urls", []))
-    download_fallback_http_codes = _as_int_set(speed_cfg.get("download_fallback_http_codes"), [429])
+        exit_ok, exit_rejected = check_exit_ip_many(
+            current,
+            engine,
+            url=exit_url,
+            timeout=exit_timeout,
+            reject_direct_wan_ip=reject_direct,
+            reject_unknown_exit_ip=reject_unknown,
+            direct_ips=direct_ips,
+            workers=exit_workers,
+            curl_command=exit_curl,
+        )
+        write_jsonl(work / "09-exit-ip-ok.jsonl", exit_ok)
+        write_jsonl(work / "09-rejected-exit-ip.jsonl", exit_rejected)
+        unknown_count = sum(1 for proxy in exit_ok if proxy.tests.exit_ip is None)
+        print(
+            f"[{source_id}] exit_ip_pass={len(exit_ok) - unknown_count} "
+            f"unknown={unknown_count} rejected={len(exit_rejected)}"
+        )
+        current = exit_ok
+        if until == "exit-ip":
+            return current
 
-    download_ok, download_rejected = check_download_many(
-        latency_ok,
-        engine,
-        url=str(speed_cfg.get("download_url", "")),
-        timeout=speed_timeout,
-        min_mbps=float(speed_cfg.get("min_download_mbps", 30)),
-        workers=speed_workers,
-        curl_command=speed_curl,
-        fallback_urls=download_fallback_urls,
-        fallback_http_codes=download_fallback_http_codes,
-    )
-    write_jsonl(work / "07-download-ok.jsonl", download_ok)
-    write_jsonl(work / "07-rejected-download.jsonl", download_rejected)
-    print(f"[{source_id}] download_pass={len(download_ok)} rejected={len(download_rejected)}")
-    if until == "download":
-        return download_ok
+    if stage_should_run("geo", resume_from):
+        geo_cfg = cfg.get("filters", {}).get("geo", {})
+        geo_ok = enrich_geo_many(
+            current,
+            provider=str(geo_cfg.get("provider", "ipwhois")),
+            url_template=str(geo_cfg.get("url_template", "https://ipwho.is/{ip}")),
+            timeout=float(geo_cfg.get("timeout_seconds", 8)),
+            workers=int(geo_cfg.get("workers", 4)),
+            curl_command=str(geo_cfg.get("command", "curl")),
+        )
+        write_jsonl(work / "10-geo.jsonl", geo_ok)
+        geo_success = sum(1 for proxy in geo_ok if proxy.tests.geo.get("status") == "ok")
+        geo_unknown = sum(1 for proxy in geo_ok if proxy.tests.geo.get("status") == "unknown")
+        geo_errors = len(geo_ok) - geo_success - geo_unknown
+        print(f"[{source_id}] geo_ok={geo_success} unknown={geo_unknown} errors={geo_errors}")
+        current = geo_ok
 
-    upload_fallback_urls = _as_string_list(speed_cfg.get("upload_fallback_urls", []))
-    upload_fallback_http_codes = _as_int_set(
-        speed_cfg.get("upload_fallback_http_codes"),
-        [429, 500, 502, 503, 504],
-    )
-
-    upload_ok, upload_rejected = check_upload_many(
-        download_ok,
-        engine,
-        url=str(speed_cfg.get("upload_url", "")),
-        upload_bytes=int(speed_cfg.get("upload_bytes", 10_000_000)),
-        timeout=speed_timeout,
-        min_mbps=float(speed_cfg.get("min_upload_mbps", 10)),
-        workers=speed_workers,
-        curl_command=speed_curl,
-        fallback_urls=upload_fallback_urls,
-        fallback_http_codes=upload_fallback_http_codes,
-    )
-    write_jsonl(work / "08-upload-ok.jsonl", upload_ok)
-    write_jsonl(work / "08-rejected-upload.jsonl", upload_rejected)
-    print(f"[{source_id}] upload_pass={len(upload_ok)} rejected={len(upload_rejected)}")
-    if until == "upload":
-        return upload_ok
-
-    exit_cfg = cfg.get("filters", {}).get("exit_ip", {})
-    exit_url = str(exit_cfg.get("url", "https://api.ipify.org"))
-    exit_timeout = float(exit_cfg.get("timeout_seconds", 8))
-    exit_workers = int(exit_cfg.get("workers", 4))
-    exit_curl = str(exit_cfg.get("command", "curl"))
-    reject_direct = bool(exit_cfg.get("reject_direct_wan_ip", True))
-    reject_unknown = bool(exit_cfg.get("reject_unknown_exit_ip", False))
-    direct_ips = set(_as_string_list(exit_cfg.get("direct_ips", [])))
-
-    if reject_direct and bool(exit_cfg.get("auto_discover_direct_ip", True)):
-        direct_ip = discover_direct_ip(url=exit_url, timeout=exit_timeout, curl_command=exit_curl)
-        direct_ips.add(direct_ip)
-        print(f"[{source_id}] direct_wan_ip={direct_ip}")
-    elif reject_direct and not direct_ips:
-        raise ValueError("exit_ip.direct_ips is required when auto_discover_direct_ip is false")
-
-    exit_ok, exit_rejected = check_exit_ip_many(
-        upload_ok,
-        engine,
-        url=exit_url,
-        timeout=exit_timeout,
-        reject_direct_wan_ip=reject_direct,
-        reject_unknown_exit_ip=reject_unknown,
-        direct_ips=direct_ips,
-        workers=exit_workers,
-        curl_command=exit_curl,
-    )
-    write_jsonl(work / "09-exit-ip-ok.jsonl", exit_ok)
-    write_jsonl(work / "09-rejected-exit-ip.jsonl", exit_rejected)
-    unknown_count = sum(1 for proxy in exit_ok if proxy.tests.exit_ip is None)
-    print(
-        f"[{source_id}] exit_ip_pass={len(exit_ok) - unknown_count} "
-        f"unknown={unknown_count} rejected={len(exit_rejected)}"
-    )
-    if until == "exit-ip":
-        return exit_ok
-
-    geo_cfg = cfg.get("filters", {}).get("geo", {})
-    geo_ok = enrich_geo_many(
-        exit_ok,
-        provider=str(geo_cfg.get("provider", "ipwhois")),
-        url_template=str(geo_cfg.get("url_template", "https://ipwho.is/{ip}")),
-        timeout=float(geo_cfg.get("timeout_seconds", 8)),
-        workers=int(geo_cfg.get("workers", 4)),
-        curl_command=str(geo_cfg.get("command", "curl")),
-    )
-    write_jsonl(work / "10-geo.jsonl", geo_ok)
-    geo_success = sum(1 for proxy in geo_ok if proxy.tests.geo.get("status") == "ok")
-    geo_unknown = sum(1 for proxy in geo_ok if proxy.tests.geo.get("status") == "unknown")
-    geo_errors = len(geo_ok) - geo_success - geo_unknown
-    print(f"[{source_id}] geo_ok={geo_success} unknown={geo_unknown} errors={geo_errors}")
-    return geo_ok
+    return current
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Filter public proxy subscriptions")
-    parser.add_argument(
-        "--until",
-        choices=("parse", "dedup", "security", "tcp", "core", "latency", "download", "upload", "exit-ip", "geo"),
-        default="core",
-    )
+    parser.add_argument("--until", choices=STAGE_ORDER, default="core")
+    parser.add_argument("--resume-from", choices=STAGE_ORDER, help="Resume from an existing successful stage JSONL")
     parser.add_argument("--config", required=True)
     parser.add_argument("--source", action="append", help="Process only the given source id; may be repeated")
     parser.add_argument("--debug-proxy", help="Re-run latency diagnostics for one existing proxy id or unique id prefix")
     args = parser.parse_args()
+
+    try:
+        validate_resume_range(args.resume_from, args.until)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     cfg_path = Path(args.config)
     with cfg_path.open("r", encoding="utf-8") as fh:
@@ -319,7 +355,11 @@ def main() -> int:
             print(f"[debug] error={result.get('error')}")
         return 0
 
-    engine = build_engine(cfg, data_dir) if args.until in {"core", "latency", "download", "upload", "exit-ip", "geo"} else None
+    start_index = stage_index(args.resume_from) + 1 if args.resume_from else 0
+    end_index = stage_index(args.until)
+    stages_to_run = STAGE_ORDER[start_index:end_index + 1]
+    needs_engine = any(stage in ENGINE_STAGES for stage in stages_to_run)
+    engine = build_engine(cfg, data_dir) if needs_engine else None
     if engine is not None:
         print("[engine] " + engine.version().splitlines()[0])
 
@@ -330,9 +370,13 @@ def main() -> int:
 
     for source in sources:
         try:
-            survivors = process_source(source, cfg, data_dir, args.until, engine)
+            survivors = process_source(source, cfg, data_dir, args.until, engine, resume_from=args.resume_from)
             all_survivors.extend(survivors)
-            summary["sources"][source["id"]] = {"status": "ok", "survivors": len(survivors)}
+            summary["sources"][source["id"]] = {
+                "status": "ok",
+                "survivors": len(survivors),
+                "resume_from": args.resume_from,
+            }
         except Exception as exc:
             summary["sources"][source.get("id", "unknown")] = {"status": "error", "error": str(exc)}
             print(f"[{source.get('id', 'unknown')}] ERROR: {exc}", file=sys.stderr)
