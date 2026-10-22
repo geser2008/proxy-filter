@@ -62,7 +62,14 @@ filters:
   exit_ip:
     url: https://api.ipify.org
     timeout_seconds: 8
+    workers: 4
+    command: curl
     reject_direct_wan_ip: true
+    # Discover the server's current direct public IP using the same endpoint
+    # without a proxy. For multi-WAN systems, list any additional public WAN
+    # addresses in direct_ips so a leak through either ISP is rejected.
+    auto_discover_direct_ip: true
+    direct_ips: []
 
 engine:
   backend: sing-box
