@@ -1,0 +1,101 @@
+import unittest
+
+from proxyfilter.ingest import parse_uri
+from proxyfilter.model import ProxyConfig, SourceInfo
+from proxyfilter.render import format_output_name, render_proxy, render_uri, validate_round_trip
+
+
+SOURCE = SourceInfo("test", "Test source", "plain")
+
+
+class RenderTests(unittest.TestCase):
+    def _round_trip(self, uri: str) -> str:
+        proxy = parse_uri(uri, SOURCE)
+        rendered = render_uri(proxy, "RENAMED")
+        validate_round_trip(proxy, rendered)
+        reparsed = parse_uri(rendered, SOURCE)
+        self.assertEqual(reparsed.name, "RENAMED")
+        return rendered
+
+    def test_vless_round_trip(self):
+        rendered = self._round_trip(
+            "vless://4054fdc2-ee80-4419-8a8e-d937df4719e2@203.0.113.10:443"
+            "?security=reality&type=tcp&sni=example.com&fp=chrome&flow=xtls-rprx-vision#old"
+        )
+        self.assertTrue(rendered.startswith("vless://"))
+
+    def test_vmess_round_trip(self):
+        proxy = ProxyConfig(
+            SOURCE,
+            "vmess",
+            "203.0.113.20",
+            443,
+            "old",
+            {
+                "v": "2",
+                "id": "1281acca-f21d-475c-bf04-eccbee7f8df2",
+                "aid": "0",
+                "scy": "auto",
+                "net": "ws",
+                "path": "/vmess-ws",
+                "host": "example.com",
+                "tls": "tls",
+                "sni": "example.com",
+            },
+            "vmess-uri",
+            "",
+        )
+        rendered = render_uri(proxy, "RENAMED")
+        validate_round_trip(proxy, rendered)
+        self.assertTrue(rendered.startswith("vmess://"))
+
+    def test_trojan_round_trip(self):
+        self._round_trip(
+            "trojan://secret@example.com:443?security=tls&sni=example.com&type=ws&path=%2Fws#old"
+        )
+
+    def test_hysteria2_round_trip(self):
+        self._round_trip(
+            "hysteria2://secret@example.com:443?sni=example.com&insecure=0#old"
+        )
+
+    def test_tuic_round_trip(self):
+        self._round_trip(
+            "tuic://550e8400-e29b-41d4-a716-446655440000:secret@example.com:443"
+            "?congestion_control=bbr&alpn=h3#old"
+        )
+
+    def test_shadowsocks_round_trip(self):
+        self._round_trip(
+            "ss://YWVzLTI1Ni1nY206c2VjcmV0@203.0.113.30:8388"
+            "?plugin=v2ray-plugin%3Btls%3Bhost%3Dexample.com#old"
+        )
+
+    def test_typed_query_value_is_rejected_instead_of_guessed(self):
+        proxy = ProxyConfig(
+            SOURCE,
+            "vless",
+            "203.0.113.40",
+            443,
+            "old",
+            {"uuid": "550e8400-e29b-41d4-a716-446655440000", "allowInsecure": False},
+        )
+        result = render_proxy(proxy, rename_template="{flag} {country_code}")
+        self.assertFalse(result.ok)
+        self.assertIn("cannot be represented losslessly", result.error or "")
+
+    def test_output_name_uses_geo_and_metrics(self):
+        proxy = ProxyConfig(SOURCE, "ss", "203.0.113.50", 8388, "old", {"method": "aes-256-gcm", "password": "secret"})
+        proxy.tests.geo = {"flag": "🇳🇱", "country_code": "NL", "country": "Netherlands", "asn": 64500, "org": "Example", "isp": "Example"}
+        proxy.tests.latency_ms = 172.6
+        proxy.tests.download_mbps = 181.6
+        proxy.tests.upload_mbps = 123.2
+        name = format_output_name(
+            proxy,
+            template="{flag} {country_code} | {latency_ms}ms | ↓{download_mbps} ↑{upload_mbps} | {source}",
+        )
+        self.assertEqual(name, "🇳🇱 NL | 173ms | ↓182 ↑123 | test")
+
+
+if __name__ == "__main__":
+    unittest.main()
