@@ -18,6 +18,7 @@ STAGE_ORDER = (
     "exit-ip",
     "geo",
     "render",
+    "publish",
 )
 
 STAGE_FILES = {
@@ -32,6 +33,7 @@ STAGE_FILES = {
     "exit-ip": "09-exit-ip-ok.jsonl",
     "geo": "10-geo.jsonl",
     "render": "11-render-ok.jsonl",
+    "publish": "12-published.jsonl",
 }
 
 
