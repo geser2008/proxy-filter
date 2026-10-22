@@ -38,8 +38,21 @@ filters:
       - https://cachefly.cachefly.net/100mb.test
     download_fallback_http_codes:
       - 429
+
+    # Upload uses Cloudflare's public upload endpoint. If an upload ends after
+    # only an interim HTTP 100 response, retry once against the same URL with
+    # the Expect header disabled. Optional fallback URLs can then be tried for
+    # another interim-100 failure or the configured HTTP status codes.
     upload_url: https://speed.cloudflare.com/__up
     upload_bytes: 20000000
+    upload_fallback_urls: []
+    upload_fallback_http_codes:
+      - 429
+      - 500
+      - 502
+      - 503
+      - 504
+
     timeout_seconds: 30
     min_download_mbps: 100
     min_upload_mbps: 30
