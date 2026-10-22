@@ -15,6 +15,7 @@ from proxyfilter.singbox_backend import SingBoxBackend
 from proxyfilter.ingest import detect_and_parse
 from proxyfilter.io import fetch_url, write_json, write_jsonl
 from proxyfilter.probes import check_latency_many
+from proxyfilter.render import render_proxy
 from proxyfilter.resume import STAGE_ORDER, load_stage, stage_index, stage_should_run, validate_resume_range
 from proxyfilter.security import check_static_security
 from proxyfilter.speed import check_download_many, check_upload_many
@@ -297,6 +298,38 @@ def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from:
         geo_errors = len(geo_ok) - geo_success - geo_unknown
         print(f"[{source_id}] geo_ok={geo_success} unknown={geo_unknown} errors={geo_errors}")
         current = geo_ok
+        if until == "geo":
+            return current
+
+    if stage_should_run("render", resume_from):
+        output_cfg = cfg.get("output", {})
+        rename_template = str(output_cfg.get("rename_template", "{flag} [{source}] {name}"))
+        include_original_name = bool(output_cfg.get("include_original_name", True))
+        render_ok, render_rejected = [], []
+
+        for proxy in current:
+            result = render_proxy(
+                proxy,
+                rename_template=rename_template,
+                include_original_name=include_original_name,
+            )
+            proxy.tests.render = {
+                "status": "pass" if result.ok else "fail",
+                "name": result.name,
+                "uri": result.uri,
+                "error": result.error,
+            }
+            if result.ok:
+                proxy.tests.status = "render_pass"
+                render_ok.append(proxy)
+            else:
+                proxy.tests.status = "rejected_render"
+                render_rejected.append(proxy)
+
+        write_jsonl(work / "11-render-ok.jsonl", render_ok)
+        write_jsonl(work / "11-rejected-render.jsonl", render_rejected)
+        print(f"[{source_id}] render_pass={len(render_ok)} rejected={len(render_rejected)}")
+        current = render_ok
 
     return current
 
@@ -390,7 +423,7 @@ def main() -> int:
         merged.sort(key=lambda proxy: proxy.tests.upload_mbps if proxy.tests.upload_mbps is not None else -1, reverse=True)
     elif args.until == "exit-ip":
         merged.sort(key=lambda proxy: (proxy.tests.exit_ip is None, proxy.tests.exit_ip or "", -(proxy.tests.download_mbps or 0)))
-    elif args.until == "geo":
+    elif args.until in {"geo", "render"}:
         merged.sort(
             key=lambda proxy: (
                 proxy.tests.geo.get("country_code") or "ZZ",
