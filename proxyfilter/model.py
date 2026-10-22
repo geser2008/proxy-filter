@@ -33,6 +33,12 @@ class TestState:
         "isp": None,
         "error": None,
     })
+    render: dict[str, Any] = field(default_factory=lambda: {
+        "status": "pending",
+        "name": None,
+        "uri": None,
+        "error": None,
+    })
     latency_ms: float | None = None
     download_mbps: float | None = None
     upload_mbps: float | None = None
@@ -115,6 +121,12 @@ class ProxyConfig:
                 "asn": None,
                 "org": None,
                 "isp": None,
+                "error": None,
+            }),
+            render=tests_data.get("render", {
+                "status": "pending",
+                "name": None,
+                "uri": None,
                 "error": None,
             }),
             latency_ms=tests_data.get("latency_ms"),
