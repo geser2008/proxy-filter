@@ -115,15 +115,81 @@ class SpeedProbeTests(unittest.TestCase):
         self.assertFalse(probe.call_args_list[0].kwargs["disable_expect"])
         self.assertTrue(probe.call_args_list[1].kwargs["disable_expect"])
 
-    def test_upload_socks_failure_is_not_retried(self):
+    def test_upload_zero_byte_transport_failure_retries_once(self):
         proxy = ProxyConfig(SourceInfo("test", "test"), "vless", "127.0.0.1", 443)
-        response = SpeedResult(False, http_code=0, error="SOCKS failure", url="https://primary.example/up")
+        responses = [
+            SpeedResult(
+                False,
+                bytes_transferred=0,
+                http_code=0,
+                error="curl: (97) cannot complete SOCKS5 connection",
+                url="https://primary.example/up",
+            ),
+            SpeedResult(
+                True,
+                mbps=80.0,
+                bytes_transferred=20_000_000,
+                time_seconds=2.0,
+                http_code=200,
+                url="https://primary.example/up",
+            ),
+        ]
+        with patch("proxyfilter.speed._upload_one", side_effect=responses) as probe:
+            result = _upload_with_fallbacks(
+                proxy,
+                object(),
+                url="https://primary.example/up",
+                fallback_urls=[],
+                fallback_http_codes={429, 500, 502, 503, 504},
+                payload_path=Path("/tmp/payload"),
+                timeout=30,
+                curl_command="curl",
+            )
+        self.assertTrue(result.ok)
+        self.assertEqual(len(result.attempts), 2)
+        self.assertEqual(probe.call_count, 2)
+        self.assertEqual(probe.call_args_list[0].kwargs["disable_expect"], False)
+        self.assertEqual(probe.call_args_list[1].kwargs["disable_expect"], False)
+
+    def test_upload_zero_byte_transport_failure_only_retries_once(self):
+        proxy = ProxyConfig(SourceInfo("test", "test"), "ss", "127.0.0.1", 443)
+        response = SpeedResult(
+            False,
+            bytes_transferred=0,
+            http_code=0,
+            error="curl: (28) timeout with 0 bytes received",
+            url="https://primary.example/up",
+        )
         with patch("proxyfilter.speed._upload_one", return_value=response) as probe:
             result = _upload_with_fallbacks(
                 proxy,
                 object(),
                 url="https://primary.example/up",
-                fallback_urls=["https://fallback.example/up"],
+                fallback_urls=[],
+                fallback_http_codes={429, 500, 502, 503, 504},
+                payload_path=Path("/tmp/payload"),
+                timeout=30,
+                curl_command="curl",
+            )
+        self.assertFalse(result.ok)
+        self.assertEqual(len(result.attempts), 2)
+        self.assertEqual(probe.call_count, 2)
+
+    def test_upload_http_failure_is_not_transport_retried(self):
+        proxy = ProxyConfig(SourceInfo("test", "test"), "vless", "127.0.0.1", 443)
+        response = SpeedResult(
+            False,
+            bytes_transferred=0,
+            http_code=403,
+            error="HTTP 403",
+            url="https://primary.example/up",
+        )
+        with patch("proxyfilter.speed._upload_one", return_value=response) as probe:
+            result = _upload_with_fallbacks(
+                proxy,
+                object(),
+                url="https://primary.example/up",
+                fallback_urls=[],
                 fallback_http_codes={429, 500, 502, 503, 504},
                 payload_path=Path("/tmp/payload"),
                 timeout=30,
