@@ -78,6 +78,16 @@ filters:
     auto_discover_direct_ip: true
     direct_ips: []
 
+  # GeoIP is enrichment, not a rejection stage. Proxies with unknown exit IP
+  # or a failed metadata lookup remain in the survivor set with geo status
+  # unknown/error. Lookups are deduplicated by exit IP.
+  geo:
+    provider: ipwhois
+    url_template: https://ipwho.is/{ip}
+    timeout_seconds: 8
+    workers: 4
+    command: curl
+
 engine:
   backend: sing-box
   command: sing-box
