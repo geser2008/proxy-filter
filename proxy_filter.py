@@ -218,6 +218,7 @@ def process_source(source, cfg, data_dir: Path, until: str, engine):
     exit_workers = int(exit_cfg.get("workers", 4))
     exit_curl = str(exit_cfg.get("command", "curl"))
     reject_direct = bool(exit_cfg.get("reject_direct_wan_ip", True))
+    reject_unknown = bool(exit_cfg.get("reject_unknown_exit_ip", False))
     direct_ips = set(_as_string_list(exit_cfg.get("direct_ips", [])))
 
     if reject_direct and bool(exit_cfg.get("auto_discover_direct_ip", True)):
@@ -233,13 +234,18 @@ def process_source(source, cfg, data_dir: Path, until: str, engine):
         url=exit_url,
         timeout=exit_timeout,
         reject_direct_wan_ip=reject_direct,
+        reject_unknown_exit_ip=reject_unknown,
         direct_ips=direct_ips,
         workers=exit_workers,
         curl_command=exit_curl,
     )
     write_jsonl(work / "09-exit-ip-ok.jsonl", exit_ok)
     write_jsonl(work / "09-rejected-exit-ip.jsonl", exit_rejected)
-    print(f"[{source_id}] exit_ip_pass={len(exit_ok)} rejected={len(exit_rejected)}")
+    unknown_count = sum(1 for proxy in exit_ok if proxy.tests.exit_ip is None)
+    print(
+        f"[{source_id}] exit_ip_pass={len(exit_ok) - unknown_count} "
+        f"unknown={unknown_count} rejected={len(exit_rejected)}"
+    )
     return exit_ok
 
 
@@ -321,7 +327,7 @@ def main() -> int:
     elif args.until == "upload":
         merged.sort(key=lambda proxy: proxy.tests.upload_mbps if proxy.tests.upload_mbps is not None else -1, reverse=True)
     elif args.until == "exit-ip":
-        merged.sort(key=lambda proxy: (proxy.tests.exit_ip or "", -(proxy.tests.download_mbps or 0)))
+        merged.sort(key=lambda proxy: (proxy.tests.exit_ip is None, proxy.tests.exit_ip or "", -(proxy.tests.download_mbps or 0)))
     write_jsonl(data_dir / "work" / "all" / f"{args.until}.jsonl", merged)
     write_json(data_dir / "reports" / "summary.json", summary)
     print(f"[all] survivors={len(merged)} cross_source_duplicates={len(duplicates)}")
