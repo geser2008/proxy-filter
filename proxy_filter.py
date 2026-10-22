@@ -45,6 +45,19 @@ def build_engine(cfg, data_dir: Path):
     )
 
 
+def _as_string_list(value):
+    if isinstance(value, str):
+        return [value] if value else []
+    return [str(item) for item in (value or []) if str(item)]
+
+
+def _as_int_set(value, default):
+    raw = default if value is None else value
+    if isinstance(raw, (int, str)):
+        raw = [raw]
+    return {int(item) for item in (raw or [])}
+
+
 def process_source(source, cfg, data_dir: Path, until: str, engine):
     source_id = source["id"]
     source_name = source.get("name", source_id)
@@ -154,16 +167,8 @@ def process_source(source, cfg, data_dir: Path, until: str, engine):
     speed_workers = int(speed_cfg.get("workers", 1))
     speed_curl = str(speed_cfg.get("command", "curl"))
 
-    fallback_urls_raw = speed_cfg.get("download_fallback_urls", [])
-    if isinstance(fallback_urls_raw, str):
-        download_fallback_urls = [fallback_urls_raw] if fallback_urls_raw else []
-    else:
-        download_fallback_urls = [str(item) for item in (fallback_urls_raw or []) if str(item)]
-
-    fallback_codes_raw = speed_cfg.get("download_fallback_http_codes", [429])
-    if isinstance(fallback_codes_raw, (int, str)):
-        fallback_codes_raw = [fallback_codes_raw]
-    download_fallback_http_codes = {int(item) for item in (fallback_codes_raw or [])}
+    download_fallback_urls = _as_string_list(speed_cfg.get("download_fallback_urls", []))
+    download_fallback_http_codes = _as_int_set(speed_cfg.get("download_fallback_http_codes"), [429])
 
     download_ok, download_rejected = check_download_many(
         latency_ok,
@@ -182,6 +187,12 @@ def process_source(source, cfg, data_dir: Path, until: str, engine):
     if until == "download":
         return download_ok
 
+    upload_fallback_urls = _as_string_list(speed_cfg.get("upload_fallback_urls", []))
+    upload_fallback_http_codes = _as_int_set(
+        speed_cfg.get("upload_fallback_http_codes"),
+        [429, 500, 502, 503, 504],
+    )
+
     upload_ok, upload_rejected = check_upload_many(
         download_ok,
         engine,
@@ -191,6 +202,8 @@ def process_source(source, cfg, data_dir: Path, until: str, engine):
         min_mbps=float(speed_cfg.get("min_upload_mbps", 10)),
         workers=speed_workers,
         curl_command=speed_curl,
+        fallback_urls=upload_fallback_urls,
+        fallback_http_codes=upload_fallback_http_codes,
     )
     write_jsonl(work / "08-upload-ok.jsonl", upload_ok)
     write_jsonl(work / "08-rejected-upload.jsonl", upload_rejected)
