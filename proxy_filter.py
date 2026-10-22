@@ -10,6 +10,7 @@ import yaml
 from proxyfilter.batch_latency import check_latency_batched
 from proxyfilter.debug_latency import debug_latency_proxy, find_proxy_in_work
 from proxyfilter.exit_ip import check_exit_ip_many, discover_direct_ip
+from proxyfilter.geoip import enrich_geo_many
 from proxyfilter.singbox_backend import SingBoxBackend
 from proxyfilter.ingest import detect_and_parse
 from proxyfilter.io import fetch_url, write_json, write_jsonl
@@ -246,14 +247,31 @@ def process_source(source, cfg, data_dir: Path, until: str, engine):
         f"[{source_id}] exit_ip_pass={len(exit_ok) - unknown_count} "
         f"unknown={unknown_count} rejected={len(exit_rejected)}"
     )
-    return exit_ok
+    if until == "exit-ip":
+        return exit_ok
+
+    geo_cfg = cfg.get("filters", {}).get("geo", {})
+    geo_ok = enrich_geo_many(
+        exit_ok,
+        provider=str(geo_cfg.get("provider", "ipwhois")),
+        url_template=str(geo_cfg.get("url_template", "https://ipwho.is/{ip}")),
+        timeout=float(geo_cfg.get("timeout_seconds", 8)),
+        workers=int(geo_cfg.get("workers", 4)),
+        curl_command=str(geo_cfg.get("command", "curl")),
+    )
+    write_jsonl(work / "10-geo.jsonl", geo_ok)
+    geo_success = sum(1 for proxy in geo_ok if proxy.tests.geo.get("status") == "ok")
+    geo_unknown = sum(1 for proxy in geo_ok if proxy.tests.geo.get("status") == "unknown")
+    geo_errors = len(geo_ok) - geo_success - geo_unknown
+    print(f"[{source_id}] geo_ok={geo_success} unknown={geo_unknown} errors={geo_errors}")
+    return geo_ok
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Filter public proxy subscriptions")
     parser.add_argument(
         "--until",
-        choices=("parse", "dedup", "security", "tcp", "core", "latency", "download", "upload", "exit-ip"),
+        choices=("parse", "dedup", "security", "tcp", "core", "latency", "download", "upload", "exit-ip", "geo"),
         default="core",
     )
     parser.add_argument("--config", required=True)
@@ -301,7 +319,7 @@ def main() -> int:
             print(f"[debug] error={result.get('error')}")
         return 0
 
-    engine = build_engine(cfg, data_dir) if args.until in {"core", "latency", "download", "upload", "exit-ip"} else None
+    engine = build_engine(cfg, data_dir) if args.until in {"core", "latency", "download", "upload", "exit-ip", "geo"} else None
     if engine is not None:
         print("[engine] " + engine.version().splitlines()[0])
 
@@ -328,6 +346,14 @@ def main() -> int:
         merged.sort(key=lambda proxy: proxy.tests.upload_mbps if proxy.tests.upload_mbps is not None else -1, reverse=True)
     elif args.until == "exit-ip":
         merged.sort(key=lambda proxy: (proxy.tests.exit_ip is None, proxy.tests.exit_ip or "", -(proxy.tests.download_mbps or 0)))
+    elif args.until == "geo":
+        merged.sort(
+            key=lambda proxy: (
+                proxy.tests.geo.get("country_code") or "ZZ",
+                proxy.tests.exit_ip is None,
+                proxy.tests.exit_ip or "",
+            )
+        )
     write_jsonl(data_dir / "work" / "all" / f"{args.until}.jsonl", merged)
     write_json(data_dir / "reports" / "summary.json", summary)
     print(f"[all] survivors={len(merged)} cross_source_duplicates={len(duplicates)}")
