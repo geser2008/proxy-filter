@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import subprocess
 import tempfile
+from urllib.parse import parse_qs, urlsplit
 
 from .engine import EngineBackend, EngineError
 from .model import ProxyConfig
@@ -20,6 +21,8 @@ class SpeedResult:
     error: str | None = None
     url: str | None = None
     expect_disabled: bool = False
+    expected_bytes: int | None = None
+    payload_valid: bool | None = None
     attempts: list[dict] = field(default_factory=list)
 
 
@@ -54,12 +57,46 @@ def _mbps(size_bytes: int, elapsed_seconds: float) -> float:
     return (float(size_bytes) * 8.0) / elapsed_seconds / 1_000_000.0
 
 
+def _expected_download_bytes(url: str) -> int | None:
+    """Return a trustworthy expected payload size for known speed-test URLs.
+
+    Cloudflare explicitly declares the requested byte count in ``__down?bytes=N``.
+    CacheFly currently serves both ``50mb.test`` and ``100mb.test`` as the same
+    100 MiB object (104857600 bytes). Unknown endpoints keep the historical
+    behavior and are not size-validated.
+    """
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return None
+
+    host = (parsed.hostname or "").lower()
+    if host == "speed.cloudflare.com" and parsed.path == "/__down":
+        values = parse_qs(parsed.query).get("bytes", [])
+        if len(values) == 1:
+            try:
+                expected = int(values[0])
+            except ValueError:
+                return None
+            return expected if expected > 0 else None
+
+    if host == "cachefly.cachefly.net" and parsed.path.rsplit("/", 1)[-1].lower() in {
+        "50mb.test",
+        "100mb.test",
+    }:
+        return 100 * 1024 * 1024
+
+    return None
+
+
 def _attempt_dict(result: SpeedResult) -> dict:
     return {
         "url": result.url,
         "ok": result.ok,
         "mbps": result.mbps,
         "bytes": result.bytes_transferred,
+        "expected_bytes": result.expected_bytes,
+        "payload_valid": result.payload_valid,
         "time_seconds": result.time_seconds,
         "http_code": result.http_code,
         "error": result.error,
@@ -76,6 +113,7 @@ def _download_one(
     curl_command: str,
 ) -> SpeedResult:
     session = None
+    expected_bytes = _expected_download_bytes(url)
     try:
         session = engine.start(proxy)
         proc = subprocess.run(
@@ -110,11 +148,32 @@ def _download_one(
                 http_code=http_code,
                 error=error,
                 url=url,
+                expected_bytes=expected_bytes,
             )
         size, elapsed, http_code = _parse_curl_metrics(proc.stdout)
-        return SpeedResult(True, _mbps(size, elapsed), size, elapsed, http_code, url=url)
+        if expected_bytes is not None and size != expected_bytes:
+            return SpeedResult(
+                False,
+                bytes_transferred=size,
+                time_seconds=elapsed,
+                http_code=http_code,
+                error=f"invalid download payload: expected {expected_bytes} bytes, received {size}",
+                url=url,
+                expected_bytes=expected_bytes,
+                payload_valid=False,
+            )
+        return SpeedResult(
+            True,
+            _mbps(size, elapsed),
+            size,
+            elapsed,
+            http_code,
+            url=url,
+            expected_bytes=expected_bytes,
+            payload_valid=True if expected_bytes is not None else None,
+        )
     except (EngineError, subprocess.TimeoutExpired, OSError, ValueError) as exc:
-        return SpeedResult(False, error=str(exc), url=url)
+        return SpeedResult(False, error=str(exc), url=url, expected_bytes=expected_bytes)
     finally:
         if session is not None:
             engine.stop(session)
@@ -148,14 +207,16 @@ def _download_with_fallbacks(
             result.attempts = attempts
             return result
 
-        if result.http_code not in fallback_http_codes:
+        retryable = result.payload_valid is False or result.http_code in fallback_http_codes
+        if not retryable:
             result.attempts = attempts
             return result
 
         if index + 1 < len(urls):
+            reason = "invalid_payload" if result.payload_valid is False else f"http={result.http_code}"
             print(
                 f"[download] fallback proxy={proxy.ensure_id()[:12]} "
-                f"http={result.http_code} next={urls[index + 1]}"
+                f"reason={reason} next={urls[index + 1]}"
             )
 
     assert result is not None
@@ -420,6 +481,8 @@ def check_download_many(
             "status": "pass" if threshold_ok else "fail",
             "mbps": result.mbps,
             "bytes": result.bytes_transferred,
+            "expected_bytes": result.expected_bytes,
+            "payload_valid": result.payload_valid,
             "time_seconds": result.time_seconds,
             "http_code": result.http_code,
             "error": result.error,
