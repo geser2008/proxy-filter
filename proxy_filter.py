@@ -18,22 +18,18 @@ from proxyfilter.source_config import merged_config
 deduplicate = cli.deduplicate
 
 
+DEFAULT_CONFIG_PATH = "/srv/proxy-filter/config/config.yaml"
+DEFAULT_SOURCES_PATH = "/srv/proxy-filter/config/sources.yaml"
+
+
 def main() -> int:
     # This parser only peels off launcher-owned options. Abbreviation must be
     # disabled so the pipeline option `--source` is not mistaken for
     # launcher-owned `--sources`.
     pre_parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
-    pre_parser.add_argument("--config")
-    pre_parser.add_argument("--sources")
+    pre_parser.add_argument("--config", default=DEFAULT_CONFIG_PATH)
+    pre_parser.add_argument("--sources", default=DEFAULT_SOURCES_PATH)
     known, remaining = pre_parser.parse_known_args()
-
-    # Backward-compatible path: let the existing CLI handle everything exactly
-    # as before when sources are still embedded in config.yaml.
-    if not known.sources:
-        return cli.main()
-
-    if not known.config:
-        pre_parser.error("--config is required when --sources is used")
 
     try:
         cfg = merged_config(Path(known.config), Path(known.sources))
@@ -54,7 +50,11 @@ def main() -> int:
 
         # The package CLI remains the single implementation of the pipeline.
         # It receives a temporary merged config, while all other arguments are
-        # passed through unchanged.
+        # passed through unchanged. A no-argument launch performs the complete
+        # pipeline through publication.
+        if "--until" not in remaining:
+            remaining = [*remaining, "--until", "publish"]
+
         sys.argv = [sys.argv[0], "--config", tmp_path, *remaining]
         return cli.main()
     finally:
