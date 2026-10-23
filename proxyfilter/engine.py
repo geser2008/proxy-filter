@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import socket
@@ -53,36 +54,57 @@ class EngineBackend(Protocol):
 
 
 def _truthy(value: Any) -> bool:
+    """Convert only explicit boolean forms; never guess an invalid value as False."""
     if isinstance(value, bool):
         return value
-    if value is None:
+    if isinstance(value, int) and value in {0, 1}:
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
         return False
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+    raise EngineError(f"invalid boolean value: {value!r}")
 
 
 def _list_value(value: Any) -> list[str]:
-    if value is None or value == "":
+    if value is None:
         return []
     if isinstance(value, list):
-        return [str(v) for v in value if str(v)]
-    return [v.strip() for v in str(value).split(",") if v.strip()]
+        return [str(v) for v in value]
+    return [v.strip() for v in str(value).split(",")]
 
 
 def _first(params: dict[str, Any], *keys: str, default: Any = None) -> Any:
+    """Return the first present alias, including explicit empty/null values."""
     for key in keys:
-        if key in params and params[key] not in (None, ""):
+        if key in params:
             return params[key]
     return default
+
+
+def _has_any(params: dict[str, Any], *keys: str) -> bool:
+    return any(key in params for key in keys)
+
+
+def _integer_or_original(value: Any) -> Any:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and re.fullmatch(r"[+-]?\d+", value.strip()):
+        return int(value.strip())
+    return value
 
 
 class SingBoxBackend:
     """Temporary sing-box worker backend.
 
-    Tested target: sing-box 1.14.x.  Input conversion intentionally supports the
-    common URI/Clash forms and passes native sing-box outbounds through almost
-    verbatim.  ``sing-box check`` is the final compatibility authority: an
-    upstream profile that cannot be represented safely is rejected before any
-    network probe is run.
+    Tested target: sing-box 1.14.x. Input conversion supports common URI/Clash
+    forms and passes native sing-box outbounds through almost verbatim. Source
+    values are not repaired or replaced with guessed defaults. ``sing-box check``
+    is the final compatibility authority whenever a source field has a lossless
+    target representation.
     """
 
     def __init__(
@@ -130,7 +152,7 @@ class SingBoxBackend:
     def start(self, proxy: ProxyConfig) -> EngineSession:
         runtime = self._new_runtime(proxy)
         config_path = runtime / "config.json"
-        log_path = runtime / "sing-box.log"
+        log_path = runtime / "singbox.log"
         port = self._free_port()
         self._write_config(config_path, proxy, port)
 
@@ -231,8 +253,9 @@ class SingBoxBackend:
         if protocol == "hy2":
             protocol = "hysteria2"
 
-        # Native sing-box input: preserve supported fields and only restore the
-        # canonical endpoint/tag fields removed by ingest.
+        # Native sing-box input: preserve fields and only restore the canonical
+        # endpoint/tag fields removed by ingest. domain_resolver belongs to the
+        # isolated probe environment, not to source-profile repair.
         if proxy.original_format == "sing-box":
             out = dict(p)
             out.update(
@@ -246,104 +269,88 @@ class SingBoxBackend:
             out.setdefault("domain_resolver", "dns-direct")
             return out
 
+        base = {
+            "type": protocol if protocol != "ss" else "shadowsocks",
+            "tag": "proxy-out",
+            "server": proxy.server,
+            "server_port": proxy.port,
+        }
+
         if protocol == "vless":
-            out: dict[str, Any] = {
-                "type": "vless",
-                "tag": "proxy-out",
-                "server": proxy.server,
-                "server_port": proxy.port,
-                "uuid": str(_first(p, "uuid", default="")),
-            }
-            flow = _first(p, "flow")
-            if flow:
-                out["flow"] = str(flow)
+            out: dict[str, Any] = dict(base)
+            if "uuid" in p:
+                out["uuid"] = p["uuid"]
+            if "flow" in p:
+                out["flow"] = p["flow"]
             self._apply_tls(out, p, protocol)
             self._apply_transport(out, p)
 
         elif protocol == "vmess":
-            out = {
-                "type": "vmess",
-                "tag": "proxy-out",
-                "server": proxy.server,
-                "server_port": proxy.port,
-                "uuid": str(_first(p, "uuid", "id", default="")),
-                "security": str(_first(p, "security", "scy", "cipher", default="auto")),
-                "alter_id": int(_first(p, "alter_id", "alterId", "aid", default=0) or 0),
-            }
+            out = dict(base)
+            if _has_any(p, "uuid", "id"):
+                out["uuid"] = _first(p, "uuid", "id")
+            if _has_any(p, "security", "scy", "cipher"):
+                out["security"] = _first(p, "security", "scy", "cipher")
+            if _has_any(p, "alter_id", "alterId", "aid"):
+                out["alter_id"] = _integer_or_original(_first(p, "alter_id", "alterId", "aid"))
             self._apply_tls(out, p, protocol)
             self._apply_transport(out, p)
 
         elif protocol == "trojan":
-            out = {
-                "type": "trojan",
-                "tag": "proxy-out",
-                "server": proxy.server,
-                "server_port": proxy.port,
-                "password": str(_first(p, "password", default="")),
-            }
-            # Trojan normally requires TLS even when the URI omits security=tls.
+            out = dict(base)
+            if "password" in p:
+                out["password"] = p["password"]
+            # TLS is protocol-implied for Trojan; enabling it is format translation,
+            # not a guessed replacement for a source parameter.
             self._apply_tls(out, p, protocol, default_enabled=True)
             self._apply_transport(out, p)
 
         elif protocol == "ss":
-            out = {
-                "type": "shadowsocks",
-                "tag": "proxy-out",
-                "server": proxy.server,
-                "server_port": proxy.port,
-                "method": str(_first(p, "method", "cipher", default="")),
-                "password": str(_first(p, "password", default="")),
-            }
-            plugin = _first(p, "plugin")
-            if plugin:
-                plugin_text = str(plugin)
-                if ";" in plugin_text and not _first(p, "plugin_opts", "plugin-opts"):
-                    name, opts = plugin_text.split(";", 1)
+            out = dict(base)
+            if _has_any(p, "method", "cipher"):
+                out["method"] = _first(p, "method", "cipher")
+            if "password" in p:
+                out["password"] = p["password"]
+            if "plugin" in p:
+                plugin = p["plugin"]
+                if isinstance(plugin, str) and ";" in plugin and not _has_any(p, "plugin_opts", "plugin-opts"):
+                    name, opts = plugin.split(";", 1)
                     out["plugin"] = name
                     out["plugin_opts"] = opts
                 else:
-                    out["plugin"] = plugin_text
-                    opts = _first(p, "plugin_opts", "plugin-opts")
-                    if opts:
-                        out["plugin_opts"] = str(opts)
+                    out["plugin"] = plugin
+                    if _has_any(p, "plugin_opts", "plugin-opts"):
+                        out["plugin_opts"] = _first(p, "plugin_opts", "plugin-opts")
 
         elif protocol == "hysteria2":
-            out = {
-                "type": "hysteria2",
-                "tag": "proxy-out",
-                "server": proxy.server,
-                "server_port": proxy.port,
-                "password": str(_first(p, "password", "auth", default="")),
-            }
-            up = _first(p, "up_mbps", "up-mbps")
-            down = _first(p, "down_mbps", "down-mbps")
-            if up not in (None, ""):
-                out["up_mbps"] = int(float(up))
-            if down not in (None, ""):
-                out["down_mbps"] = int(float(down))
-            obfs_type = _first(p, "obfs")
-            obfs_password = _first(p, "obfs-password", "obfs_password")
-            if isinstance(obfs_type, dict):
-                out["obfs"] = obfs_type
-            elif obfs_type and obfs_password:
-                out["obfs"] = {"type": str(obfs_type), "password": str(obfs_password)}
+            out = dict(base)
+            if _has_any(p, "password", "auth"):
+                out["password"] = _first(p, "password", "auth")
+            if _has_any(p, "up_mbps", "up-mbps"):
+                out["up_mbps"] = _integer_or_original(_first(p, "up_mbps", "up-mbps"))
+            if _has_any(p, "down_mbps", "down-mbps"):
+                out["down_mbps"] = _integer_or_original(_first(p, "down_mbps", "down-mbps"))
+            if "obfs" in p:
+                obfs_type = p["obfs"]
+                if isinstance(obfs_type, dict):
+                    out["obfs"] = dict(obfs_type)
+                elif _has_any(p, "obfs-password", "obfs_password"):
+                    out["obfs"] = {
+                        "type": obfs_type,
+                        "password": _first(p, "obfs-password", "obfs_password"),
+                    }
             self._apply_tls(out, p, protocol, default_enabled=True)
 
         elif protocol == "tuic":
-            out = {
-                "type": "tuic",
-                "tag": "proxy-out",
-                "server": proxy.server,
-                "server_port": proxy.port,
-                "uuid": str(_first(p, "uuid", default="")),
-                "password": str(_first(p, "password", default="")),
-            }
-            cc = _first(p, "congestion_control", "congestion-controller", "congestion_control")
-            if cc:
-                out["congestion_control"] = str(cc)
-            udp_relay = _first(p, "udp_relay_mode", "udp-relay-mode")
-            if udp_relay:
-                out["udp_relay_mode"] = str(udp_relay)
+            out = dict(base)
+            if "uuid" in p:
+                out["uuid"] = p["uuid"]
+            if "password" in p:
+                out["password"] = p["password"]
+            if _has_any(p, "congestion_control", "congestion-controller"):
+                out["congestion_control"] = _first(p, "congestion_control", "congestion-controller")
+            if _has_any(p, "udp_relay_mode", "udp-relay-mode"):
+                out["udp_relay_mode"] = _first(p, "udp_relay_mode", "udp-relay-mode")
             self._apply_tls(out, p, protocol, default_enabled=True)
 
         else:
@@ -359,44 +366,50 @@ class SingBoxBackend:
         protocol: str,
         default_enabled: bool = False,
     ) -> None:
-        native_tls = p.get("tls")
-        if isinstance(native_tls, dict):
-            tls = dict(native_tls)
-            tls.setdefault("enabled", True)
-            out["tls"] = tls
+        if isinstance(p.get("tls"), dict):
+            out["tls"] = dict(p["tls"])
             return
 
-        security = str(_first(p, "security", default="")).lower()
-        enabled = default_enabled or security in {"tls", "reality"} or _truthy(native_tls)
+        security_value = _first(p, "security", default="")
+        security = "" if security_value is None else str(security_value).lower()
+        native_tls_present = "tls" in p
+        native_tls = p.get("tls")
+        native_tls_text = "" if native_tls is None else str(native_tls).strip().lower()
+        enabled = default_enabled or security in {"tls", "reality"} or native_tls_text in {"tls", "reality"}
+        if native_tls_present and native_tls_text not in {"tls", "reality"}:
+            enabled = _truthy(native_tls) or enabled
         if not enabled:
             return
 
         tls: dict[str, Any] = {"enabled": True}
-        server_name = _first(p, "sni", "server_name", "servername", "server-name")
-        if server_name:
-            tls["server_name"] = str(server_name)
+        if _has_any(p, "sni", "server_name", "servername", "server-name"):
+            tls["server_name"] = _first(p, "sni", "server_name", "servername", "server-name")
 
-        insecure = _first(p, "allowInsecure", "allow_insecure", "skip-cert-verify", "insecure")
-        if insecure is not None:
-            tls["insecure"] = _truthy(insecure)
+        if _has_any(p, "allowInsecure", "allow_insecure", "skip-cert-verify", "insecure"):
+            tls["insecure"] = _truthy(
+                _first(p, "allowInsecure", "allow_insecure", "skip-cert-verify", "insecure")
+            )
 
-        alpn = _list_value(_first(p, "alpn"))
-        if alpn:
-            tls["alpn"] = alpn
+        if "alpn" in p:
+            tls["alpn"] = _list_value(p["alpn"])
 
-        fp = _first(p, "fp", "client-fingerprint", "fingerprint")
-        if fp and str(fp).lower() not in {"", "none"}:
-            tls["utls"] = {"enabled": True, "fingerprint": str(fp)}
+        if _has_any(p, "fp", "client-fingerprint", "fingerprint"):
+            tls["utls"] = {
+                "enabled": True,
+                "fingerprint": _first(p, "fp", "client-fingerprint", "fingerprint"),
+            }
 
         reality_opts = p.get("reality-opts") if isinstance(p.get("reality-opts"), dict) else {}
         if security == "reality" or reality_opts:
-            public_key = _first(p, "pbk", "public_key", default=reality_opts.get("public-key"))
-            short_id = _first(p, "sid", "short_id", default=reality_opts.get("short-id"))
             reality: dict[str, Any] = {"enabled": True}
-            if public_key:
-                reality["public_key"] = str(public_key)
-            if short_id is not None:
-                reality["short_id"] = str(short_id)
+            if _has_any(p, "pbk", "public_key"):
+                reality["public_key"] = _first(p, "pbk", "public_key")
+            elif "public-key" in reality_opts:
+                reality["public_key"] = reality_opts["public-key"]
+            if _has_any(p, "sid", "short_id"):
+                reality["short_id"] = _first(p, "sid", "short_id")
+            elif "short-id" in reality_opts:
+                reality["short_id"] = reality_opts["short-id"]
             tls["reality"] = reality
 
         out["tls"] = tls
@@ -404,26 +417,26 @@ class SingBoxBackend:
     def _apply_transport(self, out: dict[str, Any], p: dict[str, Any]) -> None:
         native = p.get("transport")
         if isinstance(native, dict):
-            out["transport"] = native
+            out["transport"] = dict(native)
             return
 
-        # Clash forms first.
-        network = str(_first(p, "network", "net", "type", default="")).lower()
+        network_value = _first(p, "network", "net", "type", default="")
+        network = "" if network_value is None else str(network_value).lower()
         ws_opts = p.get("ws-opts") if isinstance(p.get("ws-opts"), dict) else None
         grpc_opts = p.get("grpc-opts") if isinstance(p.get("grpc-opts"), dict) else None
 
         if network in {"ws", "websocket"} or ws_opts is not None:
             opts = ws_opts or {}
             transport: dict[str, Any] = {"type": "ws"}
-            path = _first(p, "path", default=opts.get("path"))
-            if path:
-                transport["path"] = str(path)
+            if "path" in p:
+                transport["path"] = p["path"]
+            elif "path" in opts:
+                transport["path"] = opts["path"]
             headers: dict[str, Any] = {}
             if isinstance(opts.get("headers"), dict):
                 headers.update(opts["headers"])
-            host = _first(p, "host")
-            if host:
-                headers.setdefault("Host", str(host))
+            if "host" in p:
+                headers.setdefault("Host", p["host"])
             if headers:
                 transport["headers"] = headers
             out["transport"] = transport
@@ -431,32 +444,29 @@ class SingBoxBackend:
 
         if network == "grpc" or grpc_opts is not None:
             opts = grpc_opts or {}
-            service = _first(p, "serviceName", "service_name", default=opts.get("grpc-service-name"))
             transport = {"type": "grpc"}
-            if service:
-                transport["service_name"] = str(service)
+            if _has_any(p, "serviceName", "service_name"):
+                transport["service_name"] = _first(p, "serviceName", "service_name")
+            elif "grpc-service-name" in opts:
+                transport["service_name"] = opts["grpc-service-name"]
             out["transport"] = transport
             return
 
         if network in {"http", "h2"}:
             transport = {"type": "http"}
-            path = _first(p, "path")
-            if path:
-                transport["path"] = str(path)
-            hosts = _list_value(_first(p, "host"))
-            if hosts:
-                transport["host"] = hosts
+            if "path" in p:
+                transport["path"] = p["path"]
+            if "host" in p:
+                transport["host"] = _list_value(p["host"])
             out["transport"] = transport
             return
 
         if network in {"httpupgrade", "http-upgrade"}:
             transport = {"type": "httpupgrade"}
-            path = _first(p, "path")
-            host = _first(p, "host")
-            if path:
-                transport["path"] = str(path)
-            if host:
-                transport["host"] = str(host)
+            if "path" in p:
+                transport["path"] = p["path"]
+            if "host" in p:
+                transport["host"] = p["host"]
             out["transport"] = transport
 
     def _write_config(self, path: Path, proxy: ProxyConfig, listen_port: int) -> None:
