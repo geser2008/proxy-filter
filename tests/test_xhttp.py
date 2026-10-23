@@ -64,6 +64,32 @@ class XHTTPTransportTests(unittest.TestCase):
             },
         )
 
+    def test_barry_session_id_aliases_are_mapped(self) -> None:
+        extra = {
+            "mode": "packet-up",
+            "sessionIDPlacement": "header",
+            "sessionIDKey": "X-Session-ID",
+        }
+        transport = self._render(
+            "encryption=none&type=xhttp&extra="
+            + quote(json.dumps(extra, separators=(",", ":")), safe="")
+        )
+        self.assertEqual(transport["mode"], "packet-up")
+        self.assertEqual(transport["session_placement"], "header")
+        self.assertEqual(transport["session_key"], "X-Session-ID")
+
+    def test_legacy_sc_max_concurrent_posts_is_intentionally_ignored(self) -> None:
+        extra = {
+            "scMaxConcurrentPosts": 4,
+            "xPaddingBytes": "200-800",
+        }
+        transport = self._render(
+            "encryption=none&type=xhttp&extra="
+            + quote(json.dumps(extra, separators=(",", ":")), safe="")
+        )
+        self.assertEqual(transport["x_padding_bytes"], "200-800")
+        self.assertNotIn("sc_max_concurrent_posts", transport)
+
     def test_unknown_extra_field_is_rejected(self) -> None:
         extra = quote('{"notARealXHTTPField":1}', safe="")
         with self.assertRaisesRegex(EngineError, "unsupported XHTTP extra field"):
