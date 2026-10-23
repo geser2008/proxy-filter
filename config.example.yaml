@@ -97,5 +97,7 @@ engine:
   runtime_dir: /srv/proxy-filter/data/runtime
 
 output:
-  rename_template: "{flag} {country_code} | {latency_ms}ms | ↓{download_mbps} ↑{upload_mbps} | {protocol} | [{source}]"
+  # {sources} joins every contributing source id with '+'. {source} remains
+  # available for the primary/first source; {source_count} is the provenance count.
+  rename_template: "{flag} {country_code} | {latency_ms}ms | ↓{download_mbps} ↑{upload_mbps} | {protocol} | [{sources}]"
   include_original_name: false
