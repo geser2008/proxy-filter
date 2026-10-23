@@ -11,7 +11,10 @@ def _asn(proxy: ProxyConfig) -> str | None:
     value = (proxy.tests.geo or {}).get("asn")
     if value is None or value == "":
         return None
-    return str(value)
+    text = str(value).strip()
+    if text.upper().startswith("AS"):
+        text = text[2:]
+    return text or None
 
 
 def _subnet(ip_text: str, ipv4_prefix: int, ipv6_prefix: int) -> str | None:
