@@ -74,6 +74,34 @@ class BackendMappingTests(unittest.TestCase):
         self.assertEqual(out["security"], "")
         self.assertEqual(out["alter_id"], "")
 
+    def test_vmess_empty_and_none_tls_mean_disabled(self) -> None:
+        for tls_value in ("", "none"):
+            with self.subTest(tls=tls_value):
+                proxy = self._proxy(
+                    "vmess",
+                    {
+                        "id": "00000000-0000-0000-0000-000000000001",
+                        "scy": "auto",
+                        "tls": tls_value,
+                    },
+                )
+                out = self.backend._render_outbound(proxy)
+                self.assertNotIn("tls", out)
+
+    def test_reality_without_fp_enables_utls_without_inventing_fingerprint(self) -> None:
+        proxy = self._proxy(
+            "vless",
+            {
+                "uuid": "00000000-0000-0000-0000-000000000001",
+                "security": "reality",
+                "pbk": "Svl81isn16RPAFnjtmYw7A6TPnsEPLHuYYaJht65Rzc",
+                "sni": "www.cloudflare.com",
+            },
+        )
+        out = self.backend._render_outbound(proxy)
+        self.assertEqual(out["tls"]["utls"], {"enabled": True})
+        self.assertNotIn("fingerprint", out["tls"]["utls"])
+
     def test_fp_unsafe_is_forwarded_not_reinterpreted(self) -> None:
         proxy = self._proxy(
             "vless",
