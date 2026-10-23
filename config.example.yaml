@@ -79,6 +79,16 @@ filters:
     workers: 4
     command: curl
 
+# Applied only to merged all.txt/all.jsonl after all real proxy tests and the
+# global canonical dedup. Exact exit IP duplicates are reduced first; only the
+# winners then compete inside the broader exit-subnet + ASN cluster.
+diversity:
+  enabled: true
+  max_same_exit_ip: 1
+  max_same_exit_subnet_asn: 2
+  ipv4_prefix: 24
+  ipv6_prefix: 48
+
 engine:
   backend: sing-box
   command: sing-box
