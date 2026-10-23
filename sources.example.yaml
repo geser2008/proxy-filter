@@ -1,0 +1,12 @@
+sources:
+  - id: radikal
+    name: Free-v2ray-Configs verified
+    url: https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/verified/configs_base64.txt
+
+  - id: delta
+    name: Delta-Kronecker all configs
+    url: https://github.com/Delta-Kronecker/V2ray-Config/raw/refs/heads/main/config/all_configs.txt
+
+  - id: barry
+    name: barry-far V2ray-config
+    url: https://raw.githubusercontent.com/barry-far/V2ray-config/main/All_Configs_base64_Sub.txt
