@@ -52,9 +52,9 @@ class LauncherTests(unittest.TestCase):
         argv = ["proxy_filter.py", "--config", "/tmp/config.yaml", "--until", "tcp"]
         with patch.object(sys, "argv", argv), patch.object(proxy_filter.cli, "main", return_value=9) as mocked:
             result = proxy_filter.main()
+            self.assertEqual(sys.argv, argv)
         self.assertEqual(result, 9)
         mocked.assert_called_once_with()
-        self.assertEqual(sys.argv, argv)
 
 
 if __name__ == "__main__":
