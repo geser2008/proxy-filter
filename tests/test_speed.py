@@ -6,6 +6,7 @@ from proxyfilter.model import ProxyConfig, SourceInfo
 from proxyfilter.speed import (
     SpeedResult,
     _download_with_fallbacks,
+    _expected_download_bytes,
     _mbps,
     _parse_curl_metrics,
     _parse_curl_writeout,
@@ -37,6 +38,25 @@ class SpeedProbeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _parse_curl_metrics("1000\t0\t200")
 
+    def test_expected_cloudflare_download_size_comes_from_query(self):
+        self.assertEqual(
+            _expected_download_bytes("https://speed.cloudflare.com/__down?bytes=50000000"),
+            50_000_000,
+        )
+
+    def test_cachefly_known_test_files_are_100_mib(self):
+        self.assertEqual(
+            _expected_download_bytes("https://cachefly.cachefly.net/100mb.test"),
+            104_857_600,
+        )
+        self.assertEqual(
+            _expected_download_bytes("https://cachefly.cachefly.net/50mb.test"),
+            104_857_600,
+        )
+
+    def test_unknown_download_url_has_no_size_assumption(self):
+        self.assertIsNone(_expected_download_bytes("https://example.com/file.bin"))
+
     def test_429_retries_fallback_and_preserves_attempts(self):
         proxy = ProxyConfig(SourceInfo("test", "test"), "ss", "127.0.0.1", 443)
         responses = [
@@ -57,6 +77,47 @@ class SpeedProbeTests(unittest.TestCase):
         self.assertEqual(result.url, "https://fallback.example/test")
         self.assertEqual(len(result.attempts), 2)
         self.assertEqual(result.attempts[0]["http_code"], 429)
+        self.assertEqual(probe.call_count, 2)
+
+    def test_invalid_payload_retries_fallback_even_with_http_200(self):
+        proxy = ProxyConfig(SourceInfo("test", "test"), "vless", "127.0.0.1", 443)
+        responses = [
+            SpeedResult(
+                False,
+                bytes_transferred=25,
+                time_seconds=1.0,
+                http_code=200,
+                error="invalid download payload: expected 50000000 bytes, received 25",
+                url="https://speed.cloudflare.com/__down?bytes=50000000",
+                expected_bytes=50_000_000,
+                payload_valid=False,
+            ),
+            SpeedResult(
+                True,
+                mbps=100.0,
+                bytes_transferred=104_857_600,
+                time_seconds=8.388608,
+                http_code=200,
+                url="https://cachefly.cachefly.net/100mb.test",
+                expected_bytes=104_857_600,
+                payload_valid=True,
+            ),
+        ]
+        with patch("proxyfilter.speed._download_one", side_effect=responses) as probe:
+            result = _download_with_fallbacks(
+                proxy,
+                object(),
+                url="https://speed.cloudflare.com/__down?bytes=50000000",
+                fallback_urls=["https://cachefly.cachefly.net/100mb.test"],
+                fallback_http_codes={429},
+                timeout=30,
+                curl_command="curl",
+            )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.url, "https://cachefly.cachefly.net/100mb.test")
+        self.assertEqual(len(result.attempts), 2)
+        self.assertFalse(result.attempts[0]["payload_valid"])
+        self.assertTrue(result.attempts[1]["payload_valid"])
         self.assertEqual(probe.call_count, 2)
 
     def test_non_retryable_failure_does_not_use_fallback(self):
