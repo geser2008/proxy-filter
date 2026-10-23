@@ -28,6 +28,7 @@ class LauncherTests(unittest.TestCase):
             def fake_main():
                 self.assertEqual(sys.argv[1], "--config")
                 merged_path = Path(sys.argv[2])
+                captured["merged_path"] = merged_path
                 captured["exists_during_call"] = merged_path.exists()
                 captured["config"] = yaml.safe_load(merged_path.read_text(encoding="utf-8"))
                 self.assertEqual(sys.argv[3:], ["--until", "publish"])
@@ -45,7 +46,7 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(result, 17)
             self.assertTrue(captured["exists_during_call"])
             self.assertEqual(captured["config"]["sources"][0]["id"], "barry")
-            self.assertFalse(Path(sys.argv[2]).exists())
+            self.assertFalse(captured["merged_path"].exists())
 
     def test_without_sources_uses_legacy_config_path(self):
         argv = ["proxy_filter.py", "--config", "/tmp/config.yaml", "--until", "tcp"]
