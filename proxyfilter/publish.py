@@ -43,28 +43,47 @@ def publish_source(data_dir: Path, source_id: str, proxies: list[ProxyConfig]) -
     return txt_path, jsonl_path
 
 
-def publish_merged(data_dir: Path, proxies: list[ProxyConfig]) -> tuple[Path, Path]:
+def publish_merged(
+    data_dir: Path,
+    proxies: list[ProxyConfig],
+    diversity_cfg: dict | None = None,
+) -> tuple[Path, Path]:
     """Publish the merged subscription after infrastructure diversity selection.
 
     Per-source subscriptions stay complete. Only the merged all.txt/all.jsonl are
-    reduced to at most two representatives per measured infrastructure cluster.
-    The input list is updated in-place so caller summary counts match publication.
+    diversity-limited. Exact measured exit IPs are capped first, then the broader
+    exit-subnet+ASN infrastructure cluster is capped. The input list is updated
+    in-place so caller summary counts match publication.
     """
-    selected, suppressed, report = select_diverse(
-        proxies,
-        max_per_cluster=2,
-        ipv4_prefix=24,
-        ipv6_prefix=48,
-    )
+    diversity_cfg = diversity_cfg or {}
+    enabled = bool(diversity_cfg.get("enabled", True))
+
+    if enabled:
+        selected, suppressed, report = select_diverse(
+            proxies,
+            max_same_exit_ip=int(diversity_cfg.get("max_same_exit_ip", 1)),
+            max_same_exit_subnet_asn=int(diversity_cfg.get("max_same_exit_subnet_asn", 2)),
+            ipv4_prefix=int(diversity_cfg.get("ipv4_prefix", 24)),
+            ipv6_prefix=int(diversity_cfg.get("ipv6_prefix", 48)),
+        )
+    else:
+        selected, suppressed, report = list(proxies), [], []
 
     work_dir = data_dir / "work" / "all"
     reports_dir = data_dir / "reports"
     write_jsonl(work_dir / "diversity-selected.jsonl", selected)
     write_jsonl(work_dir / "diversity-suppressed.jsonl", suppressed)
     write_json(reports_dir / "diversity.json", {
+        "enabled": enabled,
         "input": len(proxies),
         "selected": len(selected),
         "suppressed": len(suppressed),
+        "settings": {
+            "max_same_exit_ip": int(diversity_cfg.get("max_same_exit_ip", 1)),
+            "max_same_exit_subnet_asn": int(diversity_cfg.get("max_same_exit_subnet_asn", 2)),
+            "ipv4_prefix": int(diversity_cfg.get("ipv4_prefix", 24)),
+            "ipv6_prefix": int(diversity_cfg.get("ipv6_prefix", 48)),
+        },
         "clusters": report,
     })
 
