@@ -144,6 +144,8 @@ def format_output_name(
 ) -> str:
     geo = proxy.tests.geo or {}
     original_name = proxy.name if include_original_name else ""
+    provenance = proxy.provenance_sources()
+    source_ids = [source.id for source in provenance if source.id]
 
     def metric(value: float | None) -> str:
         return "?" if value is None else str(int(round(value)))
@@ -154,6 +156,8 @@ def format_output_name(
         "country": geo.get("country") or "Unknown",
         "source": proxy.source.id,
         "source_name": proxy.source.name,
+        "sources": "+".join(source_ids) or proxy.source.id,
+        "source_count": len(source_ids),
         "protocol": proxy.protocol,
         "name": original_name,
         "original_name": original_name,
