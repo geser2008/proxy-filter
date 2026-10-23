@@ -222,7 +222,11 @@ class SingBoxBackend(_BaseSingBoxBackend):
         native_tls_text = "" if native_tls in (_MISSING, None) else str(native_tls).strip().lower()
         is_reality = security == "reality" or native_tls_text == "reality"
         enabled = default_enabled or security in {"tls", "reality"} or native_tls_text in {"tls", "reality"}
-        if native_tls not in (_MISSING, None) and native_tls_text not in {"tls", "reality"}:
+
+        # VMess/Xray JSON uses string values for this field. Empty string and
+        # "none" explicitly mean that TLS is not enabled; they are not malformed
+        # boolean values. Other scalar forms still require an unambiguous mapping.
+        if native_tls not in (_MISSING, None) and native_tls_text not in {"", "none", "tls", "reality"}:
             enabled = _strict_bool(native_tls, "tls") or enabled
         if not enabled:
             return
@@ -247,6 +251,11 @@ class SingBoxBackend(_BaseSingBoxBackend):
             tls["utls"] = {"enabled": True, "fingerprint": fp}
         elif protocol not in {"hysteria2", "hy2", "tuic"} and "fingerprint" in p:
             tls["utls"] = {"enabled": True, "fingerprint": p["fingerprint"]}
+        elif is_reality:
+            # Reality clients require uTLS. When the source omits `fp`, preserve
+            # that omission and enable uTLS without inventing a fingerprint; the
+            # core applies its own default fingerprint semantics.
+            tls["utls"] = {"enabled": True}
 
         if is_reality:
             reality: dict[str, Any] = {"enabled": True}
