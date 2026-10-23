@@ -51,6 +51,33 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(captured["config"]["sources"][0]["id"], "barry")
             self.assertFalse(captured["merged_path"].exists())
 
+    def test_source_is_not_abbreviated_as_sources(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "config.yaml"
+            sources_path = root / "sources.yaml"
+            self._write_yaml(config_path, {"paths": {"data_dir": "/tmp/data"}})
+            self._write_yaml(sources_path, {
+                "sources": [{"id": "barry", "url": "https://example.com/sub"}]
+            })
+
+            def fake_main():
+                self.assertEqual(sys.argv[1], "--config")
+                self.assertEqual(sys.argv[3:], ["--source", "barry", "--until", "publish"])
+                return 23
+
+            argv = [
+                "proxy_filter.py",
+                "--config", str(config_path),
+                "--sources", str(sources_path),
+                "--source", "barry",
+                "--until", "publish",
+            ]
+            with patch.object(sys, "argv", argv), patch.object(proxy_filter.cli, "main", side_effect=fake_main):
+                result = proxy_filter.main()
+
+            self.assertEqual(result, 23)
+
     def test_without_sources_uses_legacy_config_path(self):
         argv = ["proxy_filter.py", "--config", "/tmp/config.yaml", "--until", "tcp"]
         with patch.object(sys, "argv", argv), patch.object(proxy_filter.cli, "main", return_value=9) as mocked:
