@@ -33,6 +33,18 @@ class TestState:
         "isp": None,
         "error": None,
     })
+    diversity: dict[str, Any] = field(default_factory=lambda: {
+        "status": "pending",
+        "cluster_type": None,
+        "cluster_key": None,
+        "cluster_size": None,
+        "latency_rank": None,
+        "download_rank": None,
+        "upload_rank": None,
+        "rank_sum": None,
+        "overall_rank": None,
+        "reason": None,
+    })
     render: dict[str, Any] = field(default_factory=lambda: {
         "status": "pending",
         "name": None,
@@ -147,6 +159,18 @@ class ProxyConfig:
                 "org": None,
                 "isp": None,
                 "error": None,
+            }),
+            diversity=tests_data.get("diversity", {
+                "status": "pending",
+                "cluster_type": None,
+                "cluster_key": None,
+                "cluster_size": None,
+                "latency_rank": None,
+                "download_rank": None,
+                "upload_rank": None,
+                "rank_sum": None,
+                "overall_rank": None,
+                "reason": None,
             }),
             render=tests_data.get("render", {
                 "status": "pending",
