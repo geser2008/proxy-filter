@@ -23,7 +23,7 @@ class XHTTPTransportTests(unittest.TestCase):
         )
         return self.backend._render_outbound(proxy)["transport"]
 
-    def test_basic_xhttp_fields(self) -> None:
+    def test_basic_xhttp_fields_do_not_inject_padding_default(self) -> None:
         transport = self._render(
             "encryption=none&security=tls&type=xhttp&mode=stream-up"
             "&host=cdn.example.com&path=%2Fapi"
@@ -32,7 +32,6 @@ class XHTTPTransportTests(unittest.TestCase):
             transport,
             {
                 "type": "xhttp",
-                "x_padding_bytes": "100-1000",
                 "mode": "stream-up",
                 "host": "cdn.example.com",
                 "path": "/api",
@@ -64,6 +63,34 @@ class XHTTPTransportTests(unittest.TestCase):
             },
         )
 
+    def test_invalid_but_present_xhttp_values_are_not_repaired(self) -> None:
+        extra = {
+            "xPaddingBytes": "0-0",
+            "xmux": {
+                "maxConcurrency": "",
+                "maxConnections": 0,
+            },
+        }
+        transport = self._render(
+            "encryption=none&type=xhttp&extra="
+            + quote(json.dumps(extra, separators=(",", ":")), safe="")
+        )
+        self.assertEqual(transport["x_padding_bytes"], "0-0")
+        self.assertEqual(transport["xmux"]["max_concurrency"], "")
+        self.assertEqual(transport["xmux"]["max_connections"], 0)
+
+    def test_null_xhttp_value_is_not_repaired(self) -> None:
+        extra = {
+            "xPaddingBytes": None,
+            "scMaxEachPostBytes": None,
+        }
+        transport = self._render(
+            "encryption=none&type=xhttp&extra="
+            + quote(json.dumps(extra, separators=(",", ":")), safe="")
+        )
+        self.assertIsNone(transport["x_padding_bytes"])
+        self.assertIsNone(transport["sc_max_each_post_bytes"])
+
     def test_barry_session_id_aliases_are_mapped(self) -> None:
         extra = {
             "mode": "packet-up",
@@ -78,17 +105,20 @@ class XHTTPTransportTests(unittest.TestCase):
         self.assertEqual(transport["session_placement"], "header")
         self.assertEqual(transport["session_key"], "X-Session-ID")
 
-    def test_legacy_sc_max_concurrent_posts_is_intentionally_ignored(self) -> None:
+    def test_legacy_sc_max_concurrent_posts_is_rejected_not_dropped(self) -> None:
         extra = {
             "scMaxConcurrentPosts": 4,
             "xPaddingBytes": "200-800",
         }
-        transport = self._render(
-            "encryption=none&type=xhttp&extra="
-            + quote(json.dumps(extra, separators=(",", ":")), safe="")
-        )
-        self.assertEqual(transport["x_padding_bytes"], "200-800")
-        self.assertNotIn("sc_max_concurrent_posts", transport)
+        with self.assertRaisesRegex(EngineError, "scMaxConcurrentPosts"):
+            self._render(
+                "encryption=none&type=xhttp&extra="
+                + quote(json.dumps(extra, separators=(",", ":")), safe="")
+            )
+
+    def test_explicit_empty_extra_is_rejected_not_treated_as_absent(self) -> None:
+        with self.assertRaisesRegex(EngineError, "invalid XHTTP extra JSON"):
+            self._render("encryption=none&type=xhttp&extra=")
 
     def test_unknown_extra_field_is_rejected(self) -> None:
         extra = quote('{"notARealXHTTPField":1}', safe="")
