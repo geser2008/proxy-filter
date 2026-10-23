@@ -136,6 +136,14 @@ def validate_round_trip(proxy: ProxyConfig, uri: str) -> None:
         raise RenderError("rendered URI does not round-trip to the same connection identity")
 
 
+def _source_label(source_ids: list[str]) -> str:
+    if not source_ids:
+        return "unknown"
+    if len(source_ids) <= 3:
+        return "+".join(source_ids)
+    return f"{len(source_ids)}src"
+
+
 def format_output_name(
     proxy: ProxyConfig,
     *,
@@ -146,6 +154,8 @@ def format_output_name(
     original_name = proxy.name if include_original_name else ""
     provenance = proxy.provenance_sources()
     source_ids = [source.id for source in provenance if source.id]
+    if not source_ids and proxy.source.id:
+        source_ids = [proxy.source.id]
 
     def metric(value: float | None) -> str:
         return "?" if value is None else str(int(round(value)))
@@ -156,7 +166,7 @@ def format_output_name(
         "country": geo.get("country") or "Unknown",
         "source": proxy.source.id,
         "source_name": proxy.source.name,
-        "sources": "+".join(source_ids) or proxy.source.id,
+        "sources": _source_label(source_ids),
         "source_count": len(source_ids),
         "protocol": proxy.protocol,
         "name": original_name,
