@@ -13,6 +13,9 @@ class LauncherTests(unittest.TestCase):
     def _write_yaml(self, path: Path, data) -> None:
         path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
 
+    def test_deduplicate_remains_importable_from_launcher(self):
+        self.assertIs(proxy_filter.deduplicate, proxy_filter.cli.deduplicate)
+
     def test_external_sources_are_merged_before_cli(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
