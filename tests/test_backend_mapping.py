@@ -52,6 +52,52 @@ class BackendMappingTests(unittest.TestCase):
         self.assertTrue(out["global_padding"])
         self.assertFalse(out["authenticated_length"])
 
+    def test_vmess_optional_defaults_are_not_injected(self) -> None:
+        proxy = self._proxy(
+            "vmess",
+            {"uuid": "00000000-0000-0000-0000-000000000001"},
+        )
+        out = self.backend._render_outbound(proxy)
+        self.assertNotIn("security", out)
+        self.assertNotIn("alter_id", out)
+
+    def test_explicit_empty_vmess_values_are_not_replaced_by_defaults(self) -> None:
+        proxy = self._proxy(
+            "vmess",
+            {
+                "uuid": "00000000-0000-0000-0000-000000000001",
+                "security": "",
+                "alterId": "",
+            },
+        )
+        out = self.backend._render_outbound(proxy)
+        self.assertEqual(out["security"], "")
+        self.assertEqual(out["alter_id"], "")
+
+    def test_fp_unsafe_is_forwarded_not_reinterpreted(self) -> None:
+        proxy = self._proxy(
+            "vless",
+            {
+                "uuid": "00000000-0000-0000-0000-000000000001",
+                "security": "tls",
+                "fp": "unsafe",
+            },
+        )
+        out = self.backend._render_outbound(proxy)
+        self.assertEqual(out["tls"]["utls"], {"enabled": True, "fingerprint": "unsafe"})
+
+    def test_invalid_boolean_is_rejected_not_coerced_to_false(self) -> None:
+        proxy = self._proxy(
+            "vless",
+            {
+                "uuid": "00000000-0000-0000-0000-000000000001",
+                "security": "tls",
+                "allowInsecure": "maybe",
+            },
+        )
+        with self.assertRaisesRegex(EngineError, "invalid boolean value"):
+            self.backend._render_outbound(proxy)
+
     def test_unsupported_v2ray_transport_is_rejected_not_dropped(self) -> None:
         proxy = self._proxy(
             "vless",
@@ -105,6 +151,17 @@ class BackendMappingTests(unittest.TestCase):
         self.assertEqual(out["obfs"]["type"], "gecko")
         self.assertEqual(out["obfs"]["min_packet_size"], 512)
         self.assertEqual(out["obfs"]["max_packet_size"], 1200)
+
+    def test_fractional_hysteria2_bandwidth_is_not_truncated(self) -> None:
+        proxy = self._proxy(
+            "hysteria2",
+            {
+                "password": "secret",
+                "up": "30.5 Mbps",
+            },
+        )
+        with self.assertRaisesRegex(EngineError, "cannot be represented losslessly"):
+            self.backend._render_outbound(proxy)
 
     def test_hysteria2_clash_certificate_fingerprint_is_not_reinterpreted(self) -> None:
         proxy = self._proxy(
