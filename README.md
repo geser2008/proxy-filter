@@ -94,7 +94,9 @@ The proxy core is a separate external runtime. The project will detect the confi
 ```text
 /srv/proxy-filter/
 ├── app/        # this repository
-├── config/     # local configuration
+├── config/
+│   ├── config.yaml     # pipeline/runtime settings
+│   └── sources.yaml    # subscription sources
 └── data/
     ├── raw/
     ├── work/
@@ -114,7 +116,8 @@ sudo chown -R proxyfilter:proxyfilter /srv/proxy-filter
 
 git clone https://github.com/geser2008/proxy-filter.git /srv/proxy-filter/app
 sudo cp /srv/proxy-filter/app/config.example.yaml /srv/proxy-filter/config/config.yaml
-sudo chown proxyfilter:proxyfilter /srv/proxy-filter/config/config.yaml
+sudo cp /srv/proxy-filter/app/sources.example.yaml /srv/proxy-filter/config/sources.yaml
+sudo chown proxyfilter:proxyfilter /srv/proxy-filter/config/{config.yaml,sources.yaml}
 ```
 
 Current implemented stages can be tested with:
@@ -122,8 +125,11 @@ Current implemented stages can be tested with:
 ```bash
 sudo -u proxyfilter /usr/bin/python3 /srv/proxy-filter/app/proxy_filter.py \
   --config /srv/proxy-filter/config/config.yaml \
+  --sources /srv/proxy-filter/config/sources.yaml \
   --until tcp
 ```
+
+`--sources` is optional for backward compatibility. If it is omitted, the program reads the legacy top-level `sources:` list from `config.yaml`.
 
 ## Canonical JSONL
 
