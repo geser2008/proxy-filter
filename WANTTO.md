@@ -9,6 +9,21 @@ Deferred improvements to revisit after the end-to-end pipeline is working reliab
 - Candidate checks include protocol-required fields, enum values, parameter combinations, ranges, and other semantic constraints that can be validated without guessing or repairing source data.
 - Preserve the project rule: parse exactly what the declared format means; reject malformed/unsupported configurations explicitly; do not infer intended values.
 
+## CLI / configuration error handling
+
+- Add explicit fail-fast validation for launcher arguments and configuration before any source download or pipeline stage starts.
+- Report missing `config.yaml` and `sources.yaml` files with clear paths and actionable error messages instead of raw tracebacks.
+- Validate that the loaded YAML documents are mappings of the expected shape and reject malformed YAML/config structures explicitly.
+- Validate required configuration sections and required fields before execution; report the exact missing or invalid key.
+- Validate `sources.yaml` entries before processing: every source should have a non-empty unique `id`, a usable `url`, and any other required source metadata.
+- Reject duplicate source IDs explicitly rather than silently selecting or overwriting one entry.
+- When `--source <id>` is supplied and no source with that ID exists, terminate immediately with a clear message that includes the requested ID and, where useful, the available source IDs.
+- Treat an empty configured source list as a configuration error for normal pipeline runs rather than completing successfully with zero work.
+- Validate stage-related arguments (`--until`, `--resume-from`) and resume-file availability before starting work; report incompatible ranges or missing stage artifacts explicitly.
+- Validate filesystem paths needed for runtime/output where practical, including permission failures, and distinguish "not found", "not readable", and "not writable" errors.
+- Keep user-facing CLI errors concise and deterministic: no Python traceback for expected configuration/user-input mistakes; reserve tracebacks or detailed diagnostics for unexpected internal failures/debug mode.
+- Add unit tests for each expected failure mode so error handling remains stable as CLI defaults and config layout evolve.
+
 ## Security policy
 
 - Revisit whether VMess without TLS should be rejected by policy or retained with an explicit security warning/risk classification.
