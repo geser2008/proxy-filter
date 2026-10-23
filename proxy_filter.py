@@ -19,7 +19,10 @@ deduplicate = cli.deduplicate
 
 
 def main() -> int:
-    pre_parser = argparse.ArgumentParser(add_help=False)
+    # This parser only peels off launcher-owned options. Abbreviation must be
+    # disabled so the pipeline option `--source` is not mistaken for
+    # launcher-owned `--sources`.
+    pre_parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     pre_parser.add_argument("--config")
     pre_parser.add_argument("--sources")
     known, remaining = pre_parser.parse_known_args()
