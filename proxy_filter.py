@@ -12,6 +12,11 @@ import yaml
 from proxyfilter import cli
 from proxyfilter.source_config import merged_config
 
+# Backward-compatible public import used by existing tests and callers.
+# The implementation now lives in proxyfilter.cli, but the old import path
+# `from proxy_filter import deduplicate` remains valid.
+deduplicate = cli.deduplicate
+
 
 def main() -> int:
     pre_parser = argparse.ArgumentParser(add_help=False)
