@@ -78,13 +78,32 @@ class LauncherTests(unittest.TestCase):
 
             self.assertEqual(result, 23)
 
-    def test_without_sources_uses_legacy_config_path(self):
-        argv = ["proxy_filter.py", "--config", "/tmp/config.yaml", "--until", "tcp"]
-        with patch.object(sys, "argv", argv), patch.object(proxy_filter.cli, "main", return_value=9) as mocked:
-            result = proxy_filter.main()
-            self.assertEqual(sys.argv, argv)
-        self.assertEqual(result, 9)
-        mocked.assert_called_once_with()
+    def test_config_only_uses_default_sources_file(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "config.yaml"
+            self._write_yaml(config_path, {"paths": {"data_dir": "/tmp/data"}})
+
+            captured = {}
+
+            def fake_merged(config, sources):
+                captured["config"] = config
+                captured["sources"] = sources
+                return {"sources": []}
+
+            argv = ["proxy_filter.py", "--config", str(config_path), "--until", "tcp"]
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(proxy_filter, "merged_config", side_effect=fake_merged),
+                patch.object(proxy_filter.yaml, "safe_dump"),
+                patch.object(proxy_filter.cli, "main", return_value=9) as mocked,
+            ):
+                result = proxy_filter.main()
+
+            self.assertEqual(result, 9)
+            self.assertEqual(captured["config"], config_path)
+            self.assertEqual(captured["sources"], Path(proxy_filter.DEFAULT_SOURCES_PATH))
+            mocked.assert_called_once_with()
 
 
 if __name__ == "__main__":
