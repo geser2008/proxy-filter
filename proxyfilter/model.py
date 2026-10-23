@@ -59,6 +59,29 @@ class ProxyConfig:
     original_raw: str = ""
     tests: TestState = field(default_factory=TestState)
     id: str = ""
+    sources: list[SourceInfo] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.sources = self._merge_source_lists([self.source], self.sources)
+
+    @staticmethod
+    def _merge_source_lists(*groups: list[SourceInfo]) -> list[SourceInfo]:
+        merged: list[SourceInfo] = []
+        seen: set[str] = set()
+        for group in groups:
+            for source in group:
+                key = source.id
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(source)
+        return merged
+
+    def provenance_sources(self) -> list[SourceInfo]:
+        return self._merge_source_lists([self.source], self.sources)
+
+    def merge_sources_from(self, other: "ProxyConfig") -> None:
+        self.sources = self._merge_source_lists(self.provenance_sources(), other.provenance_sources())
 
     def identity_payload(self) -> dict[str, Any]:
         return {
@@ -84,6 +107,7 @@ class ProxyConfig:
     def to_dict(self) -> dict[str, Any]:
         if not self.id:
             self.ensure_id()
+        self.sources = self.provenance_sources()
         d = asdict(self)
         d["config"] = {
             "protocol": d.pop("protocol"),
@@ -101,6 +125,7 @@ class ProxyConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ProxyConfig":
         source_data = data.get("source") or {}
+        sources_data = data.get("sources") or []
         config = data.get("config") or {}
         original = data.get("original") or {}
         tests_data = data.get("tests") or {}
@@ -136,12 +161,22 @@ class ProxyConfig:
             country=tests_data.get("country"),
             status=tests_data.get("status", "parsed"),
         )
+        source = SourceInfo(
+            str(source_data.get("id", "")),
+            str(source_data.get("name", "")),
+            str(source_data.get("format", "unknown")),
+        )
+        sources = [
+            SourceInfo(
+                str(item.get("id", "")),
+                str(item.get("name", "")),
+                str(item.get("format", "unknown")),
+            )
+            for item in sources_data
+            if isinstance(item, dict)
+        ]
         proxy = cls(
-            source=SourceInfo(
-                str(source_data.get("id", "")),
-                str(source_data.get("name", "")),
-                str(source_data.get("format", "unknown")),
-            ),
+            source=source,
             protocol=str(config.get("protocol", "")),
             server=str(config.get("server", "")),
             port=int(config.get("port", 0)),
@@ -151,6 +186,7 @@ class ProxyConfig:
             original_raw=str(original.get("raw", "")),
             tests=tests,
             id=str(data.get("id", "")),
+            sources=sources,
         )
         if not proxy.id:
             proxy.ensure_id()
