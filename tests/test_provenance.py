@@ -38,6 +38,29 @@ class ProvenanceTests(unittest.TestCase):
         )
         self.assertEqual(name, "[radikal+delta+third] 3 radikal")
 
+    def test_source_label_compacts_four_or_more_sources(self):
+        merged, duplicates = deduplicate([
+            self._proxy("radikal"),
+            self._proxy("delta"),
+            self._proxy("third"),
+            self._proxy("fourth"),
+            self._proxy("fifth"),
+        ])
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(len(duplicates), 4)
+        self.assertEqual(
+            [source.id for source in merged[0].provenance_sources()],
+            ["radikal", "delta", "third", "fourth", "fifth"],
+        )
+
+        name = format_output_name(
+            merged[0],
+            template="[{sources}] {source_count}",
+            include_original_name=False,
+        )
+        self.assertEqual(name, "[5src] 5")
+
     def test_provenance_survives_jsonl_round_trip(self):
         proxy = self._proxy("radikal")
         proxy.merge_sources_from(self._proxy("delta"))
