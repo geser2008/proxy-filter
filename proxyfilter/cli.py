@@ -466,7 +466,7 @@ def main() -> int:
     full_source_set = not selected or selected == configured_ids
     if args.until == "publish":
         if all_sources_ok and full_source_set:
-            txt_path, jsonl_path = publish_merged(data_dir, merged)
+            txt_path, jsonl_path = publish_merged(data_dir, merged, cfg.get("diversity", {}))
             print(f"[all] published={len(merged)} txt={txt_path} jsonl={jsonl_path}")
         elif not full_source_set:
             print("[all] publish_skipped=partial_source_selection")
