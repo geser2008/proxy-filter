@@ -32,6 +32,7 @@ def deduplicate(proxies):
     for proxy in proxies:
         proxy.ensure_id()
         if proxy.id in unique:
+            unique[proxy.id].merge_sources_from(proxy)
             proxy.tests.status = "rejected_duplicate"
             duplicates.append(proxy)
         else:
@@ -66,6 +67,34 @@ def _as_int_set(value, default):
     return {int(item) for item in (raw or [])}
 
 
+def _render_proxies(proxies, cfg):
+    output_cfg = cfg.get("output", {})
+    rename_template = str(output_cfg.get("rename_template", "{flag} [{source}] {name}"))
+    include_original_name = bool(output_cfg.get("include_original_name", True))
+    render_ok, render_rejected = [], []
+
+    for proxy in proxies:
+        result = render_proxy(
+            proxy,
+            rename_template=rename_template,
+            include_original_name=include_original_name,
+        )
+        proxy.tests.render = {
+            "status": "pass" if result.ok else "fail",
+            "name": result.name,
+            "uri": result.uri,
+            "error": result.error,
+        }
+        if result.ok:
+            proxy.tests.status = "render_pass"
+            render_ok.append(proxy)
+        else:
+            proxy.tests.status = "rejected_render"
+            render_rejected.append(proxy)
+
+    return render_ok, render_rejected
+
+
 def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from: str | None = None):
     source_id = source["id"]
     source_name = source.get("name", source_id)
@@ -91,6 +120,7 @@ def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from:
         proxies, parse_errors, detected_format = detect_and_parse(raw, source_id, source_name)
         for proxy in proxies:
             proxy.source.format = detected_format
+            proxy.sources = proxy.provenance_sources()
         write_jsonl(work / "01-parsed.jsonl", proxies)
         write_json(reports / f"{source_id}-parse-errors.json", parse_errors)
         print(f"[{source_id}] parsed={len(proxies)} errors={len(parse_errors)} format={detected_format}")
@@ -303,30 +333,7 @@ def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from:
             return current
 
     if stage_should_run("render", resume_from):
-        output_cfg = cfg.get("output", {})
-        rename_template = str(output_cfg.get("rename_template", "{flag} [{source}] {name}"))
-        include_original_name = bool(output_cfg.get("include_original_name", True))
-        render_ok, render_rejected = [], []
-
-        for proxy in current:
-            result = render_proxy(
-                proxy,
-                rename_template=rename_template,
-                include_original_name=include_original_name,
-            )
-            proxy.tests.render = {
-                "status": "pass" if result.ok else "fail",
-                "name": result.name,
-                "uri": result.uri,
-                "error": result.error,
-            }
-            if result.ok:
-                proxy.tests.status = "render_pass"
-                render_ok.append(proxy)
-            else:
-                proxy.tests.status = "rejected_render"
-                render_rejected.append(proxy)
-
+        render_ok, render_rejected = _render_proxies(current, cfg)
         write_jsonl(work / "11-render-ok.jsonl", render_ok)
         write_jsonl(work / "11-rejected-render.jsonl", render_rejected)
         print(f"[{source_id}] render_pass={len(render_ok)} rejected={len(render_rejected)}")
@@ -425,6 +432,16 @@ def main() -> int:
             print(f"[{source.get('id', 'unknown')}] ERROR: {exc}", file=sys.stderr)
 
     merged, duplicates = deduplicate(all_survivors)
+
+    if args.until in {"render", "publish"}:
+        merged, merged_render_rejected = _render_proxies(merged, cfg)
+        if merged_render_rejected:
+            failed = ", ".join((proxy.id or "<unknown>")[:12] for proxy in merged_render_rejected[:5])
+            raise RuntimeError(f"merged provenance render failed for {len(merged_render_rejected)} proxy(s): {failed}")
+        if args.until == "publish":
+            for proxy in merged:
+                proxy.tests.status = "published"
+
     if args.until == "latency":
         merged.sort(key=lambda proxy: proxy.tests.latency_ms if proxy.tests.latency_ms is not None else float("inf"))
     elif args.until == "download":
