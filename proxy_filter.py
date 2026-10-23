@@ -23,19 +23,8 @@ DEFAULT_SOURCES_PATH = "/srv/proxy-filter/config/sources.yaml"
 
 
 def main() -> int:
-    # This parser only peels off launcher-owned options. Abbreviation must be
-    # disabled so the pipeline option `--source` is not mistaken for
-    # launcher-owned `--sources`.
-    original_args = sys.argv[1:]
-    explicit_config = "--config" in original_args
-    explicit_sources = "--sources" in original_args
-
-    # Backward compatibility: callers that explicitly provide only --config
-    # are using the legacy layout where sources are embedded in config.yaml.
-    # Leave argv untouched and let the package CLI handle that path directly.
-    if explicit_config and not explicit_sources:
-        return cli.main()
-
+    # Launcher-owned options have independent defaults. Supplying one option
+    # never changes the interpretation or default of another option.
     pre_parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     pre_parser.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     pre_parser.add_argument("--sources", default=DEFAULT_SOURCES_PATH)
@@ -60,8 +49,7 @@ def main() -> int:
 
         # The package CLI remains the single implementation of the pipeline.
         # It receives a temporary merged config, while all other arguments are
-        # passed through unchanged. A no-argument launch performs the complete
-        # pipeline through publication.
+        # passed through unchanged. Publication is the default final stage.
         if "--until" not in remaining:
             remaining = [*remaining, "--until", "publish"]
 
