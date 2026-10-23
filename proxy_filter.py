@@ -26,6 +26,16 @@ def main() -> int:
     # This parser only peels off launcher-owned options. Abbreviation must be
     # disabled so the pipeline option `--source` is not mistaken for
     # launcher-owned `--sources`.
+    original_args = sys.argv[1:]
+    explicit_config = "--config" in original_args
+    explicit_sources = "--sources" in original_args
+
+    # Backward compatibility: callers that explicitly provide only --config
+    # are using the legacy layout where sources are embedded in config.yaml.
+    # Leave argv untouched and let the package CLI handle that path directly.
+    if explicit_config and not explicit_sources:
+        return cli.main()
+
     pre_parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     pre_parser.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     pre_parser.add_argument("--sources", default=DEFAULT_SOURCES_PATH)
