@@ -97,5 +97,5 @@ engine:
   runtime_dir: /srv/proxy-filter/data/runtime
 
 output:
-  rename_template: "{flag} [{source}] {name}"
-  include_original_name: true
+  rename_template: "{flag} {country_code} | {latency_ms}ms | ↓{download_mbps} ↑{upload_mbps} | {protocol} | [{source}]"
+  include_original_name: false
