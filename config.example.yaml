@@ -25,6 +25,18 @@ filters:
     # Primary speed-test endpoint. If it returns an HTTP status listed in
     # download_fallback_http_codes, retry the same proxy against the fallback.
     download_url: https://speed.cloudflare.com/__down?bytes=50000000
+
+    # Aggregate download stages. Any non-empty sequence of unique positive
+    # integers is allowed and the configured order is preserved. Examples:
+    # [1] = single-stream only, [10] = one 10-stream aggregate test,
+    # [1, 2, 4, 8, 10] = five stages. If omitted, defaults to [1, 2, 4, 8].
+    download_streams:
+      - 1
+      - 2
+      - 4
+      - 8
+      - 10
+
     download_fallback_urls:
       - https://cachefly.cachefly.net/100mb.test
     download_fallback_http_codes:
