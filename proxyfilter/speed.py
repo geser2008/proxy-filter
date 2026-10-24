@@ -12,7 +12,7 @@ from .engine import EngineBackend, EngineError
 from .model import ProxyConfig
 
 
-DOWNLOAD_STREAM_STAGES = (1, 2, 4, 8)
+DEFAULT_DOWNLOAD_STREAM_STAGES = (1, 2, 4, 8)
 
 
 @dataclass(slots=True)
@@ -29,6 +29,32 @@ class SpeedResult:
     payload_valid: bool | None = None
     attempts: list[dict] = field(default_factory=list)
     stages: list[dict] = field(default_factory=list)
+
+
+def _normalize_download_stream_stages(value) -> tuple[int, ...]:
+    """Validate configurable aggregate download stages while preserving order."""
+    raw = DEFAULT_DOWNLOAD_STREAM_STAGES if value is None else value
+    if isinstance(raw, (int, str)) and not isinstance(raw, bool):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)) or not raw:
+        raise ValueError("speed.download_streams must be a non-empty list of positive integers")
+
+    stages: list[int] = []
+    seen: set[int] = set()
+    for item in raw:
+        if isinstance(item, bool):
+            raise ValueError("speed.download_streams must contain positive integers")
+        try:
+            streams = int(item)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("speed.download_streams must contain positive integers") from exc
+        if streams <= 0 or str(item).strip() != str(streams):
+            raise ValueError("speed.download_streams must contain positive integers")
+        if streams in seen:
+            raise ValueError(f"speed.download_streams contains duplicate stage: {streams}")
+        seen.add(streams)
+        stages.append(streams)
+    return tuple(stages)
 
 
 def _parse_curl_metrics(stdout: str) -> tuple[int, float, int]:
@@ -349,16 +375,18 @@ def _download_staged(
     fallback_http_codes: set[int],
     timeout: float,
     curl_command: str,
+    stream_stages: tuple[int, ...] = DEFAULT_DOWNLOAD_STREAM_STAGES,
 ) -> SpeedResult:
-    """Run 1/2/4/8 stream stages and return the highest measured aggregate rate.
+    """Run configured stream stages and return the highest measured aggregate rate.
 
-    A failure in the first stage keeps the historical fallback behavior. A later
-    stage failure stops escalation but does not discard a successful earlier stage.
+    A failure in the first configured stage keeps the historical fallback behavior.
+    A later stage failure stops escalation but does not discard a successful earlier stage.
     """
+    stages = _normalize_download_stream_stages(stream_stages)
     stage_records: list[dict] = []
     best: SpeedResult | None = None
 
-    for streams in DOWNLOAD_STREAM_STAGES:
+    for index, streams in enumerate(stages):
         result = _download_parallel_stage(
             proxy,
             engine,
@@ -383,7 +411,7 @@ def _download_staged(
         )
 
         if not result.ok:
-            if streams == 1:
+            if index == 0:
                 retryable = result.payload_valid is False or result.http_code in fallback_http_codes
                 if retryable and fallback_urls:
                     fallback = _download_with_fallbacks(
@@ -635,12 +663,14 @@ def check_download_many(
     curl_command: str = "curl",
     fallback_urls: list[str] | None = None,
     fallback_http_codes: set[int] | None = None,
+    stream_stages=None,
 ) -> tuple[list[ProxyConfig], list[ProxyConfig]]:
     if not url:
         raise ValueError("speed.download_url is required")
 
     clean_fallbacks = [item for item in (fallback_urls or []) if item and item != url]
     retry_codes = set(fallback_http_codes or {429})
+    normalized_stages = _normalize_download_stream_stages(stream_stages)
 
     def probe(proxy: ProxyConfig) -> SpeedResult:
         return _download_staged(
@@ -651,6 +681,7 @@ def check_download_many(
             fallback_http_codes=retry_codes,
             timeout=timeout,
             curl_command=curl_command,
+            stream_stages=normalized_stages,
         )
 
     passed: list[ProxyConfig] = []
@@ -662,8 +693,9 @@ def check_download_many(
         proxy.tests.download = {
             "status": "pass" if threshold_ok else "fail",
             "mbps": result.mbps,
-            "single_mbps": single_stage.get("mbps") if single_stage else result.mbps,
+            "single_mbps": single_stage.get("mbps") if single_stage else None,
             "aggregate_mbps": result.mbps,
+            "stream_stages": list(normalized_stages),
             "bytes": result.bytes_transferred,
             "expected_bytes": result.expected_bytes,
             "payload_valid": result.payload_valid,
