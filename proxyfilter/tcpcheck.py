@@ -7,6 +7,24 @@ import time
 from .model import ProxyConfig
 
 
+UDP_ONLY_PROTOCOLS = {"hysteria2", "hy2", "tuic"}
+
+
+def _requires_tcp_precheck(proxy: ProxyConfig) -> bool:
+    return proxy.protocol.lower() not in UDP_ONLY_PROTOCOLS
+
+
+def _mark_skipped(proxy: ProxyConfig) -> ProxyConfig:
+    proxy.tests.tcp = {
+        "status": "skipped",
+        "latency_ms": None,
+        "error": None,
+        "reason": "not_applicable_udp_protocol",
+    }
+    proxy.tests.status = "tcp_skipped"
+    return proxy
+
+
 def _check_one(proxy: ProxyConfig, timeout: float) -> tuple[ProxyConfig, bool, float | None, str | None]:
     started = time.monotonic()
     try:
@@ -20,8 +38,16 @@ def _check_one(proxy: ProxyConfig, timeout: float) -> tuple[ProxyConfig, bool, f
 def check_many(proxies: list[ProxyConfig], timeout: float = 3.0, workers: int = 64) -> tuple[list[ProxyConfig], list[ProxyConfig]]:
     passed: list[ProxyConfig] = []
     rejected: list[ProxyConfig] = []
+    tcp_proxies: list[ProxyConfig] = []
+
+    for proxy in proxies:
+        if _requires_tcp_precheck(proxy):
+            tcp_proxies.append(proxy)
+        else:
+            passed.append(_mark_skipped(proxy))
+
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futures = [pool.submit(_check_one, p, timeout) for p in proxies]
+        futures = [pool.submit(_check_one, p, timeout) for p in tcp_proxies]
         for future in as_completed(futures):
             proxy, ok, latency, error = future.result()
             proxy.tests.tcp = {"status": "pass" if ok else "reject", "latency_ms": latency, "error": error}
