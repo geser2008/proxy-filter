@@ -5,10 +5,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import subprocess
 import tempfile
-from urllib.parse import parse_qs, urlsplit
+import time
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 from .engine import EngineBackend, EngineError
 from .model import ProxyConfig
+
+
+DOWNLOAD_STREAM_STAGES = (1, 2, 4, 8)
 
 
 @dataclass(slots=True)
@@ -24,6 +28,7 @@ class SpeedResult:
     expected_bytes: int | None = None
     payload_valid: bool | None = None
     attempts: list[dict] = field(default_factory=list)
+    stages: list[dict] = field(default_factory=list)
 
 
 def _parse_curl_metrics(stdout: str) -> tuple[int, float, int]:
@@ -58,13 +63,7 @@ def _mbps(size_bytes: int, elapsed_seconds: float) -> float:
 
 
 def _expected_download_bytes(url: str) -> int | None:
-    """Return a trustworthy expected payload size for known speed-test URLs.
-
-    Cloudflare explicitly declares the requested byte count in ``__down?bytes=N``.
-    CacheFly currently serves both ``50mb.test`` and ``100mb.test`` as the same
-    100 MiB object (104857600 bytes). Unknown endpoints keep the historical
-    behavior and are not size-validated.
-    """
+    """Return a trustworthy expected payload size for known speed-test URLs."""
     try:
         parsed = urlsplit(url)
     except ValueError:
@@ -89,6 +88,46 @@ def _expected_download_bytes(url: str) -> int | None:
     return None
 
 
+def _cloudflare_download_url(url: str, size_bytes: int) -> str | None:
+    """Return the same Cloudflare speed URL with a deterministic byte count."""
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return None
+    if (parsed.hostname or "").lower() != "speed.cloudflare.com" or parsed.path != "/__down":
+        return None
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    query["bytes"] = [str(size_bytes)]
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query, doseq=True), parsed.fragment))
+
+
+def _split_download_urls(url: str, streams: int) -> list[str]:
+    """Split a known Cloudflare payload across streams while keeping stage bytes constant.
+
+    For unknown endpoints the URL is repeated unchanged because their payload size
+    cannot be adjusted safely without changing source semantics.
+    """
+    if streams <= 0:
+        raise ValueError("download stream count must be greater than zero")
+    total = _expected_download_bytes(url)
+    if total is None:
+        return [url] * streams
+    adjusted = _cloudflare_download_url(url, total)
+    if adjusted is None:
+        return [url] * streams
+
+    base, remainder = divmod(total, streams)
+    if base <= 0:
+        raise ValueError("download payload is too small for requested stream count")
+    urls: list[str] = []
+    for index in range(streams):
+        size = base + (1 if index < remainder else 0)
+        candidate = _cloudflare_download_url(url, size)
+        assert candidate is not None
+        urls.append(candidate)
+    return urls
+
+
 def _attempt_dict(result: SpeedResult) -> dict:
     return {
         "url": result.url,
@@ -104,18 +143,15 @@ def _attempt_dict(result: SpeedResult) -> dict:
     }
 
 
-def _download_one(
-    proxy: ProxyConfig,
-    engine: EngineBackend,
+def _download_via_socks(
+    socks_url: str,
     *,
     url: str,
     timeout: float,
     curl_command: str,
 ) -> SpeedResult:
-    session = None
     expected_bytes = _expected_download_bytes(url)
     try:
-        session = engine.start(proxy)
         proc = subprocess.run(
             [
                 curl_command,
@@ -125,7 +161,7 @@ def _download_one(
                 "--output",
                 "/dev/null",
                 "--proxy",
-                session.socks_url,
+                socks_url,
                 "--connect-timeout",
                 str(timeout),
                 "--max-time",
@@ -172,11 +208,91 @@ def _download_one(
             expected_bytes=expected_bytes,
             payload_valid=True if expected_bytes is not None else None,
         )
-    except (EngineError, subprocess.TimeoutExpired, OSError, ValueError) as exc:
+    except (subprocess.TimeoutExpired, OSError, ValueError) as exc:
         return SpeedResult(False, error=str(exc), url=url, expected_bytes=expected_bytes)
+
+
+def _download_one(
+    proxy: ProxyConfig,
+    engine: EngineBackend,
+    *,
+    url: str,
+    timeout: float,
+    curl_command: str,
+) -> SpeedResult:
+    session = None
+    try:
+        session = engine.start(proxy)
+        return _download_via_socks(
+            session.socks_url,
+            url=url,
+            timeout=timeout,
+            curl_command=curl_command,
+        )
+    except EngineError as exc:
+        return SpeedResult(False, error=str(exc), url=url, expected_bytes=_expected_download_bytes(url))
     finally:
         if session is not None:
             engine.stop(session)
+
+
+def _download_parallel_stage(
+    proxy: ProxyConfig,
+    engine: EngineBackend,
+    *,
+    url: str,
+    streams: int,
+    timeout: float,
+    curl_command: str,
+) -> SpeedResult:
+    """Measure aggregate bandwidth using concurrent transfers through one session."""
+    session = None
+    stream_urls = _split_download_urls(url, streams)
+    try:
+        session = engine.start(proxy)
+        started = time.monotonic()
+        with ThreadPoolExecutor(max_workers=streams) as pool:
+            futures = [
+                pool.submit(
+                    _download_via_socks,
+                    session.socks_url,
+                    url=stream_url,
+                    timeout=timeout,
+                    curl_command=curl_command,
+                )
+                for stream_url in stream_urls
+            ]
+            stream_results = [future.result() for future in futures]
+        elapsed = time.monotonic() - started
+    except (EngineError, OSError, ValueError) as exc:
+        return SpeedResult(False, error=str(exc), url=url)
+    finally:
+        if session is not None:
+            engine.stop(session)
+
+    total_bytes = sum(result.bytes_transferred or 0 for result in stream_results)
+    expected_values = [result.expected_bytes for result in stream_results]
+    expected_total = sum(value for value in expected_values if value is not None) if all(
+        value is not None for value in expected_values
+    ) else None
+    all_ok = all(result.ok for result in stream_results)
+    payload_valid = all(result.payload_valid is not False for result in stream_results)
+    first_failure = next((result for result in stream_results if not result.ok), None)
+
+    aggregate = _mbps(total_bytes, elapsed) if total_bytes > 0 and elapsed > 0 else None
+    result = SpeedResult(
+        all_ok,
+        mbps=aggregate,
+        bytes_transferred=total_bytes,
+        time_seconds=elapsed,
+        http_code=200 if all_ok else (first_failure.http_code if first_failure else None),
+        error=None if all_ok else (first_failure.error if first_failure else "parallel download failed"),
+        url=url,
+        expected_bytes=expected_total,
+        payload_valid=payload_valid if expected_total is not None else None,
+        attempts=[_attempt_dict(item) for item in stream_results],
+    )
+    return result
 
 
 def _download_with_fallbacks(
@@ -222,6 +338,77 @@ def _download_with_fallbacks(
     assert result is not None
     result.attempts = attempts
     return result
+
+
+def _download_staged(
+    proxy: ProxyConfig,
+    engine: EngineBackend,
+    *,
+    url: str,
+    fallback_urls: list[str],
+    fallback_http_codes: set[int],
+    timeout: float,
+    curl_command: str,
+) -> SpeedResult:
+    """Run 1/2/4/8 stream stages and return the highest measured aggregate rate.
+
+    A failure in the first stage keeps the historical fallback behavior. A later
+    stage failure stops escalation but does not discard a successful earlier stage.
+    """
+    stage_records: list[dict] = []
+    best: SpeedResult | None = None
+
+    for streams in DOWNLOAD_STREAM_STAGES:
+        result = _download_parallel_stage(
+            proxy,
+            engine,
+            url=url,
+            streams=streams,
+            timeout=timeout,
+            curl_command=curl_command,
+        )
+        stage_records.append(
+            {
+                "streams": streams,
+                "ok": result.ok,
+                "mbps": result.mbps,
+                "bytes": result.bytes_transferred,
+                "expected_bytes": result.expected_bytes,
+                "payload_valid": result.payload_valid,
+                "time_seconds": result.time_seconds,
+                "http_code": result.http_code,
+                "error": result.error,
+                "stream_results": result.attempts,
+            }
+        )
+
+        if not result.ok:
+            if streams == 1:
+                retryable = result.payload_valid is False or result.http_code in fallback_http_codes
+                if retryable and fallback_urls:
+                    fallback = _download_with_fallbacks(
+                        proxy,
+                        engine,
+                        url=url,
+                        fallback_urls=fallback_urls,
+                        fallback_http_codes=fallback_http_codes,
+                        timeout=timeout,
+                        curl_command=curl_command,
+                    )
+                    fallback.stages = stage_records
+                    return fallback
+                result.stages = stage_records
+                return result
+            break
+
+        if best is None or (result.mbps or -1) > (best.mbps or -1):
+            best = result
+
+    if best is None:
+        result.stages = stage_records
+        return result
+    best.stages = stage_records
+    return best
 
 
 def _upload_one(
@@ -308,12 +495,6 @@ def _is_incomplete_upload_after_continue(result: SpeedResult) -> bool:
 
 
 def _is_transient_upload_failure(result: SpeedResult) -> bool:
-    """Return True for failures before any HTTP response or payload transfer.
-
-    This intentionally uses transport state rather than curl error strings, so
-    SOCKS/connect/TLS failures and zero-byte connection timeouts get one retry
-    without treating HTTP errors or partial uploads as transient.
-    """
     return (
         not result.ok
         and result.http_code in {None, 0}
@@ -462,7 +643,7 @@ def check_download_many(
     retry_codes = set(fallback_http_codes or {429})
 
     def probe(proxy: ProxyConfig) -> SpeedResult:
-        return _download_with_fallbacks(
+        return _download_staged(
             proxy,
             engine,
             url=url,
@@ -477,9 +658,12 @@ def check_download_many(
     for proxy, result in _run_many(proxies, workers, probe, "download"):
         proxy.tests.download_mbps = result.mbps
         threshold_ok = result.ok and result.mbps is not None and result.mbps >= min_mbps
+        single_stage = next((stage for stage in result.stages if stage.get("streams") == 1), None)
         proxy.tests.download = {
             "status": "pass" if threshold_ok else "fail",
             "mbps": result.mbps,
+            "single_mbps": single_stage.get("mbps") if single_stage else result.mbps,
+            "aggregate_mbps": result.mbps,
             "bytes": result.bytes_transferred,
             "expected_bytes": result.expected_bytes,
             "payload_valid": result.payload_valid,
@@ -488,7 +672,8 @@ def check_download_many(
             "error": result.error,
             "url": result.url,
             "attempts": result.attempts,
-            "method": "curl-socks5h",
+            "stages": result.stages,
+            "method": "curl-socks5h-staged-parallel",
         }
         if not result.ok:
             proxy.tests.status = "rejected_download_error"
