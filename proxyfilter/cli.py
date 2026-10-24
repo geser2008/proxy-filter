@@ -236,6 +236,7 @@ def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from:
             curl_command=speed_curl,
             fallback_urls=download_fallback_urls,
             fallback_http_codes=download_fallback_http_codes,
+            stream_stages=speed_cfg.get("download_streams"),
         )
         write_jsonl(work / "07-download-ok.jsonl", download_ok)
         write_jsonl(work / "07-rejected-download.jsonl", download_rejected)
