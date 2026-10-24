@@ -6,6 +6,7 @@ from proxyfilter.speed import (
     SpeedResult,
     _download_staged,
     _expected_download_bytes,
+    _normalize_download_stream_stages,
     _split_download_urls,
 )
 
@@ -24,6 +25,20 @@ class AggregateDownloadTests(unittest.TestCase):
     def test_unknown_endpoint_is_repeated_without_rewriting(self):
         url = "https://example.com/file.bin"
         self.assertEqual(_split_download_urls(url, 4), [url, url, url, url])
+
+    def test_stream_stages_accept_arbitrary_count_and_values(self):
+        self.assertEqual(_normalize_download_stream_stages([1, 3, 7, 10, 16]), (1, 3, 7, 10, 16))
+        self.assertEqual(_normalize_download_stream_stages([3, 6, 12]), (3, 6, 12))
+        self.assertEqual(_normalize_download_stream_stages(10), (10,))
+
+    def test_stream_stages_default_when_omitted(self):
+        self.assertEqual(_normalize_download_stream_stages(None), (1, 2, 4, 8))
+
+    def test_stream_stages_reject_invalid_values(self):
+        for value in ([], [0], [-1], [1, 1], [1.5], [True], ["bad"]):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    _normalize_download_stream_stages(value)
 
     def test_staged_download_returns_highest_aggregate_rate(self):
         responses = [
@@ -47,6 +62,29 @@ class AggregateDownloadTests(unittest.TestCase):
         self.assertEqual(result.mbps, 190.0)
         self.assertEqual([stage["streams"] for stage in result.stages], [1, 2, 4, 8])
         self.assertEqual(probe.call_count, 4)
+
+    def test_custom_stages_are_used_in_configured_order(self):
+        responses = [
+            SpeedResult(True, mbps=75.0, bytes_transferred=50_000_000, time_seconds=5.3, http_code=200),
+            SpeedResult(True, mbps=155.0, bytes_transferred=50_000_000, time_seconds=2.6, http_code=200),
+            SpeedResult(True, mbps=240.0, bytes_transferred=50_000_000, time_seconds=1.7, http_code=200),
+        ]
+        with patch("proxyfilter.speed._download_parallel_stage", side_effect=responses) as probe:
+            result = _download_staged(
+                self.proxy,
+                object(),
+                url="https://speed.cloudflare.com/__down?bytes=50000000",
+                fallback_urls=[],
+                fallback_http_codes={429},
+                timeout=30,
+                curl_command="curl",
+                stream_stages=(3, 6, 10),
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.mbps, 240.0)
+        self.assertEqual([stage["streams"] for stage in result.stages], [3, 6, 10])
+        self.assertEqual([call.kwargs["streams"] for call in probe.call_args_list], [3, 6, 10])
 
     def test_later_stage_failure_keeps_best_successful_stage(self):
         responses = [
