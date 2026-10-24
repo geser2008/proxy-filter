@@ -47,6 +47,24 @@ class PublishTests(unittest.TestCase):
             self.assertFalse(txt_path.with_suffix(".txt.tmp").exists())
             self.assertFalse(jsonl_path.with_suffix(".jsonl.tmp").exists())
 
+    def test_publish_preserves_unicode_country_label_exactly(self):
+        name = "🇳🇱 NL | 126ms | ↓105 ↑132 | trojan"
+        uri = (
+            "trojan://secret@example.com:443?security=tls"
+            "#%F0%9F%87%B3%F0%9F%87%B1%20NL%20%7C%20126ms%20%7C%20"
+            "%E2%86%93105%20%E2%86%91132%20%7C%20trojan"
+        )
+        proxy = self._proxy(uri)
+        proxy.tests.render["name"] = name
+
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            txt_path, jsonl_path = publish_source(data_dir, "test", [proxy])
+
+            self.assertIn("%F0%9F%87%B3%F0%9F%87%B1%20NL%20%7C", txt_path.read_text(encoding="utf-8"))
+            record = json.loads(jsonl_path.read_text(encoding="utf-8").strip())
+            self.assertEqual(record["tests"]["render"]["name"], name)
+
     def test_publish_merged_keeps_two_best_from_same_infrastructure(self):
         values = [
             (199, 164, 56, "80.174.118.30"),
