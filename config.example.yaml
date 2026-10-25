@@ -38,6 +38,12 @@ filters:
       - 8
       - 10
 
+    # Skip stages whose share of the fixed total payload would be smaller than
+    # this value. With 80 MB total and 5 MB minimum, stages through 16 streams
+    # are allowed; higher counts are recorded as skipped rather than producing
+    # very short, noisy transfers.
+    download_min_stream_bytes: 5000000
+
     # On a retryable primary failure, rerun the whole staged test against the
     # fallback backend instead of measuring only one fallback stream. For the
     # known CacheFly 100mb.test endpoint the same primary total byte count is
