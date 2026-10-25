@@ -68,6 +68,9 @@ filters:
       - 503
       - 504
 
+    # Maximum time to establish each curl connection through the proxy.
+    # The complete transfer is allowed to run up to timeout_seconds below.
+    connect_timeout_seconds: 10
     timeout_seconds: 30
     min_download_mbps: 80
     min_upload_mbps: 30
