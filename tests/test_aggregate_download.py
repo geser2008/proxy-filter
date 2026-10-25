@@ -8,6 +8,7 @@ from proxyfilter.speed import (
     _expected_download_bytes,
     _normalize_download_stream_stages,
     _split_download_urls,
+    _stage_requests,
 )
 
 
@@ -21,6 +22,38 @@ class AggregateDownloadTests(unittest.TestCase):
             urls = _split_download_urls(original, streams)
             self.assertEqual(len(urls), streams)
             self.assertEqual(sum(_expected_download_bytes(url) or 0 for url in urls), 50_000_000)
+
+    def test_cachefly_range_stage_keeps_total_payload_constant(self):
+        requests = _stage_requests(
+            "https://cachefly.cachefly.net/100mb.test",
+            4,
+            total_bytes=80_000_000,
+        )
+        self.assertEqual(
+            requests,
+            [
+                (
+                    "https://cachefly.cachefly.net/100mb.test",
+                    ["Range: bytes=0-19999999"],
+                    20_000_000,
+                ),
+                (
+                    "https://cachefly.cachefly.net/100mb.test",
+                    ["Range: bytes=20000000-39999999"],
+                    20_000_000,
+                ),
+                (
+                    "https://cachefly.cachefly.net/100mb.test",
+                    ["Range: bytes=40000000-59999999"],
+                    20_000_000,
+                ),
+                (
+                    "https://cachefly.cachefly.net/100mb.test",
+                    ["Range: bytes=60000000-79999999"],
+                    20_000_000,
+                ),
+            ],
+        )
 
     def test_unknown_endpoint_is_repeated_without_rewriting(self):
         url = "https://example.com/file.bin"
@@ -107,6 +140,77 @@ class AggregateDownloadTests(unittest.TestCase):
         self.assertEqual(result.mbps, 66.0)
         self.assertEqual([stage["streams"] for stage in result.stages], [1, 2, 4])
         self.assertEqual(probe.call_count, 3)
+
+    def test_retryable_primary_failure_reruns_full_stages_on_cachefly(self):
+        responses = [
+            SpeedResult(
+                False,
+                http_code=429,
+                error="rate limited",
+                url="https://speed.cloudflare.com/__down?bytes=80000000",
+                backend="cloudflare",
+            ),
+            SpeedResult(
+                True,
+                mbps=45.0,
+                bytes_transferred=80_000_000,
+                time_seconds=14.2,
+                http_code=206,
+                url="https://cachefly.cachefly.net/100mb.test",
+                backend="cachefly",
+            ),
+            SpeedResult(
+                True,
+                mbps=82.0,
+                bytes_transferred=80_000_000,
+                time_seconds=7.8,
+                http_code=206,
+                url="https://cachefly.cachefly.net/100mb.test",
+                backend="cachefly",
+            ),
+            SpeedResult(
+                True,
+                mbps=140.0,
+                bytes_transferred=80_000_000,
+                time_seconds=4.6,
+                http_code=206,
+                url="https://cachefly.cachefly.net/100mb.test",
+                backend="cachefly",
+            ),
+        ]
+        with patch("proxyfilter.speed._download_parallel_stage", side_effect=responses) as probe:
+            result = _download_staged(
+                self.proxy,
+                object(),
+                url="https://speed.cloudflare.com/__down?bytes=80000000",
+                fallback_urls=["https://cachefly.cachefly.net/100mb.test"],
+                fallback_http_codes={429},
+                timeout=30,
+                curl_command="curl",
+                stream_stages=(1, 2, 4),
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.backend, "cachefly")
+        self.assertEqual(result.mbps, 140.0)
+        self.assertEqual(
+            [(stage["backend"], stage["streams"]) for stage in result.stages],
+            [("cloudflare", 1), ("cachefly", 1), ("cachefly", 2), ("cachefly", 4)],
+        )
+        self.assertEqual([call.kwargs["streams"] for call in probe.call_args_list], [1, 1, 2, 4])
+        self.assertEqual(
+            [call.kwargs["url"] for call in probe.call_args_list],
+            [
+                "https://speed.cloudflare.com/__down?bytes=80000000",
+                "https://cachefly.cachefly.net/100mb.test",
+                "https://cachefly.cachefly.net/100mb.test",
+                "https://cachefly.cachefly.net/100mb.test",
+            ],
+        )
+        self.assertEqual(
+            [call.kwargs["total_bytes"] for call in probe.call_args_list],
+            [80_000_000, 80_000_000, 80_000_000, 80_000_000],
+        )
 
 
 if __name__ == "__main__":
