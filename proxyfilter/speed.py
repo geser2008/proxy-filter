@@ -14,6 +14,7 @@ from .model import ProxyConfig
 
 DEFAULT_DOWNLOAD_STREAM_STAGES = (1, 2, 4, 8)
 DEFAULT_DOWNLOAD_MIN_STREAM_BYTES = 5_000_000
+DEFAULT_SPEED_CONNECT_TIMEOUT = 10.0
 
 
 @dataclass(slots=True)
@@ -187,7 +188,6 @@ def _stage_requests(
             offset = last + 1
         return requests
 
-    # Preserve historical behavior for unknown endpoints.
     expected = _expected_download_bytes(url)
     return [(url, [], expected)] * streams
 
@@ -214,12 +214,20 @@ def _attempt_dict(result: SpeedResult) -> dict:
     }
 
 
+def _resolved_connect_timeout(timeout: float, connect_timeout: float | None) -> float:
+    value = timeout if connect_timeout is None else float(connect_timeout)
+    if value <= 0:
+        raise ValueError("speed.connect_timeout_seconds must be greater than zero")
+    return value
+
+
 def _download_via_socks(
     socks_url: str,
     *,
     url: str,
     timeout: float,
     curl_command: str,
+    connect_timeout: float | None = None,
     headers: list[str] | None = None,
     expected_bytes: int | None = None,
     backend: str | None = None,
@@ -227,6 +235,7 @@ def _download_via_socks(
     if expected_bytes is None:
         expected_bytes = _expected_download_bytes(url)
     backend = backend or _download_backend(url)
+    connect_timeout = _resolved_connect_timeout(timeout, connect_timeout)
     try:
         command = [
             curl_command,
@@ -238,7 +247,7 @@ def _download_via_socks(
             "--proxy",
             socks_url,
             "--connect-timeout",
-            str(timeout),
+            str(connect_timeout),
             "--max-time",
             str(timeout),
         ]
@@ -311,6 +320,7 @@ def _download_one(
     url: str,
     timeout: float,
     curl_command: str,
+    connect_timeout: float | None = None,
 ) -> SpeedResult:
     session = None
     try:
@@ -320,6 +330,7 @@ def _download_one(
             url=url,
             timeout=timeout,
             curl_command=curl_command,
+            connect_timeout=connect_timeout,
         )
     except EngineError as exc:
         return SpeedResult(
@@ -343,6 +354,7 @@ def _download_with_fallbacks(
     fallback_http_codes: set[int],
     timeout: float,
     curl_command: str,
+    connect_timeout: float | None = None,
 ) -> SpeedResult:
     """Backward-compatible single-stream fallback helper."""
     attempts: list[dict] = []
@@ -356,6 +368,7 @@ def _download_with_fallbacks(
             url=candidate_url,
             timeout=timeout,
             curl_command=curl_command,
+            connect_timeout=connect_timeout,
         )
         attempts.append(_attempt_dict(result))
         if result.ok:
@@ -387,6 +400,7 @@ def _download_parallel_stage(
     timeout: float,
     curl_command: str,
     total_bytes: int | None = None,
+    connect_timeout: float | None = None,
 ) -> SpeedResult:
     """Measure aggregate bandwidth using concurrent transfers through one session."""
     session = None
@@ -403,6 +417,7 @@ def _download_parallel_stage(
                     url=request_url,
                     timeout=timeout,
                     curl_command=curl_command,
+                    connect_timeout=connect_timeout,
                     headers=headers,
                     expected_bytes=expected,
                     backend=backend,
@@ -476,6 +491,7 @@ def _run_staged_backend(
     min_stream_bytes: int,
     timeout: float,
     curl_command: str,
+    connect_timeout: float | None = None,
 ) -> tuple[SpeedResult, bool]:
     """Run one backend only; return result and whether its failure is retryable upstream."""
     stage_records: list[dict] = []
@@ -506,6 +522,7 @@ def _run_staged_backend(
             timeout=timeout,
             curl_command=curl_command,
             total_bytes=total_bytes,
+            connect_timeout=connect_timeout,
         )
         last_result = result
         stage_records.append(_stage_record(streams, result))
@@ -548,11 +565,13 @@ def _download_staged(
     curl_command: str,
     stream_stages: tuple[int, ...] = DEFAULT_DOWNLOAD_STREAM_STAGES,
     min_stream_bytes: int = DEFAULT_DOWNLOAD_MIN_STREAM_BYTES,
+    connect_timeout: float | None = None,
 ) -> SpeedResult:
     """Run staged primary download and retry the whole staged test on fallback backends."""
     stages = _normalize_download_stream_stages(stream_stages)
     if min_stream_bytes <= 0:
         raise ValueError("speed.download_min_stream_bytes must be greater than zero")
+    connect_timeout = _resolved_connect_timeout(timeout, connect_timeout)
 
     total_bytes = _expected_download_bytes(url)
     primary, _ = _run_staged_backend(
@@ -564,10 +583,9 @@ def _download_staged(
         min_stream_bytes=min_stream_bytes,
         timeout=timeout,
         curl_command=curl_command,
+        connect_timeout=connect_timeout,
     )
 
-    # If every executed primary stage succeeded, keep the primary result. A later
-    # non-retryable failure also keeps the best successful primary measurement.
     failed_stage = next(
         (stage for stage in primary.stages if not stage.get("ok") and not stage.get("skipped")),
         None,
@@ -582,12 +600,14 @@ def _download_staged(
     if not retryable or not fallback_urls:
         return primary
 
-    primary_stages = list(primary.stages)
+    primary_best = primary if primary.ok else None
+    all_stages = list(primary.stages)
     reason = (
         "invalid_payload"
         if failed_stage.get("payload_valid") is False
         else f"http={failed_stage.get('http_code')}"
     )
+    last_fallback: SpeedResult | None = None
 
     for fallback_url in fallback_urls:
         print(
@@ -603,18 +623,24 @@ def _download_staged(
             min_stream_bytes=min_stream_bytes,
             timeout=timeout,
             curl_command=curl_command,
+            connect_timeout=connect_timeout,
         )
-        fallback.stages = [*primary_stages, *fallback.stages]
+        fallback_stages = list(fallback.stages)
+        all_stages.extend(fallback_stages)
+        fallback.stages = list(all_stages)
+        last_fallback = fallback
+
+        if fallback.ok:
+            return fallback
 
         fallback_failed = next(
-            (
-                stage
-                for stage in fallback.stages[len(primary_stages) :]
-                if not stage.get("ok") and not stage.get("skipped")
-            ),
+            (stage for stage in fallback_stages if not stage.get("ok") and not stage.get("skipped")),
             None,
         )
-        if fallback_failed is None or fallback.ok:
+        if fallback_failed is None:
+            if primary_best is not None:
+                primary_best.stages = list(all_stages)
+                return primary_best
             return fallback
 
         retryable = (
@@ -622,15 +648,22 @@ def _download_staged(
             or fallback_failed.get("http_code") in fallback_http_codes
         )
         if not retryable:
+            if primary_best is not None:
+                primary_best.stages = list(all_stages)
+                return primary_best
             return fallback
+
         reason = (
             "invalid_payload"
             if fallback_failed.get("payload_valid") is False
             else f"http={fallback_failed.get('http_code')}"
         )
-        primary_stages = list(fallback.stages)
 
-    return fallback
+    if primary_best is not None:
+        primary_best.stages = list(all_stages)
+        return primary_best
+    assert last_fallback is not None
+    return last_fallback
 
 
 def _upload_one(
@@ -642,8 +675,10 @@ def _upload_one(
     timeout: float,
     curl_command: str,
     disable_expect: bool = False,
+    connect_timeout: float | None = None,
 ) -> SpeedResult:
     session = None
+    connect_timeout = _resolved_connect_timeout(timeout, connect_timeout)
     try:
         session = engine.start(proxy)
         command = [
@@ -656,7 +691,7 @@ def _upload_one(
             "--proxy",
             session.socks_url,
             "--connect-timeout",
-            str(timeout),
+            str(connect_timeout),
             "--max-time",
             str(timeout),
             "--header",
@@ -734,6 +769,7 @@ def _upload_with_fallbacks(
     payload_path: Path,
     timeout: float,
     curl_command: str,
+    connect_timeout: float | None = None,
 ) -> SpeedResult:
     attempts: list[dict] = []
 
@@ -745,6 +781,7 @@ def _upload_with_fallbacks(
         timeout=timeout,
         curl_command=curl_command,
         disable_expect=False,
+        connect_timeout=connect_timeout,
     )
     attempts.append(_attempt_dict(result))
     if result.ok:
@@ -764,6 +801,7 @@ def _upload_with_fallbacks(
             timeout=timeout,
             curl_command=curl_command,
             disable_expect=True,
+            connect_timeout=connect_timeout,
         )
         attempts.append(_attempt_dict(result))
         if result.ok:
@@ -781,6 +819,7 @@ def _upload_with_fallbacks(
             timeout=timeout,
             curl_command=curl_command,
             disable_expect=retry_disable_expect,
+            connect_timeout=connect_timeout,
         )
         attempts.append(_attempt_dict(result))
         if result.ok:
@@ -805,6 +844,7 @@ def _upload_with_fallbacks(
             timeout=timeout,
             curl_command=curl_command,
             disable_expect=True,
+            connect_timeout=connect_timeout,
         )
         attempts.append(_attempt_dict(result))
         if result.ok:
@@ -861,11 +901,13 @@ def check_download_many(
     fallback_http_codes: set[int] | None = None,
     stream_stages=None,
     min_stream_bytes: int = DEFAULT_DOWNLOAD_MIN_STREAM_BYTES,
+    connect_timeout: float | None = DEFAULT_SPEED_CONNECT_TIMEOUT,
 ) -> tuple[list[ProxyConfig], list[ProxyConfig]]:
     if not url:
         raise ValueError("speed.download_url is required")
     if min_stream_bytes <= 0:
         raise ValueError("speed.download_min_stream_bytes must be greater than zero")
+    connect_timeout = _resolved_connect_timeout(timeout, connect_timeout)
 
     clean_fallbacks = [item for item in (fallback_urls or []) if item and item != url]
     retry_codes = set(fallback_http_codes or {429})
@@ -882,6 +924,7 @@ def check_download_many(
             curl_command=curl_command,
             stream_stages=normalized_stages,
             min_stream_bytes=min_stream_bytes,
+            connect_timeout=connect_timeout,
         )
 
     passed: list[ProxyConfig] = []
@@ -907,6 +950,8 @@ def check_download_many(
             "aggregate_mbps": result.mbps,
             "stream_stages": list(normalized_stages),
             "min_stream_bytes": min_stream_bytes,
+            "connect_timeout_seconds": connect_timeout,
+            "timeout_seconds": timeout,
             "bytes": result.bytes_transferred,
             "expected_bytes": result.expected_bytes,
             "payload_valid": result.payload_valid,
@@ -949,11 +994,13 @@ def check_upload_many(
     curl_command: str = "curl",
     fallback_urls: list[str] | None = None,
     fallback_http_codes: set[int] | None = None,
+    connect_timeout: float | None = DEFAULT_SPEED_CONNECT_TIMEOUT,
 ) -> tuple[list[ProxyConfig], list[ProxyConfig]]:
     if not url:
         raise ValueError("speed.upload_url is required")
     if upload_bytes <= 0:
         raise ValueError("speed.upload_bytes must be greater than zero")
+    connect_timeout = _resolved_connect_timeout(timeout, connect_timeout)
 
     clean_fallbacks = [item for item in (fallback_urls or []) if item and item != url]
     retry_codes = set(fallback_http_codes or {429, 500, 502, 503, 504})
@@ -973,6 +1020,7 @@ def check_upload_many(
                 payload_path=payload_path,
                 timeout=timeout,
                 curl_command=curl_command,
+                connect_timeout=connect_timeout,
             )
 
         measured = _run_many(proxies, workers, probe, "upload")
@@ -985,6 +1033,8 @@ def check_upload_many(
         proxy.tests.upload = {
             "status": "pass" if threshold_ok else "fail",
             "mbps": result.mbps,
+            "connect_timeout_seconds": connect_timeout,
+            "timeout_seconds": timeout,
             "bytes": result.bytes_transferred,
             "time_seconds": result.time_seconds,
             "http_code": result.http_code,
