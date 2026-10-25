@@ -212,6 +212,68 @@ class AggregateDownloadTests(unittest.TestCase):
             [80_000_000, 80_000_000, 80_000_000, 80_000_000],
         )
 
+    def test_failed_fallback_preserves_best_successful_primary(self):
+        responses = [
+            SpeedResult(
+                True,
+                mbps=209.2,
+                bytes_transferred=80_000_000,
+                time_seconds=3.06,
+                http_code=200,
+                backend="cloudflare",
+            ),
+            SpeedResult(
+                True,
+                mbps=246.3,
+                bytes_transferred=80_000_000,
+                time_seconds=2.60,
+                http_code=200,
+                backend="cloudflare",
+            ),
+            SpeedResult(
+                False,
+                http_code=429,
+                error="rate limited",
+                backend="cloudflare",
+            ),
+            SpeedResult(
+                False,
+                bytes_transferred=11,
+                expected_bytes=80_000_000,
+                payload_valid=False,
+                http_code=200,
+                error="invalid download payload",
+                backend="cachefly",
+            ),
+        ]
+        with patch("proxyfilter.speed._download_parallel_stage", side_effect=responses) as probe:
+            result = _download_staged(
+                self.proxy,
+                object(),
+                url="https://speed.cloudflare.com/__down?bytes=80000000",
+                fallback_urls=["https://cachefly.cachefly.net/100mb.test"],
+                fallback_http_codes={429},
+                timeout=30,
+                connect_timeout=10,
+                curl_command="curl",
+                stream_stages=(1, 2, 4),
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.backend, "cloudflare")
+        self.assertEqual(result.mbps, 246.3)
+        self.assertEqual(
+            [(stage["backend"], stage["streams"], stage["ok"]) for stage in result.stages],
+            [
+                ("cloudflare", 1, True),
+                ("cloudflare", 2, True),
+                ("cloudflare", 4, False),
+                ("cachefly", 1, False),
+            ],
+        )
+        self.assertEqual(probe.call_count, 4)
+        self.assertTrue(all(call.kwargs["connect_timeout"] == 10 for call in probe.call_args_list))
+
 
 if __name__ == "__main__":
     unittest.main()
