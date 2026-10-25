@@ -51,6 +51,7 @@ filters:
     download_fallback_urls:
       - https://cachefly.cachefly.net/100mb.test
     download_fallback_http_codes:
+      - 403
       - 429
 
     # Upload uses Cloudflare's public upload endpoint. If an upload ends after
