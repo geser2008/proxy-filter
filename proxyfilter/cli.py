@@ -220,7 +220,9 @@ def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from:
 
     if stage_should_run("download", resume_from):
         speed_cfg = cfg.get("filters", {}).get("speed", {})
-        speed_timeout = float(speed_cfg.get("timeout_seconds", 30))
+        speed_transfer_timeout = float(
+            speed_cfg.get("transfer_timeout_seconds", speed_cfg.get("timeout_seconds", 30))
+        )
         speed_connect_timeout = float(speed_cfg.get("connect_timeout_seconds", 10))
         speed_workers = int(speed_cfg.get("workers", 1))
         speed_curl = str(speed_cfg.get("command", "curl"))
@@ -231,7 +233,7 @@ def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from:
             current,
             engine,
             url=str(speed_cfg.get("download_url", "")),
-            timeout=speed_timeout,
+            timeout=speed_transfer_timeout,
             connect_timeout=speed_connect_timeout,
             min_mbps=float(speed_cfg.get("min_download_mbps", 30)),
             workers=speed_workers,
@@ -250,7 +252,9 @@ def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from:
 
     if stage_should_run("upload", resume_from):
         speed_cfg = cfg.get("filters", {}).get("speed", {})
-        speed_timeout = float(speed_cfg.get("timeout_seconds", 30))
+        speed_transfer_timeout = float(
+            speed_cfg.get("transfer_timeout_seconds", speed_cfg.get("timeout_seconds", 30))
+        )
         speed_connect_timeout = float(speed_cfg.get("connect_timeout_seconds", 10))
         speed_workers = int(speed_cfg.get("workers", 1))
         speed_curl = str(speed_cfg.get("command", "curl"))
@@ -265,7 +269,7 @@ def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from:
             engine,
             url=str(speed_cfg.get("upload_url", "")),
             upload_bytes=int(speed_cfg.get("upload_bytes", 10_000_000)),
-            timeout=speed_timeout,
+            timeout=speed_transfer_timeout,
             connect_timeout=speed_connect_timeout,
             min_mbps=float(speed_cfg.get("min_upload_mbps", 10)),
             workers=speed_workers,
