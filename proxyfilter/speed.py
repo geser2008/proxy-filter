@@ -221,6 +221,12 @@ def _resolved_connect_timeout(timeout: float, connect_timeout: float | None) -> 
     return value
 
 
+def _max_operation_time(transfer_timeout: float, connect_timeout: float) -> float:
+    if transfer_timeout <= 0:
+        raise ValueError("speed.transfer_timeout_seconds must be greater than zero")
+    return float(connect_timeout) + float(transfer_timeout)
+
+
 def _download_via_socks(
     socks_url: str,
     *,
@@ -236,6 +242,7 @@ def _download_via_socks(
         expected_bytes = _expected_download_bytes(url)
     backend = backend or _download_backend(url)
     connect_timeout = _resolved_connect_timeout(timeout, connect_timeout)
+    max_time = _max_operation_time(timeout, connect_timeout)
     try:
         command = [
             curl_command,
@@ -249,7 +256,7 @@ def _download_via_socks(
             "--connect-timeout",
             str(connect_timeout),
             "--max-time",
-            str(timeout),
+            str(max_time),
         ]
         for header in headers or []:
             command.extend(["--header", header])
@@ -264,7 +271,7 @@ def _download_via_socks(
             command,
             text=True,
             capture_output=True,
-            timeout=timeout + 5,
+            timeout=max_time + 5,
         )
         if proc.returncode != 0:
             size, elapsed, http_code = _parse_curl_writeout(proc.stdout)
@@ -679,6 +686,7 @@ def _upload_one(
 ) -> SpeedResult:
     session = None
     connect_timeout = _resolved_connect_timeout(timeout, connect_timeout)
+    max_time = _max_operation_time(timeout, connect_timeout)
     try:
         session = engine.start(proxy)
         command = [
@@ -693,7 +701,7 @@ def _upload_one(
             "--connect-timeout",
             str(connect_timeout),
             "--max-time",
-            str(timeout),
+            str(max_time),
             "--header",
             "Content-Type: application/octet-stream",
         ]
@@ -712,7 +720,7 @@ def _upload_one(
             command,
             text=True,
             capture_output=True,
-            timeout=timeout + 5,
+            timeout=max_time + 5,
         )
         if proc.returncode != 0:
             size, elapsed, http_code = _parse_curl_writeout(proc.stdout)
@@ -908,6 +916,7 @@ def check_download_many(
     if min_stream_bytes <= 0:
         raise ValueError("speed.download_min_stream_bytes must be greater than zero")
     connect_timeout = _resolved_connect_timeout(timeout, connect_timeout)
+    max_time = _max_operation_time(timeout, connect_timeout)
 
     clean_fallbacks = [item for item in (fallback_urls or []) if item and item != url]
     retry_codes = set(fallback_http_codes or {429})
@@ -951,7 +960,8 @@ def check_download_many(
             "stream_stages": list(normalized_stages),
             "min_stream_bytes": min_stream_bytes,
             "connect_timeout_seconds": connect_timeout,
-            "timeout_seconds": timeout,
+            "transfer_timeout_seconds": timeout,
+            "max_time_seconds": max_time,
             "bytes": result.bytes_transferred,
             "expected_bytes": result.expected_bytes,
             "payload_valid": result.payload_valid,
@@ -1001,6 +1011,7 @@ def check_upload_many(
     if upload_bytes <= 0:
         raise ValueError("speed.upload_bytes must be greater than zero")
     connect_timeout = _resolved_connect_timeout(timeout, connect_timeout)
+    max_time = _max_operation_time(timeout, connect_timeout)
 
     clean_fallbacks = [item for item in (fallback_urls or []) if item and item != url]
     retry_codes = set(fallback_http_codes or {429, 500, 502, 503, 504})
@@ -1034,7 +1045,8 @@ def check_upload_many(
             "status": "pass" if threshold_ok else "fail",
             "mbps": result.mbps,
             "connect_timeout_seconds": connect_timeout,
-            "timeout_seconds": timeout,
+            "transfer_timeout_seconds": timeout,
+            "max_time_seconds": max_time,
             "bytes": result.bytes_transferred,
             "time_seconds": result.time_seconds,
             "http_code": result.http_code,
