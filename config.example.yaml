@@ -22,9 +22,10 @@ filters:
     command: curl
 
   speed:
-    # Primary speed-test endpoint. If it returns an HTTP status listed in
-    # download_fallback_http_codes, retry the same proxy against the fallback.
-    download_url: https://speed.cloudflare.com/__down?bytes=50000000
+    # Primary staged speed-test endpoint. The total payload is kept constant
+    # across stream stages. 80 MB avoids Cloudflare's observed rejected byte
+    # ranges for the default 1/2/4/8/10 stages.
+    download_url: https://speed.cloudflare.com/__down?bytes=80000000
 
     # Aggregate download stages. Any non-empty sequence of unique positive
     # integers is allowed and the configured order is preserved. Examples:
@@ -37,6 +38,10 @@ filters:
       - 8
       - 10
 
+    # On a retryable primary failure, rerun the whole staged test against the
+    # fallback backend instead of measuring only one fallback stream. For the
+    # known CacheFly 100mb.test endpoint the same primary total byte count is
+    # split into non-overlapping HTTP Range requests for every stream stage.
     download_fallback_urls:
       - https://cachefly.cachefly.net/100mb.test
     download_fallback_http_codes:
