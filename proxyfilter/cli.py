@@ -269,7 +269,7 @@ def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from:
             fallback_urls=upload_fallback_urls,
             fallback_http_codes=upload_fallback_http_codes,
         )
-        write_jsonl(work / "08-upload-ok.jsonl", download_ok)
+        write_jsonl(work / "08-upload-ok.jsonl", upload_ok)
         write_jsonl(work / "08-rejected-upload.jsonl", upload_rejected)
         print(f"[{source_id}] upload_pass={len(upload_ok)} rejected={len(upload_rejected)}")
         current = upload_ok
