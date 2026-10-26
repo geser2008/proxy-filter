@@ -54,6 +54,13 @@ filters:
       - 403
       - 429
 
+    # Multi-stream stages with inconsistent per-stream outcomes (for example,
+    # some streams succeed while siblings time out or fail at the transport
+    # layer) are marked stream_reliability=degraded. Keep them in diagnostic
+    # work files either way; this switch controls whether they may reach the
+    # final rendered files and subscriptions.
+    include_unreliable_proxies: true
+
     # Upload uses Cloudflare's public upload endpoint. If an upload ends after
     # only an interim HTTP 100 response, retry once against the same URL with
     # the Expect header disabled. Optional fallback URLs can then be tried for
@@ -129,5 +136,11 @@ output:
   # {sources} shows up to three contributing source ids joined with '+'.
   # With more than three sources it becomes e.g. 4src. {source} remains the
   # primary/first source; {source_count} is the full provenance count.
+  # {stream_reliability} (alias {reliability}) is stable/degraded/unknown.
   rename_template: "{flag} {country_code} | {latency_ms}ms | ↓{download_mbps} ↑{upload_mbps} | {protocol} | [{sources}]"
   include_original_name: false
+
+  # Append an explicit reliability:<status> marker to every rendered URI name,
+  # unless the rename_template already contains {stream_reliability} or
+  # {reliability}. This makes the field visible in plain-text subscriptions.
+  include_stream_reliability: true
