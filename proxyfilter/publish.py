@@ -50,10 +50,9 @@ def publish_merged(
 ) -> tuple[Path, Path]:
     """Publish the merged subscription after infrastructure diversity selection.
 
-    Per-source subscriptions stay complete. Only the merged all.txt/all.jsonl are
-    diversity-limited. Exact measured exit IPs are capped first, then the broader
-    exit-subnet+ASN infrastructure cluster is capped. The input list is updated
-    in-place so caller summary counts match publication.
+    Source-specific subscriptions stay complete. Only merged all.txt/all.jsonl
+    are diversity-limited. Work artifacts now live in one common work directory
+    because proxies are de-duplicated before network testing.
     """
     diversity_cfg = diversity_cfg or {}
     enabled = bool(diversity_cfg.get("enabled", True))
@@ -69,7 +68,7 @@ def publish_merged(
     else:
         selected, suppressed, report = list(proxies), [], []
 
-    work_dir = data_dir / "work" / "all"
+    work_dir = data_dir / "work"
     reports_dir = data_dir / "reports"
     write_jsonl(work_dir / "diversity-selected.jsonl", selected)
     write_jsonl(work_dir / "diversity-suppressed.jsonl", suppressed)
