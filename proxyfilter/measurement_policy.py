@@ -3,6 +3,9 @@ from __future__ import annotations
 from .model import ProxyConfig
 from . import speed as base
 
+_BASE_DOWNLOAD = base.check_download_many
+_BASE_UPLOAD = base.check_upload_many
+
 
 def _apply_numeric_policy(
     passed: list[ProxyConfig],
@@ -46,7 +49,7 @@ def _apply_numeric_policy(
 
 
 def check_download_many(*args, min_mbps: float, **kwargs):
-    passed, rejected = base.check_download_many(*args, min_mbps=min_mbps, **kwargs)
+    passed, rejected = _BASE_DOWNLOAD(*args, min_mbps=min_mbps, **kwargs)
     return _apply_numeric_policy(
         passed,
         rejected,
@@ -60,7 +63,7 @@ def check_download_many(*args, min_mbps: float, **kwargs):
 
 
 def check_upload_many(*args, min_mbps: float, **kwargs):
-    passed, rejected = base.check_upload_many(*args, min_mbps=min_mbps, **kwargs)
+    passed, rejected = _BASE_UPLOAD(*args, min_mbps=min_mbps, **kwargs)
     return _apply_numeric_policy(
         passed,
         rejected,
