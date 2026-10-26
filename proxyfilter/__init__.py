@@ -16,10 +16,3 @@ from . import measurement_policy as _measurement_policy
 
 _speed.check_download_many = _measurement_policy.check_download_many
 _speed.check_upload_many = _measurement_policy.check_upload_many
-
-# Deduplicate parsed proxies across all selected sources before network tests.
-# The canonical object keeps the provenance of every source where it appeared.
-from . import cli as _cli
-from .global_dedup import RunDeduplicator as _RunDeduplicator
-
-_cli.deduplicate = _RunDeduplicator(_cli.deduplicate)
