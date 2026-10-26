@@ -227,7 +227,6 @@ def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from:
         speed_workers = int(speed_cfg.get("workers", 1))
         speed_curl = str(speed_cfg.get("command", "curl"))
         download_fallback_urls = _as_string_list(speed_cfg.get("download_fallback_urls", []))
-        download_fallback_http_codes = _as_int_set(speed_cfg.get("download_fallback_http_codes"), [429])
 
         download_ok, download_rejected = check_download_many(
             current,
@@ -239,7 +238,6 @@ def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from:
             workers=speed_workers,
             curl_command=speed_curl,
             fallback_urls=download_fallback_urls,
-            fallback_http_codes=download_fallback_http_codes,
             stream_stages=speed_cfg.get("download_streams"),
             min_stream_bytes=int(speed_cfg.get("download_min_stream_bytes", 5_000_000)),
         )
