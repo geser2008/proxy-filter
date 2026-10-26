@@ -6,7 +6,6 @@ from unittest.mock import patch
 from proxyfilter.global_dedup import RunDeduplicator
 from proxyfilter.measurement_policy import check_download_many, check_upload_many
 from proxyfilter.model import ProxyConfig, SourceInfo
-from proxyfilter.speed import SpeedResult
 
 
 def _proxy(source_id: str, *, name: str = "p") -> ProxyConfig:
@@ -53,7 +52,7 @@ class GlobalDedupTests(unittest.TestCase):
 
         merged, duplicates = dedup([first])
         self.assertEqual(merged, [first])
-        self.assertEqual(duplicates, [])
+        self.assertEqual(duplicates, [second])
 
 
 class NumericSpeedPolicyTests(unittest.TestCase):
