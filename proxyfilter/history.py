@@ -3,12 +3,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 import sqlite3
 import uuid
 from typing import Any
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Ordered snapshots. Later files contain more complete test state for survivors;
 # rejected files are the terminal snapshot for proxies that fail that stage.
@@ -44,6 +45,24 @@ def new_run_id(source_id: str) -> str:
     return f"{stamp}-{source_id}-{uuid.uuid4().hex[:8]}"
 
 
+def _existing_schema_version(conn: sqlite3.Connection) -> int | None:
+    meta_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta'"
+    ).fetchone()
+    if not meta_exists:
+        populated = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name IN ('runs','proxy_observations') LIMIT 1"
+        ).fetchone()
+        if populated:
+            raise RuntimeError(
+                "history database has an unknown legacy schema; move it to a backup path "
+                "and create a fresh schema v2 database"
+            )
+        return None
+    row = conn.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()
+    return int(row[0]) if row is not None else None
+
+
 def _connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -51,7 +70,18 @@ def _connect(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
-    _init_schema(conn)
+    try:
+        version = _existing_schema_version(conn)
+        if version not in {None, SCHEMA_VERSION}:
+            raise RuntimeError(
+                f"history database schema v{version} is incompatible with schema v{SCHEMA_VERSION}; "
+                "move the old database to a backup path and import the existing JSONL snapshot "
+                "with --history-import"
+            )
+        _init_schema(conn)
+    except Exception:
+        conn.close()
+        raise
     return conn
 
 
@@ -86,6 +116,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             ON runs(source_id, finished_at);
 
         CREATE TABLE IF NOT EXISTS proxy_observations (
+            observation_id INTEGER PRIMARY KEY AUTOINCREMENT,
             run_id TEXT NOT NULL,
             source_id TEXT NOT NULL,
             proxy_id TEXT NOT NULL,
@@ -94,35 +125,176 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             availability_state TEXT NOT NULL,
             final_status TEXT,
             furthest_stage TEXT,
+
             protocol TEXT,
             server TEXT,
             port INTEGER,
-            tcp_ok INTEGER,
+            proxy_name TEXT,
+            config_params_json TEXT,
+            original_format TEXT,
+            original_raw TEXT,
+
+            security_status TEXT,
+            tcp_status TEXT,
             tcp_latency_ms REAL,
-            core_ok INTEGER,
-            latency_ok INTEGER,
+            tcp_reason TEXT,
+            tcp_error TEXT,
+            core_status TEXT,
+            core_error TEXT,
+
+            latency_status TEXT,
             latency_ms REAL,
-            download_ok INTEGER,
+            latency_http_code INTEGER,
+            latency_method TEXT,
+            latency_error TEXT,
+
+            download_status TEXT,
             download_mbps REAL,
+            download_single_mbps REAL,
+            download_aggregate_mbps REAL,
+            download_best_partial_mbps REAL,
+            download_best_partial_streams INTEGER,
+            download_best_partial_backend TEXT,
             download_backend TEXT,
+            download_bytes INTEGER,
+            download_expected_bytes INTEGER,
+            download_payload_valid INTEGER,
+            download_time_seconds REAL,
+            download_http_code INTEGER,
+            download_url TEXT,
+            download_method TEXT,
             stream_reliability TEXT,
-            upload_ok INTEGER,
+            download_error TEXT,
+
+            upload_status TEXT,
             upload_mbps REAL,
+            upload_single_mbps REAL,
+            upload_aggregate_mbps REAL,
+            upload_best_partial_mbps REAL,
+            upload_best_partial_streams INTEGER,
+            upload_bytes INTEGER,
+            upload_expected_bytes INTEGER,
+            upload_payload_valid INTEGER,
+            upload_time_seconds REAL,
+            upload_http_code INTEGER,
+            upload_url TEXT,
+            upload_method TEXT,
+            upload_error TEXT,
+
             exit_ip_status TEXT,
             exit_ip TEXT,
+            exit_ip_http_code INTEGER,
+            exit_ip_direct_wan_match INTEGER,
+            exit_ip_method TEXT,
+            exit_ip_error TEXT,
+
+            geo_status TEXT,
+            geo_provider TEXT,
+            geo_ip TEXT,
+            country TEXT,
             country_code TEXT,
+            country_flag TEXT,
+            isp TEXT,
+            org TEXT,
             asn TEXT,
+            geo_error TEXT,
+
+            render_status TEXT,
+            render_name TEXT,
+            render_uri TEXT,
+            render_stream_reliability TEXT,
+            render_error TEXT,
+
+            diversity_status TEXT,
+            diversity_reason TEXT,
+            diversity_cluster_type TEXT,
+            diversity_cluster_key TEXT,
+            diversity_cluster_size INTEGER,
+            diversity_download_rank INTEGER,
+            diversity_upload_rank INTEGER,
+            diversity_latency_rank INTEGER,
+            diversity_rank_sum INTEGER,
+            diversity_overall_rank INTEGER,
+
             published INTEGER NOT NULL DEFAULT 0,
             failure_stage TEXT,
             failure_reason TEXT,
-            details_json TEXT,
-            PRIMARY KEY (run_id, source_id, proxy_id),
+
+            UNIQUE(run_id, source_id, proxy_id),
             FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_observations_source_proxy_time
             ON proxy_observations(source_id, proxy_id, observed_at);
         CREATE INDEX IF NOT EXISTS idx_observations_source_state_time
             ON proxy_observations(source_id, availability_state, observed_at);
+        CREATE INDEX IF NOT EXISTS idx_observations_run
+            ON proxy_observations(run_id);
+
+        CREATE TABLE IF NOT EXISTS security_reasons (
+            observation_id INTEGER NOT NULL,
+            reason_index INTEGER NOT NULL,
+            reason TEXT NOT NULL,
+            PRIMARY KEY (observation_id, reason_index),
+            FOREIGN KEY (observation_id) REFERENCES proxy_observations(observation_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS latency_attempts (
+            observation_id INTEGER NOT NULL,
+            attempt_index INTEGER NOT NULL,
+            ok INTEGER,
+            latency_ms REAL,
+            http_code INTEGER,
+            error TEXT,
+            PRIMARY KEY (observation_id, attempt_index),
+            FOREIGN KEY (observation_id) REFERENCES proxy_observations(observation_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS transfer_stages (
+            stage_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            observation_id INTEGER NOT NULL,
+            direction TEXT NOT NULL CHECK(direction IN ('download','upload')),
+            stage_index INTEGER NOT NULL,
+            backend TEXT,
+            streams INTEGER,
+            skipped INTEGER,
+            ok INTEGER,
+            classification TEXT,
+            mbps REAL,
+            bytes INTEGER,
+            expected_bytes INTEGER,
+            payload_valid INTEGER,
+            time_seconds REAL,
+            http_code INTEGER,
+            error TEXT,
+            UNIQUE(observation_id, direction, stage_index),
+            FOREIGN KEY (observation_id) REFERENCES proxy_observations(observation_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_transfer_stages_observation
+            ON transfer_stages(observation_id, direction, stage_index);
+
+        CREATE TABLE IF NOT EXISTS transfer_attempts (
+            attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            stage_id INTEGER NOT NULL,
+            attempt_index INTEGER NOT NULL,
+            backend TEXT,
+            url TEXT,
+            ok INTEGER,
+            mbps REAL,
+            bytes INTEGER,
+            expected_bytes INTEGER,
+            payload_valid INTEGER,
+            time_seconds REAL,
+            http_code INTEGER,
+            error_code INTEGER,
+            error TEXT,
+            expect_disabled INTEGER,
+            UNIQUE(stage_id, attempt_index),
+            FOREIGN KEY (stage_id) REFERENCES transfer_stages(stage_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_transfer_attempts_stage
+            ON transfer_attempts(stage_id, attempt_index);
+        CREATE INDEX IF NOT EXISTS idx_transfer_attempts_error_code
+            ON transfer_attempts(error_code);
 
         CREATE TABLE IF NOT EXISTS proxy_source_state (
             source_id TEXT NOT NULL,
@@ -133,7 +305,9 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             last_seen_run_id TEXT,
             seen_count INTEGER NOT NULL DEFAULT 0,
             available_count INTEGER NOT NULL DEFAULT 0,
+            degraded_count INTEGER NOT NULL DEFAULT 0,
             unavailable_count INTEGER NOT NULL DEFAULT 0,
+            below_threshold_count INTEGER NOT NULL DEFAULT 0,
             absent_count INTEGER NOT NULL DEFAULT 0,
             last_status TEXT,
             last_availability_state TEXT,
@@ -145,6 +319,16 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_proxy_source_last_seen
             ON proxy_source_state(source_id, last_seen_at);
+
+        CREATE VIEW IF NOT EXISTS history AS
+        SELECT
+            run_id, source_id, proxy_id, observed_at, present,
+            availability_state, final_status, furthest_stage,
+            protocol, server, port,
+            latency_ms, download_mbps, upload_mbps,
+            stream_reliability, exit_ip, country_code, asn,
+            published, failure_stage, failure_reason
+        FROM proxy_observations;
         """
     )
     conn.execute(
@@ -190,10 +374,10 @@ def _test_status(tests: dict[str, Any], name: str) -> str | None:
     return value.get("status") if isinstance(value, dict) else None
 
 
-def _ok_status(status: str | None) -> int | None:
-    if status is None or status == "pending":
+def _bool_int(value: Any) -> int | None:
+    if value is None:
         return None
-    return 1 if status in {"pass", "ok"} else 0
+    return 1 if bool(value) else 0
 
 
 def _furthest_stage(tests: dict[str, Any], final_status: str | None) -> str | None:
@@ -247,33 +431,23 @@ def _availability_state(tests: dict[str, Any], final_status: str | None) -> str:
     return "unavailable"
 
 
-def _details_json(row: dict[str, Any], store_details: str) -> str | None:
-    mode = store_details.lower()
-    if mode == "none":
+def _json_or_none(value: Any) -> str | None:
+    if value is None:
         return None
-    tests = row.get("tests") or {}
-    final_status = tests.get("status")
-    if mode == "failures" and final_status in {"published", "render_pass"}:
-        return None
-    if mode not in {"none", "failures", "all"}:
-        raise ValueError("history.store_details must be one of: none, failures, all")
-    payload = {
-        "tests": tests,
-        "config": row.get("config"),
-    }
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
-def _observation_values(
+def _observation_record(
     *,
     run_id: str,
     source_id: str,
     observed_at: str,
     row: dict[str, Any],
-    store_details: str,
-) -> tuple[Any, ...]:
+) -> dict[str, Any]:
     tests = row.get("tests") or {}
     config = row.get("config") or {}
+    original = row.get("original") or {}
+    security = tests.get("security") or {}
     tcp = tests.get("tcp") or {}
     core = tests.get("core") or {}
     latency = tests.get("latency") or {}
@@ -281,60 +455,250 @@ def _observation_values(
     upload = tests.get("upload") or {}
     exit_probe = tests.get("exit_ip_probe") or {}
     geo = tests.get("geo") or {}
+    render = tests.get("render") or {}
+    diversity = tests.get("diversity") or {}
     final_status = tests.get("status")
-    availability = _availability_state(tests, final_status)
-    published = 1 if final_status == "published" else 0
-    return (
-        run_id, source_id, str(row.get("id")), observed_at, 1, availability,
-        final_status, _furthest_stage(tests, final_status), config.get("protocol"),
-        config.get("server"), config.get("port"), _ok_status(tcp.get("status")),
-        tcp.get("latency_ms"), _ok_status(core.get("status")),
-        _ok_status(latency.get("status")), tests.get("latency_ms") or latency.get("latency_ms"),
-        _ok_status(download.get("status")), tests.get("download_mbps") or download.get("mbps"),
-        download.get("backend"), download.get("stream_reliability"),
-        _ok_status(upload.get("status")), tests.get("upload_mbps") or upload.get("mbps"),
-        exit_probe.get("status"), tests.get("exit_ip") or exit_probe.get("ip"),
-        geo.get("country_code"), None if geo.get("asn") is None else str(geo.get("asn")),
-        published, _failure_stage(final_status), _failure_reason(tests, final_status),
-        _details_json(row, store_details),
+
+    return {
+        "run_id": run_id,
+        "source_id": source_id,
+        "proxy_id": str(row.get("id")),
+        "observed_at": observed_at,
+        "present": 1,
+        "availability_state": _availability_state(tests, final_status),
+        "final_status": final_status,
+        "furthest_stage": _furthest_stage(tests, final_status),
+        "protocol": config.get("protocol"),
+        "server": config.get("server"),
+        "port": config.get("port"),
+        "proxy_name": config.get("name"),
+        "config_params_json": _json_or_none(config.get("params")),
+        "original_format": original.get("format"),
+        "original_raw": original.get("raw"),
+        "security_status": security.get("status"),
+        "tcp_status": tcp.get("status"),
+        "tcp_latency_ms": tcp.get("latency_ms"),
+        "tcp_reason": tcp.get("reason"),
+        "tcp_error": tcp.get("error"),
+        "core_status": core.get("status"),
+        "core_error": core.get("error"),
+        "latency_status": latency.get("status"),
+        "latency_ms": tests.get("latency_ms") if tests.get("latency_ms") is not None else latency.get("latency_ms"),
+        "latency_http_code": latency.get("http_code"),
+        "latency_method": latency.get("method"),
+        "latency_error": latency.get("error"),
+        "download_status": download.get("status"),
+        "download_mbps": tests.get("download_mbps") if tests.get("download_mbps") is not None else download.get("mbps"),
+        "download_single_mbps": download.get("single_mbps"),
+        "download_aggregate_mbps": download.get("aggregate_mbps"),
+        "download_best_partial_mbps": download.get("best_partial_mbps"),
+        "download_best_partial_streams": download.get("best_partial_streams"),
+        "download_best_partial_backend": download.get("best_partial_backend"),
+        "download_backend": download.get("backend"),
+        "download_bytes": download.get("bytes"),
+        "download_expected_bytes": download.get("expected_bytes"),
+        "download_payload_valid": _bool_int(download.get("payload_valid")),
+        "download_time_seconds": download.get("time_seconds"),
+        "download_http_code": download.get("http_code"),
+        "download_url": download.get("url"),
+        "download_method": download.get("method"),
+        "stream_reliability": download.get("stream_reliability"),
+        "download_error": download.get("error"),
+        "upload_status": upload.get("status"),
+        "upload_mbps": tests.get("upload_mbps") if tests.get("upload_mbps") is not None else upload.get("mbps"),
+        "upload_single_mbps": upload.get("single_mbps"),
+        "upload_aggregate_mbps": upload.get("aggregate_mbps"),
+        "upload_best_partial_mbps": upload.get("best_partial_mbps"),
+        "upload_best_partial_streams": upload.get("best_partial_streams"),
+        "upload_bytes": upload.get("bytes"),
+        "upload_expected_bytes": upload.get("expected_bytes"),
+        "upload_payload_valid": _bool_int(upload.get("payload_valid")),
+        "upload_time_seconds": upload.get("time_seconds"),
+        "upload_http_code": upload.get("http_code"),
+        "upload_url": upload.get("url"),
+        "upload_method": upload.get("method"),
+        "upload_error": upload.get("error"),
+        "exit_ip_status": exit_probe.get("status"),
+        "exit_ip": tests.get("exit_ip") or exit_probe.get("ip"),
+        "exit_ip_http_code": exit_probe.get("http_code"),
+        "exit_ip_direct_wan_match": _bool_int(exit_probe.get("direct_wan_match")),
+        "exit_ip_method": exit_probe.get("method"),
+        "exit_ip_error": exit_probe.get("error"),
+        "geo_status": geo.get("status"),
+        "geo_provider": geo.get("provider"),
+        "geo_ip": geo.get("ip"),
+        "country": geo.get("country") or tests.get("country"),
+        "country_code": geo.get("country_code"),
+        "country_flag": geo.get("flag"),
+        "isp": geo.get("isp"),
+        "org": geo.get("org"),
+        "asn": None if geo.get("asn") is None else str(geo.get("asn")),
+        "geo_error": geo.get("error"),
+        "render_status": render.get("status"),
+        "render_name": render.get("name"),
+        "render_uri": render.get("uri"),
+        "render_stream_reliability": render.get("stream_reliability"),
+        "render_error": render.get("error"),
+        "diversity_status": diversity.get("status"),
+        "diversity_reason": diversity.get("reason"),
+        "diversity_cluster_type": diversity.get("cluster_type"),
+        "diversity_cluster_key": diversity.get("cluster_key"),
+        "diversity_cluster_size": diversity.get("cluster_size"),
+        "diversity_download_rank": diversity.get("download_rank"),
+        "diversity_upload_rank": diversity.get("upload_rank"),
+        "diversity_latency_rank": diversity.get("latency_rank"),
+        "diversity_rank_sum": diversity.get("rank_sum"),
+        "diversity_overall_rank": diversity.get("overall_rank"),
+        "published": 1 if final_status == "published" else 0,
+        "failure_stage": _failure_stage(final_status),
+        "failure_reason": _failure_reason(tests, final_status),
+    }
+
+
+def _insert_record(conn: sqlite3.Connection, table: str, record: dict[str, Any]) -> int:
+    columns = list(record)
+    placeholders = ",".join("?" for _ in columns)
+    cursor = conn.execute(
+        f"INSERT INTO {table}({','.join(columns)}) VALUES({placeholders})",
+        tuple(record[column] for column in columns),
     )
+    return int(cursor.lastrowid)
 
 
-_OBS_COLUMNS = """
-run_id, source_id, proxy_id, observed_at, present, availability_state,
-final_status, furthest_stage, protocol, server, port, tcp_ok, tcp_latency_ms,
-core_ok, latency_ok, latency_ms, download_ok, download_mbps, download_backend,
-stream_reliability, upload_ok, upload_mbps, exit_ip_status, exit_ip,
-country_code, asn, published, failure_stage, failure_reason, details_json
-""".replace("\n", " ")
+def _curl_error_code(error: Any) -> int | None:
+    if not error:
+        return None
+    match = re.search(r"curl:\s*\((\d+)\)", str(error))
+    return int(match.group(1)) if match else None
 
 
-def _update_state(conn: sqlite3.Connection, source_id: str, proxy_id: str, run_id: str, observed_at: str, state: str, final_status: str | None, present: bool) -> None:
+def _insert_security_reasons(conn: sqlite3.Connection, observation_id: int, tests: dict[str, Any]) -> None:
+    reasons = (tests.get("security") or {}).get("reasons") or []
+    for index, reason in enumerate(reasons):
+        conn.execute(
+            "INSERT INTO security_reasons(observation_id, reason_index, reason) VALUES(?,?,?)",
+            (observation_id, index, str(reason)),
+        )
+
+
+def _insert_latency_attempts(conn: sqlite3.Connection, observation_id: int, tests: dict[str, Any]) -> None:
+    attempts = (tests.get("latency") or {}).get("attempts") or []
+    for index, attempt in enumerate(attempts):
+        conn.execute(
+            """
+            INSERT INTO latency_attempts(
+                observation_id, attempt_index, ok, latency_ms, http_code, error
+            ) VALUES(?,?,?,?,?,?)
+            """,
+            (
+                observation_id,
+                index,
+                _bool_int(attempt.get("ok")),
+                attempt.get("latency_ms"),
+                attempt.get("http_code"),
+                attempt.get("error"),
+            ),
+        )
+
+
+def _insert_transfer_data(
+    conn: sqlite3.Connection,
+    observation_id: int,
+    tests: dict[str, Any],
+    direction: str,
+) -> None:
+    result = tests.get(direction) or {}
+    stages = result.get("stages") or []
+    for stage_index, stage in enumerate(stages):
+        stage_id = _insert_record(
+            conn,
+            "transfer_stages",
+            {
+                "observation_id": observation_id,
+                "direction": direction,
+                "stage_index": stage_index,
+                "backend": stage.get("backend"),
+                "streams": stage.get("streams"),
+                "skipped": _bool_int(stage.get("skipped")),
+                "ok": _bool_int(stage.get("ok")),
+                "classification": stage.get("classification"),
+                "mbps": stage.get("mbps"),
+                "bytes": stage.get("bytes"),
+                "expected_bytes": stage.get("expected_bytes"),
+                "payload_valid": _bool_int(stage.get("payload_valid")),
+                "time_seconds": stage.get("time_seconds"),
+                "http_code": stage.get("http_code"),
+                "error": stage.get("error"),
+            },
+        )
+        for attempt_index, attempt in enumerate(stage.get("stream_results") or []):
+            _insert_record(
+                conn,
+                "transfer_attempts",
+                {
+                    "stage_id": stage_id,
+                    "attempt_index": attempt_index,
+                    "backend": attempt.get("backend"),
+                    "url": attempt.get("url"),
+                    "ok": _bool_int(attempt.get("ok")),
+                    "mbps": attempt.get("mbps"),
+                    "bytes": attempt.get("bytes"),
+                    "expected_bytes": attempt.get("expected_bytes"),
+                    "payload_valid": _bool_int(attempt.get("payload_valid")),
+                    "time_seconds": attempt.get("time_seconds"),
+                    "http_code": attempt.get("http_code"),
+                    "error_code": _curl_error_code(attempt.get("error")),
+                    "error": attempt.get("error"),
+                    "expect_disabled": _bool_int(attempt.get("expect_disabled")),
+                },
+            )
+
+
+def _update_state(
+    conn: sqlite3.Connection,
+    source_id: str,
+    proxy_id: str,
+    run_id: str,
+    observed_at: str,
+    state: str,
+    final_status: str | None,
+    present: bool,
+) -> None:
     current = conn.execute(
         "SELECT * FROM proxy_source_state WHERE source_id=? AND proxy_id=?",
         (source_id, proxy_id),
     ).fetchone()
     same_streak = current is not None and current["current_streak_state"] == state
     streak = (int(current["current_streak"]) + 1) if same_streak else 1
+    available = state in {"available", "degraded"} and present
+    degraded = state == "degraded" and present
+    unavailable = state in {"unavailable", "below_threshold"} and present
+    below_threshold = state == "below_threshold" and present
 
     if current is None:
         conn.execute(
             """
             INSERT INTO proxy_source_state(
                 source_id, proxy_id, first_seen_at, last_seen_at, first_seen_run_id,
-                last_seen_run_id, seen_count, available_count, unavailable_count,
-                absent_count, last_status, last_availability_state, last_available_at,
+                last_seen_run_id, seen_count, available_count, degraded_count,
+                unavailable_count, below_threshold_count, absent_count,
+                last_status, last_availability_state, last_available_at,
                 last_unavailable_at, current_streak, current_streak_state
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
-                source_id, proxy_id, observed_at if present else None, observed_at if present else None,
-                run_id if present else None, run_id if present else None, 1 if present else 0,
-                1 if state in {"available", "degraded"} and present else 0,
-                1 if state in {"unavailable", "below_threshold"} and present else 0,
-                0 if present else 1, final_status, state,
-                observed_at if state in {"available", "degraded"} and present else None,
-                observed_at if state in {"unavailable", "below_threshold"} and present else None,
+                source_id, proxy_id,
+                observed_at if present else None, observed_at if present else None,
+                run_id if present else None, run_id if present else None,
+                1 if present else 0,
+                1 if available else 0,
+                1 if degraded else 0,
+                1 if unavailable else 0,
+                1 if below_threshold else 0,
+                0 if present else 1,
+                final_status, state,
+                observed_at if available else None,
+                observed_at if unavailable else None,
                 streak, state,
             ),
         )
@@ -347,7 +711,9 @@ def _update_state(conn: sqlite3.Connection, source_id: str, proxy_id: str, run_i
             last_seen_run_id = CASE WHEN ? THEN ? ELSE last_seen_run_id END,
             seen_count = seen_count + ?,
             available_count = available_count + ?,
+            degraded_count = degraded_count + ?,
             unavailable_count = unavailable_count + ?,
+            below_threshold_count = below_threshold_count + ?,
             absent_count = absent_count + ?,
             last_status = ?,
             last_availability_state = ?,
@@ -358,13 +724,17 @@ def _update_state(conn: sqlite3.Connection, source_id: str, proxy_id: str, run_i
         WHERE source_id=? AND proxy_id=?
         """,
         (
-            1 if present else 0, observed_at, 1 if present else 0, run_id,
+            1 if present else 0, observed_at,
+            1 if present else 0, run_id,
             1 if present else 0,
-            1 if state in {"available", "degraded"} and present else 0,
-            1 if state in {"unavailable", "below_threshold"} and present else 0,
-            0 if present else 1, final_status, state,
-            1 if state in {"available", "degraded"} and present else 0, observed_at,
-            1 if state in {"unavailable", "below_threshold"} and present else 0, observed_at,
+            1 if available else 0,
+            1 if degraded else 0,
+            1 if unavailable else 0,
+            1 if below_threshold else 0,
+            0 if present else 1,
+            final_status, state,
+            1 if available else 0, observed_at,
+            1 if unavailable else 0, observed_at,
             streak, state, source_id, proxy_id,
         ),
     )
@@ -379,7 +749,6 @@ def record_source_run(
     work_dir: Path,
     started_at: str,
     finished_at: str | None = None,
-    store_details: str = "failures",
 ) -> None:
     finished_at = finished_at or utc_now()
     latest, present_ids = _latest_snapshots(work_dir)
@@ -418,18 +787,25 @@ def record_source_run(
             ),
         )
 
-        placeholders = ",".join("?" for _ in range(30))
-        insert_sql = f"INSERT INTO proxy_observations({_OBS_COLUMNS}) VALUES({placeholders})"
         for proxy_id in sorted(present_ids):
             row = latest.get(proxy_id)
             if row is None:
                 continue
-            values = _observation_values(
-                run_id=run_id, source_id=source_id, observed_at=finished_at,
-                row=row, store_details=store_details,
+            observation_id = _insert_record(
+                conn,
+                "proxy_observations",
+                _observation_record(
+                    run_id=run_id,
+                    source_id=source_id,
+                    observed_at=finished_at,
+                    row=row,
+                ),
             )
-            conn.execute(insert_sql, values)
             tests = row.get("tests") or {}
+            _insert_security_reasons(conn, observation_id, tests)
+            _insert_latency_attempts(conn, observation_id, tests)
+            _insert_transfer_data(conn, observation_id, tests, "download")
+            _insert_transfer_data(conn, observation_id, tests, "upload")
             state = _availability_state(tests, tests.get("status"))
             _update_state(conn, source_id, proxy_id, run_id, finished_at, state, tests.get("status"), True)
 
@@ -441,13 +817,19 @@ def record_source_run(
             )
         }
         for proxy_id in sorted(previous_ids - present_ids):
-            conn.execute(
-                f"INSERT INTO proxy_observations({_OBS_COLUMNS}) VALUES({placeholders})",
-                (
-                    run_id, source_id, proxy_id, finished_at, 0, "absent", "absent", None,
-                    None, None, None, None, None, None, None, None, None, None, None,
-                    None, None, None, None, None, None, None, 0, None, None, None,
-                ),
+            _insert_record(
+                conn,
+                "proxy_observations",
+                {
+                    "run_id": run_id,
+                    "source_id": source_id,
+                    "proxy_id": proxy_id,
+                    "observed_at": finished_at,
+                    "present": 0,
+                    "availability_state": "absent",
+                    "final_status": "absent",
+                    "published": 0,
+                },
             )
             _update_state(conn, source_id, proxy_id, run_id, finished_at, "absent", "absent", False)
 
