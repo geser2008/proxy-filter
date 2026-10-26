@@ -159,10 +159,24 @@ Long-term per-source history is stored in SQLite while JSONL files remain the ru
 history:
   enabled: true
   database: history/proxy-history.sqlite3
-  store_details: failures
 ```
 
 A relative `database` path is resolved below `paths.data_dir`. The default path is `data/history/proxy-history.sqlite3`.
+
+History schema v2 always stores the complete normalized test history. There is no separate `store_details` mode and no duplicated `details_json` snapshot. Scalar/final test results are stored directly in `proxy_observations`; repeated test data is normalized into child tables.
+
+The database contains:
+
+- `runs`: one row per source/run with stage survivor counts and source-level errors;
+- `proxy_observations`: one row per `(run_id, source_id, proxy_id)` with config identity, all scalar stage results, final status, latency/speed, reliability, exit IP, geo, render and diversity results;
+- `security_reasons`: individual static-security rejection reasons;
+- `latency_attempts`: individual latency-test attempts;
+- `transfer_stages`: all staged download/upload results, including stream count, backend, classification, bytes, timing and HTTP result;
+- `transfer_attempts`: individual stream results for each transfer stage, including curl error code/error text;
+- `proxy_source_state`: current aggregate state per `(source_id, proxy_id)`, including first/last seen, availability/degraded/below-threshold/absence counts and current streak;
+- `history`: a compact SQL view over the most useful columns of `proxy_observations`.
+
+`availability_state` distinguishes `available`, `degraded`, `below_threshold`, `unavailable`, and `absent`.
 
 `history` is also an explicit non-filtering stage after `publish`:
 
@@ -196,13 +210,20 @@ python3 proxy_filter.py \
 
 A standalone import requires both `02-unique.jsonl` and `12-published.jsonl`. Its run id is derived from the snapshot contents, so importing unchanged files again is idempotent and does not duplicate history. A failed source fetch records a failed run but does not mark previously known proxies absent.
 
-The database contains:
+Schema v1 databases are intentionally not modified in place. Before the first schema v2 import, move the old database aside and then import the current JSONL snapshot:
 
-- `runs`: one row per source/run with stage survivor counts and source-level errors;
-- `proxy_observations`: append-only per-proxy observations with availability, stage result, latency/speed, reliability, exit IP and geo fields;
-- `proxy_source_state`: current aggregate state per `(source_id, proxy_id)`, including first/last seen, availability counts, absence counts and current streak.
+```bash
+mv /srv/proxy-filter/data/history/proxy-history.sqlite3 \
+   /srv/proxy-filter/data/history/proxy-history-v1.sqlite3.bak
 
-`availability_state` distinguishes `available`, `degraded`, `below_threshold`, `unavailable`, and `absent`.
+python3 /srv/proxy-filter/app/proxy_filter.py \
+  --config /srv/proxy-filter/config/config.yaml \
+  --sources /srv/proxy-filter/config/sources.yaml \
+  --history-import \
+  --source radikal
+```
+
+If a schema v1 database is still present at the configured path, history recording aborts with an explicit incompatibility error instead of altering the old database.
 
 Examples:
 
@@ -218,10 +239,13 @@ sqlite3 /srv/proxy-filter/data/history/proxy-history.sqlite3 \
 
 ```bash
 sqlite3 /srv/proxy-filter/data/history/proxy-history.sqlite3 \
-  "SELECT proxy_id,seen_count,available_count,absent_count,current_streak,current_streak_state FROM proxy_source_state WHERE source_id='radikal' ORDER BY available_count DESC LIMIT 20;"
+  "SELECT proxy_id,seen_count,available_count,degraded_count,below_threshold_count,absent_count,current_streak,current_streak_state FROM proxy_source_state WHERE source_id='radikal' ORDER BY available_count DESC LIMIT 20;"
 ```
 
-`history.store_details` accepts `none`, `failures`, or `all`. Normalized columns are always stored; this option controls the additional detailed JSON snapshot.
+```bash
+sqlite3 /srv/proxy-filter/data/history/proxy-history.sqlite3 \
+  "SELECT o.proxy_id,s.direction,s.streams,a.error_code,a.error FROM proxy_observations o JOIN transfer_stages s USING(observation_id) JOIN transfer_attempts a USING(stage_id) WHERE a.error_code IS NOT NULL ORDER BY o.observed_at DESC LIMIT 50;"
+```
 
 ## Security model
 
