@@ -10,6 +10,7 @@ import tempfile
 import yaml
 
 from proxyfilter import cli
+from proxyfilter.output_policy import render_proxies as render_proxies_with_reliability
 from proxyfilter.source_config import merged_config
 
 # Backward-compatible public import used by existing tests and callers.
@@ -46,6 +47,10 @@ def main() -> int:
         ) as fh:
             yaml.safe_dump(cfg, fh, allow_unicode=True, sort_keys=False)
             tmp_path = fh.name
+
+        # Keep cli.py as the pipeline implementation while applying the output
+        # policy here, where the merged config is already available.
+        cli._render_proxies = render_proxies_with_reliability
 
         # The package CLI remains the single implementation of the pipeline.
         # It receives a temporary merged config, while all other arguments are
