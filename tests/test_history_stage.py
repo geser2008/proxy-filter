@@ -78,7 +78,7 @@ class HistoryStageTests(unittest.TestCase):
 
             cfg = {
                 "paths": {"data_dir": str(root)},
-                "history": {"database": "history/test.sqlite3", "store_details": "none"},
+                "history": {"database": "history/test.sqlite3"},
                 "sources": [{"id": "radikal", "name": "Radikal", "url": "https://example.invalid/sub"}],
             }
             args = ["--source", "radikal"]
@@ -90,8 +90,12 @@ class HistoryStageTests(unittest.TestCase):
             with sqlite3.connect(db) as conn:
                 run_count = conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
                 observation_count = conn.execute("SELECT COUNT(*) FROM proxy_observations").fetchone()[0]
+                schema_version = conn.execute(
+                    "SELECT value FROM schema_meta WHERE key='schema_version'"
+                ).fetchone()[0]
             self.assertEqual(run_count, 1)
             self.assertEqual(observation_count, 1)
+            self.assertEqual(schema_version, "2")
 
     def test_incomplete_snapshot_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
