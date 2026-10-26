@@ -115,11 +115,17 @@ filters:
     command: curl
 
 # Long-term per-source availability history. Existing JSONL stage files remain
-# the runtime checkpoints used for --resume-from; SQLite is analytical history.
-# Only complete publish runs started from the beginning are recorded. Resume
-# runs are deliberately ignored so a retest is not counted as a new source
-# observation. A failed source fetch records a failed run but does not mark all
-# previously known proxies absent.
+# runtime checkpoints; SQLite is the analytical history store.
+#
+# Normal full publish runs are recorded automatically when enabled=true.
+# History is also an explicit non-filtering stage after publish:
+#   --until history
+# and an existing complete work snapshot can be imported without network tests:
+#   --history-import --source radikal
+# or equivalently:
+#   --resume-from publish --until history --source radikal
+# Snapshot imports are idempotent: importing unchanged work files again does not
+# create another run. Failed source fetches never mark all previous proxies absent.
 history:
   enabled: true
 
