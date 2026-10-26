@@ -15,7 +15,12 @@ filters:
     mode: singbox-api
     test_url: https://www.gstatic.com/generate_204
     timeout_seconds: 12
-    max_ms: 1200
+
+    # A negative value disables rejection by the measured latency while keeping
+    # a successful sing-box URL test mandatory. Set a non-negative value to use
+    # latency as an additional quality threshold.
+    max_ms: -1
+
     batch_size: 128
     workers: 32
     # Fallback/debug mode only:
@@ -75,6 +80,9 @@ filters:
     # Connection establishment and speed-transfer budgets are configured
     # separately. curl --max-time is their sum (10 + 30 = 40 seconds here),
     # so connection setup no longer consumes the configured transfer budget.
+    # If an interrupted transfer still yields a numeric speed, the speed value
+    # decides the threshold result. A transfer error rejects by error only when
+    # no usable speed measurement was obtained.
     connect_timeout_seconds: 10
     transfer_timeout_seconds: 30
     min_download_mbps: 80
@@ -111,8 +119,9 @@ filters:
     workers: 4
     command: curl
 
-# Long-term per-source availability history. Existing JSONL stage files remain
-# runtime checkpoints; SQLite is the analytical history store.
+# Long-term per-source availability history. The filtering pipeline uses one
+# global set of JSONL work checkpoints; source provenance is stored in each
+# proxy record. SQLite remains the analytical per-source history store.
 #
 # Normal full publish runs are recorded automatically when enabled=true.
 # History is also an explicit non-filtering stage after publish:
