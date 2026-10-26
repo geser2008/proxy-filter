@@ -41,7 +41,7 @@ class DownloadPolicyTests(unittest.TestCase):
             ],
         )
         self.assertEqual(_stage_classification(result), "transport_error")
-        self.assertFalse(_fallback_allowed(result, {403, 429}))
+        self.assertFalse(_fallback_allowed(result))
 
     def test_tls_eof_does_not_fallback_to_cachefly(self):
         tls_error = SpeedResult(
@@ -56,7 +56,6 @@ class DownloadPolicyTests(unittest.TestCase):
                 object(),
                 url=self.primary,
                 fallback_urls=[self.fallback],
-                fallback_http_codes={403, 429},
                 timeout=30,
                 curl_command="curl",
                 stream_stages=(1, 2, 4, 10),
@@ -79,7 +78,6 @@ class DownloadPolicyTests(unittest.TestCase):
                 object(),
                 url=self.primary,
                 fallback_urls=[self.fallback],
-                fallback_http_codes={403, 429},
                 timeout=30,
                 curl_command="curl",
                 stream_stages=(1, 2),
@@ -87,6 +85,9 @@ class DownloadPolicyTests(unittest.TestCase):
 
         self.assertFalse(result.ok)
         self.assertEqual(probe.call_count, 1)
+
+    def test_http_403_falls_back_to_cachefly(self):
+        self.assertTrue(_fallback_allowed(SpeedResult(False, http_code=403, error="HTTP 403")))
 
     def test_http_429_falls_back_to_cachefly(self):
         responses = [
@@ -106,7 +107,6 @@ class DownloadPolicyTests(unittest.TestCase):
                 object(),
                 url=self.primary,
                 fallback_urls=[self.fallback],
-                fallback_http_codes={403, 429},
                 timeout=30,
                 curl_command="curl",
                 stream_stages=(1,),
@@ -116,7 +116,7 @@ class DownloadPolicyTests(unittest.TestCase):
         self.assertEqual(result.backend, "cachefly")
         self.assertEqual(probe.call_count, 2)
 
-    def test_http_5xx_falls_back_even_if_not_explicitly_listed(self):
+    def test_http_5xx_falls_back(self):
         responses = [
             SpeedResult(False, http_code=503, error="HTTP 503", backend="cloudflare"),
             SpeedResult(
@@ -134,7 +134,6 @@ class DownloadPolicyTests(unittest.TestCase):
                 object(),
                 url=self.primary,
                 fallback_urls=[self.fallback],
-                fallback_http_codes={403, 429},
                 timeout=30,
                 curl_command="curl",
                 stream_stages=(1,),
@@ -142,6 +141,9 @@ class DownloadPolicyTests(unittest.TestCase):
 
         self.assertTrue(result.ok)
         self.assertEqual(probe.call_count, 2)
+
+    def test_other_http_status_does_not_fallback(self):
+        self.assertFalse(_fallback_allowed(SpeedResult(False, http_code=404, error="HTTP 404")))
 
     def test_invalid_payload_falls_back_to_cachefly(self):
         responses = [
@@ -169,7 +171,6 @@ class DownloadPolicyTests(unittest.TestCase):
                 object(),
                 url=self.primary,
                 fallback_urls=[self.fallback],
-                fallback_http_codes={403, 429},
                 timeout=30,
                 curl_command="curl",
                 stream_stages=(1,),
@@ -207,7 +208,6 @@ class DownloadPolicyTests(unittest.TestCase):
                 object(),
                 url=self.primary,
                 fallback_urls=[self.fallback],
-                fallback_http_codes={403, 429},
                 timeout=30,
                 curl_command="curl",
                 stream_stages=(1, 2),
@@ -253,7 +253,6 @@ class DownloadPolicyTests(unittest.TestCase):
                 timeout=30,
                 min_mbps=50,
                 fallback_urls=[self.fallback],
-                fallback_http_codes={403, 429},
                 stream_stages=(1, 2),
             )
 
@@ -285,7 +284,6 @@ class DownloadPolicyTests(unittest.TestCase):
                 timeout=30,
                 min_mbps=50,
                 fallback_urls=[self.fallback],
-                fallback_http_codes={403, 429},
                 stream_stages=(1,),
             )
 
