@@ -15,6 +15,7 @@ import yaml
 
 from proxyfilter import cli
 from proxyfilter.history import new_run_id, record_failed_run, record_source_run, utc_now
+from proxyfilter.history_global import record_global_source_run
 from proxyfilter.output_policy import render_proxies as render_proxies_with_reliability
 from proxyfilter.source_config import merged_config
 
@@ -130,16 +131,20 @@ def _import_history_snapshot(cfg: dict, args: list[str]) -> int:
     imported = 0
     skipped = 0
 
+    global_work = data_dir / "work"
+    use_global = all((global_work / name).is_file() for name in ("02-unique.jsonl", "12-published.jsonl"))
+
     for source_id in sorted(source_ids):
         source = configured[source_id]
-        work_dir = data_dir / "work" / source_id
+        work_dir = global_work if use_global else data_dir / "work" / source_id
         try:
             _validate_snapshot(work_dir)
             run_id = _snapshot_run_id(source_id, work_dir)
             now = utc_now()
             started_at = _mtime_iso(work_dir / "01-parsed.jsonl", now)
             finished_at = _mtime_iso(work_dir / "12-published.jsonl", now)
-            record_source_run(
+            recorder = record_global_source_run if use_global else record_source_run
+            recorder(
                 db_path,
                 run_id=run_id,
                 source_id=source_id,
@@ -189,6 +194,7 @@ def _record_history(
 
     configured, source_ids = _selected_source_ids(cfg, remaining)
     db_path = _history_db_path(cfg, data_dir)
+    work_dir = data_dir / "work"
 
     for source_id in sorted(source_ids):
         source = configured.get(source_id) or {}
@@ -196,9 +202,8 @@ def _record_history(
         result = (summary.get("sources") or {}).get(source_id) or {}
         try:
             if requested_until == "history" and resume_from:
-                # A history-only stage consumes the existing complete work snapshot
-                # and uses a deterministic id so rerunning it is idempotent.
-                work_dir = data_dir / "work" / source_id
+                # A history-only stage consumes the existing complete global work
+                # snapshot and uses a deterministic id so rerunning is idempotent.
                 _validate_snapshot(work_dir)
                 run_id = _snapshot_run_id(source_id, work_dir)
                 history_started = _mtime_iso(work_dir / "01-parsed.jsonl", started_at)
@@ -209,12 +214,12 @@ def _record_history(
                 history_finished = utc_now()
 
             if result.get("status") == "ok":
-                record_source_run(
+                record_global_source_run(
                     db_path,
                     run_id=run_id,
                     source_id=source_id,
                     source_name=source_name,
-                    work_dir=data_dir / "work" / source_id,
+                    work_dir=work_dir,
                     started_at=history_started,
                     finished_at=history_finished,
                 )
