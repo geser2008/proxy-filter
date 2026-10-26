@@ -7,6 +7,9 @@ from .model import ProxyConfig
 from . import speed as base
 
 
+FALLBACK_HTTP_CODES = {403, 429}
+
+
 @dataclass(slots=True)
 class _BackendOutcome:
     result: base.SpeedResult
@@ -67,8 +70,13 @@ def _stage_classification(result: base.SpeedResult) -> str:
     return "transport_error"
 
 
-def _fallback_allowed(result: base.SpeedResult, fallback_http_codes: set[int]) -> bool:
-    """Allow backend fallback only for destination/provider-specific failures."""
+def _fallback_allowed(result: base.SpeedResult) -> bool:
+    """Use the alternate download backend only for agreed provider failures.
+
+    The policy is deliberately fixed in code: invalid payloads and HTTP 403/429
+    may switch provider. Transport/TLS/SOCKS failures, zero-byte timeouts and
+    other HTTP responses do not.
+    """
     if result.payload_valid is False:
         return True
 
@@ -82,10 +90,7 @@ def _fallback_allowed(result: base.SpeedResult, fallback_http_codes: set[int]) -
         if attempt.get("payload_valid") is False:
             return True
 
-    return any(
-        code in fallback_http_codes or 500 <= code <= 599
-        for code in codes
-    )
+    return bool(codes & FALLBACK_HTTP_CODES)
 
 
 def _stage_record(streams: int, result: base.SpeedResult, *, skipped: bool = False) -> dict:
@@ -187,7 +192,6 @@ def _download_staged(
     *,
     url: str,
     fallback_urls: list[str],
-    fallback_http_codes: set[int],
     timeout: float,
     curl_command: str,
     stream_stages: tuple[int, ...] = base.DEFAULT_DOWNLOAD_STREAM_STAGES,
@@ -220,7 +224,7 @@ def _download_staged(
         return primary.result
 
     failure = primary.terminal_failure
-    if not fallback_urls or not _fallback_allowed(failure, fallback_http_codes):
+    if not fallback_urls or not _fallback_allowed(failure):
         primary.result.stages = all_stages
         return primary.result
 
@@ -259,7 +263,7 @@ def _download_staged(
             return chosen
 
         failure = fallback.terminal_failure
-        if not _fallback_allowed(failure, fallback_http_codes):
+        if not _fallback_allowed(failure):
             break
 
         reason = (
@@ -311,7 +315,6 @@ def check_download_many(
     workers: int = 1,
     curl_command: str = "curl",
     fallback_urls: list[str] | None = None,
-    fallback_http_codes: set[int] | None = None,
     stream_stages=None,
     min_stream_bytes: int = base.DEFAULT_DOWNLOAD_MIN_STREAM_BYTES,
     connect_timeout: float | None = base.DEFAULT_SPEED_CONNECT_TIMEOUT,
@@ -324,7 +327,6 @@ def check_download_many(
     connect_timeout = base._resolved_connect_timeout(timeout, connect_timeout)
     max_time = base._max_operation_time(timeout, connect_timeout)
     clean_fallbacks = [item for item in (fallback_urls or []) if item and item != url]
-    retry_codes = set(fallback_http_codes or {403, 429})
     normalized_stages = base._normalize_download_stream_stages(stream_stages)
 
     def probe(proxy: ProxyConfig) -> base.SpeedResult:
@@ -333,7 +335,6 @@ def check_download_many(
             engine,
             url=url,
             fallback_urls=clean_fallbacks,
-            fallback_http_codes=retry_codes,
             timeout=timeout,
             curl_command=curl_command,
             stream_stages=normalized_stages,
