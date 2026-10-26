@@ -19,6 +19,7 @@ STAGE_ORDER = (
     "geo",
     "render",
     "publish",
+    "history",
 )
 
 STAGE_FILES = {
