@@ -130,11 +130,6 @@ history:
   # history/proxy-history.sqlite3 under data_dir.
   database: history/proxy-history.sqlite3
 
-  # none     = normalized metrics only
-  # failures = keep detailed tests/config JSON only for failed observations
-  # all      = keep detailed tests/config JSON for every observation
-  store_details: failures
-
 # Applied only to merged all.txt/all.jsonl after all real proxy tests and the
 # global canonical dedup. Exact exit IP duplicates are reduced first; only the
 # winners then compete inside the broader exit-subnet + ASN cluster.
