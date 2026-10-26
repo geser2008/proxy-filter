@@ -51,7 +51,7 @@ def _history_db_path(cfg: dict, data_dir: Path) -> Path:
 
 def _record_history(cfg: dict, remaining: list[str], started_at: str, run_ids: dict[str, str]) -> None:
     history_cfg = cfg.get("history", {}) or {}
-    if not bool(history_cfg.get("enabled", True)):
+    if not bool(history_cfg.get("enabled", False)):
         return
     if _resolved_until(remaining) != "publish" or _option_values(remaining, "--resume-from"):
         return
