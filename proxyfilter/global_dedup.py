@@ -24,6 +24,9 @@ class RunDeduplicator:
 
     def __call__(self, proxies: list[ProxyConfig]):
         local_unique, local_duplicates = self.base_deduplicate(proxies)
+        final_merge = bool(local_unique) and all(
+            self.registry.get(proxy.ensure_id()) is proxy for proxy in local_unique
+        )
         unique: list[ProxyConfig] = []
         duplicates = list(local_duplicates)
 
@@ -43,5 +46,8 @@ class RunDeduplicator:
             proxy.tests.status = "rejected_duplicate"
             duplicates.append(proxy)
             self.cross_source_duplicates.append(proxy)
+
+        if final_merge:
+            duplicates.extend(self.cross_source_duplicates)
 
         return unique, duplicates
