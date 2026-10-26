@@ -101,6 +101,10 @@ def _proxy_source_ids(proxy: ProxyConfig) -> set[str]:
     return {source.id for source in proxy.provenance_sources() if source.id}
 
 
+def _source_survivor_count(proxies: list[ProxyConfig], source_id: str) -> int:
+    return sum(1 for proxy in proxies if source_id in _proxy_source_ids(proxy))
+
+
 def _read_proxy_jsonl(path: Path) -> list[ProxyConfig]:
     if not path.is_file():
         return []
@@ -497,9 +501,24 @@ def main() -> int:
             current, resume_path = load_stage(data_dir, args.resume_from)
         except (FileNotFoundError, ValueError) as exc:
             parser.error(str(exc))
+        if selected:
+            current = [proxy for proxy in current if _proxy_source_ids(proxy) & selected]
         print(f"[all] resume_from={args.resume_from} records={len(current)} file={resume_path}")
+        for source in sources:
+            source_id = str(source["id"])
+            summary["sources"][source_id] = {
+                "status": "ok",
+                "survivors": _source_survivor_count(current, source_id),
+                "resume_from": args.resume_from,
+            }
         if args.until == args.resume_from:
             _sort_for_stage(current, args.until)
+            summary["pipeline"] = {
+                "status": "ok",
+                "stage": args.until,
+                "survivors": len(current),
+                "resume_from": args.resume_from,
+            }
             write_json(data_dir / "reports" / "summary.json", summary)
             return 0
     else:
@@ -541,11 +560,14 @@ def main() -> int:
         # Preserve source-specific subscriptions without duplicating work-stage files.
         for source in sources:
             source_id = str(source["id"])
+            source_summary = summary["sources"].get(source_id) or {}
+            if source_summary.get("status") != "ok":
+                print(f"[{source_id}] publish_skipped=source_error")
+                continue
             source_proxies = [proxy for proxy in working if source_id in _proxy_source_ids(proxy)]
             txt_path, jsonl_path = publish_source(data_dir, source_id, source_proxies)
             print(f"[{source_id}] published={len(source_proxies)} txt={txt_path} jsonl={jsonl_path}")
-            if source_id in summary["sources"]:
-                summary["sources"][source_id]["survivors"] = len(source_proxies)
+            source_summary["survivors"] = len(source_proxies)
 
         full_source_set = not selected or selected == configured_ids
         if all_sources_ok and full_source_set:
@@ -566,6 +588,13 @@ def main() -> int:
             write_jsonl(work / "12-published.jsonl", working)
             current = working
             print("[all] publish_skipped=source_error state_update_skipped=true")
+
+    for source in sources:
+        source_id = str(source["id"])
+        source_summary = summary["sources"].get(source_id)
+        if source_summary and source_summary.get("status") == "ok":
+            source_summary["survivors"] = _source_survivor_count(current, source_id)
+            source_summary["resume_from"] = args.resume_from
 
     summary["pipeline"] = {
         "status": "ok",
