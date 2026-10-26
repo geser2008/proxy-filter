@@ -73,9 +73,10 @@ def _stage_classification(result: base.SpeedResult) -> str:
 def _fallback_allowed(result: base.SpeedResult) -> bool:
     """Use the alternate download backend only for agreed provider failures.
 
-    The policy is deliberately fixed in code: invalid payloads and HTTP 403/429
-    may switch provider. Transport/TLS/SOCKS failures, zero-byte timeouts and
-    other HTTP responses do not.
+    The policy is deliberately fixed in code and is not configurable from
+    config.yaml. Fallback is allowed for invalid payloads, HTTP 403/429, and
+    HTTP 5xx responses. Transport/TLS/SOCKS failures and zero-byte timeouts do
+    not switch provider.
     """
     if result.payload_valid is False:
         return True
@@ -90,7 +91,7 @@ def _fallback_allowed(result: base.SpeedResult) -> bool:
         if attempt.get("payload_valid") is False:
             return True
 
-    return bool(codes & FALLBACK_HTTP_CODES)
+    return any(code in FALLBACK_HTTP_CODES or 500 <= code <= 599 for code in codes)
 
 
 def _stage_record(streams: int, result: base.SpeedResult, *, skipped: bool = False) -> dict:
