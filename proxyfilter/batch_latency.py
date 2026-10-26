@@ -170,8 +170,23 @@ def _run_batch(
         shutil.rmtree(runtime, ignore_errors=True)
 
 
-def _is_retryable_503(result: BatchLatencyResult) -> bool:
-    return not result.ok and bool(result.error) and result.error.startswith("clash_api_http_503:")
+def _http_code(result: BatchLatencyResult) -> int | None:
+    if not result.error or not result.error.startswith("clash_api_http_"):
+        return None
+    prefix = result.error.split(":", 1)[0]
+    try:
+        return int(prefix.rsplit("_", 1)[1])
+    except (IndexError, ValueError):
+        return None
+
+
+def _is_retryable_transient(result: BatchLatencyResult) -> bool:
+    if result.ok or not result.error:
+        return False
+    if _http_code(result) in {503, 504}:
+        return True
+    text = result.error.lower()
+    return "timed out" in text or "timeout" in text
 
 
 def check_latency_batched(
@@ -185,10 +200,17 @@ def check_latency_batched(
     batch_size: int = 128,
     retry_503_batch_size: int = 16,
 ) -> tuple[list[ProxyConfig], list[ProxyConfig]]:
+    """Run sing-box URL tests in batches.
+
+    ``max_ms < 0`` disables latency-threshold rejection while keeping a
+    successful URL test mandatory. Transient 503/504/timeout failures get one
+    retry against the same URL. ``retry_503_batch_size`` is retained as a
+    backward-compatible parameter name for the retry batch size.
+    """
     passed: list[ProxyConfig] = []
     rejected: list[ProxyConfig] = []
     batch_size = max(1, int(batch_size))
-    retry_503_batch_size = max(1, int(retry_503_batch_size))
+    retry_batch_size = max(1, int(retry_503_batch_size))
     first_results: dict[str, BatchLatencyResult] = {}
 
     for offset in range(0, len(proxies), batch_size):
@@ -199,36 +221,51 @@ def check_latency_batched(
 
     retry_candidates = [
         proxy for proxy in proxies
-        if _is_retryable_503(first_results.get(proxy.ensure_id(), BatchLatencyResult(False, error="missing batch result")))
+        if _is_retryable_transient(first_results.get(proxy.ensure_id(), BatchLatencyResult(False, error="missing batch result")))
     ]
     final_results = dict(first_results)
 
     if retry_candidates:
         recovered = 0
-        for offset in range(0, len(retry_candidates), retry_503_batch_size):
-            batch = retry_candidates[offset : offset + retry_503_batch_size]
+        for offset in range(0, len(retry_candidates), retry_batch_size):
+            batch = retry_candidates[offset : offset + retry_batch_size]
             retry_results = _run_batch(batch, engine, url=url, timeout=timeout, workers=min(workers, len(batch)))
             final_results.update(retry_results)
             recovered += sum(1 for result in retry_results.values() if result.ok)
             print(
-                f"[latency-retry-503] batch={offset // retry_503_batch_size + 1} "
+                f"[latency-retry] batch={offset // retry_batch_size + 1} "
                 f"checked={min(offset + len(batch), len(retry_candidates))}/{len(retry_candidates)}"
             )
-        print(f"[latency-retry-503] candidates={len(retry_candidates)} recovered={recovered}")
+        print(f"[latency-retry] candidates={len(retry_candidates)} recovered={recovered}")
 
     for proxy in proxies:
         proxy_id = proxy.ensure_id()
         first = first_results.get(proxy_id, BatchLatencyResult(False, error="missing batch result"))
         result = final_results.get(proxy_id, first)
         proxy.tests.latency_ms = result.latency_ms
-        passed_threshold = result.ok and result.latency_ms is not None and result.latency_ms <= max_ms
-        attempts = [{"ok": first.ok, "latency_ms": first.latency_ms, "error": first.error}]
-        if _is_retryable_503(first):
-            attempts.append({"ok": result.ok, "latency_ms": result.latency_ms, "error": result.error})
+        threshold_enabled = max_ms >= 0
+        passed_threshold = (
+            result.ok
+            and result.latency_ms is not None
+            and (not threshold_enabled or result.latency_ms <= max_ms)
+        )
+        attempts = [{
+            "ok": first.ok,
+            "latency_ms": first.latency_ms,
+            "http_code": _http_code(first),
+            "error": first.error,
+        }]
+        if _is_retryable_transient(first):
+            attempts.append({
+                "ok": result.ok,
+                "latency_ms": result.latency_ms,
+                "http_code": _http_code(result),
+                "error": result.error,
+            })
         proxy.tests.latency = {
             "status": "pass" if passed_threshold else "fail",
             "latency_ms": result.latency_ms,
-            "http_code": None,
+            "http_code": _http_code(result),
             "error": result.error,
             "method": "sing-box-clash-api",
             "attempts": attempts,
