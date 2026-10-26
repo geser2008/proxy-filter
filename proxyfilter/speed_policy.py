@@ -347,8 +347,8 @@ def check_download_many(
     rejected: list[ProxyConfig] = []
     for proxy, result in base._run_many(proxies, workers, probe, "download"):
         proxy.tests.download_mbps = result.mbps
-        threshold_ok = result.ok and result.mbps is not None and result.mbps >= min_mbps
-        performance_timeout = not result.ok and _final_backend_is_performance_timeout(result)
+        has_measurement = result.mbps is not None and result.payload_valid is not False
+        threshold_ok = has_measurement and result.mbps >= min_mbps
         single_stage = next(
             (
                 stage
@@ -386,7 +386,7 @@ def check_download_many(
             "method": "curl-socks5h-staged-parallel",
         }
 
-        if not result.ok and not performance_timeout:
+        if not has_measurement:
             proxy.tests.status = "rejected_download_error"
             rejected.append(proxy)
         elif not threshold_ok:
