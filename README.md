@@ -101,6 +101,7 @@ The proxy core is a separate external runtime. The project will detect the confi
     ├── raw/
     ├── work/
     ├── reports/
+    ├── history/    # optional SQLite long-term history
     ├── runtime/    # temporary core configs/sockets/state
     └── output/
 ```
@@ -111,7 +112,7 @@ Recommended service user: `proxyfilter` with no shell and no membership in `dock
 
 ```bash
 sudo useradd --system --home /srv/proxy-filter --shell /usr/sbin/nologin proxyfilter
-sudo mkdir -p /srv/proxy-filter/{app,config,data/{raw,work,reports,runtime,output}}
+sudo mkdir -p /srv/proxy-filter/{app,config,data/{raw,work,reports,history,runtime,output}}
 sudo chown -R proxyfilter:proxyfilter /srv/proxy-filter
 
 git clone https://github.com/geser2008/proxy-filter.git /srv/proxy-filter/app
@@ -149,6 +150,48 @@ The `id` is a SHA-256 hash of the normalized connection identity and excludes di
 - **Upload** measures transmitted bytes over elapsed time through the proxy.
 - **Exit IP** is observed through an external IP endpoint and must differ from the server's direct WAN IP when that comparison is enabled.
 - Speed tests are intentionally low-concurrency (normally one at a time) so candidates do not compete for the home Internet connection.
+
+## Availability history
+
+Long-term per-source history is optional and stored in SQLite while JSONL files remain the runtime/checkpoint format. Enable it in `config.yaml`:
+
+```yaml
+history:
+  enabled: true
+  database: history/proxy-history.sqlite3
+  store_details: failures
+```
+
+A relative `database` path is resolved below `paths.data_dir`. The default path is `data/history/proxy-history.sqlite3`.
+
+History is recorded only for complete `publish` runs started from the beginning. `--resume-from` runs are intentionally excluded so a diagnostic retest is not counted as another observation of the source. If a source run fails, the failure is stored in `runs`, but previously known proxies are not marked absent.
+
+The database contains:
+
+- `runs`: one row per source/run with stage survivor counts and source-level errors;
+- `proxy_observations`: append-only per-proxy observations with availability, stage result, latency/speed, reliability, exit IP and geo fields;
+- `proxy_source_state`: current aggregate state per `(source_id, proxy_id)`, including first/last seen, availability counts, absence counts and current streak.
+
+`availability_state` distinguishes `available`, `degraded`, `below_threshold`, `unavailable`, and `absent`.
+
+Examples:
+
+```bash
+sqlite3 /srv/proxy-filter/data/history/proxy-history.sqlite3 \
+  "SELECT source_id,status,finished_at,published_count FROM runs ORDER BY finished_at DESC LIMIT 20;"
+```
+
+```bash
+sqlite3 /srv/proxy-filter/data/history/proxy-history.sqlite3 \
+  "SELECT source_id,availability_state,COUNT(*) FROM proxy_observations GROUP BY source_id,availability_state;"
+```
+
+```bash
+sqlite3 /srv/proxy-filter/data/history/proxy-history.sqlite3 \
+  "SELECT proxy_id,seen_count,available_count,absent_count,current_streak,current_streak_state FROM proxy_source_state WHERE source_id='radikal' ORDER BY available_count DESC LIMIT 20;"
+```
+
+`history.store_details` accepts `none`, `failures`, or `all`. Normalized columns are always stored; this option controls the additional detailed JSON snapshot.
 
 ## Security model
 
