@@ -91,6 +91,20 @@ def _mbps(size_bytes: int, elapsed_seconds: float) -> float:
     return (float(size_bytes) * 8.0) / elapsed_seconds / 1_000_000.0
 
 
+def _partial_mbps(size: int | None, elapsed: float | None, http_code: int | None) -> float | None:
+    """Keep a usable speed measurement from an interrupted transfer.
+
+    Provider HTTP errors (for example 429/5xx) are not measurements. A timeout
+    or other transport failure after a normal transfer response may still have
+    enough bytes/time data to evaluate the configured speed threshold.
+    """
+    if size is None or elapsed is None or size <= 0 or elapsed <= 0:
+        return None
+    if http_code not in {None, 0, 100, 200, 201, 202, 204, 206}:
+        return None
+    return _mbps(size, elapsed)
+
+
 def _expected_download_bytes(url: str) -> int | None:
     """Return a trustworthy expected payload size for known speed-test URLs."""
     try:
@@ -278,6 +292,7 @@ def _download_via_socks(
             error = (proc.stderr or proc.stdout).strip() or f"curl exited {proc.returncode}"
             return SpeedResult(
                 False,
+                mbps=_partial_mbps(size, elapsed, http_code),
                 bytes_transferred=size,
                 time_seconds=elapsed,
                 http_code=http_code,
@@ -290,6 +305,7 @@ def _download_via_socks(
         if expected_bytes is not None and size != expected_bytes:
             return SpeedResult(
                 False,
+                mbps=_partial_mbps(size, elapsed, http_code),
                 bytes_transferred=size,
                 time_seconds=elapsed,
                 http_code=http_code,
@@ -726,6 +742,7 @@ def _upload_one(
             size, elapsed, http_code = _parse_curl_writeout(proc.stdout)
             return SpeedResult(
                 False,
+                mbps=_partial_mbps(size, elapsed, http_code),
                 bytes_transferred=size,
                 time_seconds=elapsed,
                 http_code=http_code,
@@ -940,7 +957,8 @@ def check_download_many(
     rejected: list[ProxyConfig] = []
     for proxy, result in _run_many(proxies, workers, probe, "download"):
         proxy.tests.download_mbps = result.mbps
-        threshold_ok = result.ok and result.mbps is not None and result.mbps >= min_mbps
+        has_measurement = result.mbps is not None
+        threshold_ok = has_measurement and result.mbps >= min_mbps
         single_stage = next(
             (
                 stage
@@ -973,7 +991,7 @@ def check_download_many(
             "stages": result.stages,
             "method": "curl-socks5h-staged-parallel",
         }
-        if not result.ok:
+        if not has_measurement:
             proxy.tests.status = "rejected_download_error"
             rejected.append(proxy)
         elif not threshold_ok:
@@ -1040,7 +1058,8 @@ def check_upload_many(
     rejected: list[ProxyConfig] = []
     for proxy, result in measured:
         proxy.tests.upload_mbps = result.mbps
-        threshold_ok = result.ok and result.mbps is not None and result.mbps >= min_mbps
+        has_measurement = result.mbps is not None
+        threshold_ok = has_measurement and result.mbps >= min_mbps
         proxy.tests.upload = {
             "status": "pass" if threshold_ok else "fail",
             "mbps": result.mbps,
@@ -1055,7 +1074,7 @@ def check_upload_many(
             "attempts": result.attempts,
             "method": "curl-socks5h",
         }
-        if not result.ok:
+        if not has_measurement:
             proxy.tests.status = "rejected_upload_error"
             rejected.append(proxy)
         elif not threshold_ok:
