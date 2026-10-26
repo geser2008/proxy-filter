@@ -9,10 +9,3 @@ from . import speed_result_policy as _speed_result_policy
 
 _speed.check_download_many = _speed_result_policy.check_download_many
 _speed.check_upload_many = _speed_result_policy.check_upload_many
-
-# Keep the public cli module as the compatibility surface while the launcher
-# uses the global pre-network dedup orchestration.
-from . import cli as _cli
-from . import global_pipeline as _global_pipeline
-
-_cli.main = _global_pipeline.main
