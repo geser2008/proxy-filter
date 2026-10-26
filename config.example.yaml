@@ -15,9 +15,21 @@ filters:
     mode: singbox-api
     test_url: https://www.gstatic.com/generate_204
     timeout_seconds: 12
-    max_ms: 1200
+
+    # -1 keeps sing-box urltest as a mandatory functional check but disables
+    # rejection by the numeric latency value. Set a non-negative value to
+    # restore a latency threshold.
+    max_ms: -1
+
+    # batch_size is the number of outbounds loaded into one sing-box process;
+    # workers is the number of concurrent Clash API /delay requests.
     batch_size: 128
     workers: 32
+
+    # One retry is performed on the same test_url for transient 503/504/timeout
+    # failures. This controls only the retry batch size, not the retry count.
+    retry_batch_size: 16
+
     # Fallback/debug mode only:
     command: curl
 
