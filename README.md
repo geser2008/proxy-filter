@@ -153,7 +153,7 @@ The `id` is a SHA-256 hash of the normalized connection identity and excludes di
 
 ## Availability history
 
-Long-term per-source history is optional and stored in SQLite while JSONL files remain the runtime/checkpoint format. Enable it in `config.yaml`:
+Long-term per-source history is stored in SQLite while JSONL files remain the runtime/checkpoint format. Enable automatic recording of ordinary full publish runs in `config.yaml`:
 
 ```yaml
 history:
@@ -164,7 +164,37 @@ history:
 
 A relative `database` path is resolved below `paths.data_dir`. The default path is `data/history/proxy-history.sqlite3`.
 
-History is recorded only for complete `publish` runs started from the beginning. `--resume-from` runs are intentionally excluded so a diagnostic retest is not counted as another observation of the source. If a source run fails, the failure is stored in `runs`, but previously known proxies are not marked absent.
+`history` is also an explicit non-filtering stage after `publish`:
+
+```bash
+python3 proxy_filter.py \
+  --config ../config/config.yaml \
+  --sources ../config/sources.yaml \
+  --until history
+```
+
+To import an already completed `work/<source>/` snapshot without rerunning network tests:
+
+```bash
+python3 proxy_filter.py \
+  --config ../config/config.yaml \
+  --sources ../config/sources.yaml \
+  --history-import \
+  --source radikal
+```
+
+The equivalent stage form is:
+
+```bash
+python3 proxy_filter.py \
+  --config ../config/config.yaml \
+  --sources ../config/sources.yaml \
+  --source radikal \
+  --resume-from publish \
+  --until history
+```
+
+A standalone import requires both `02-unique.jsonl` and `12-published.jsonl`. Its run id is derived from the snapshot contents, so importing unchanged files again is idempotent and does not duplicate history. A failed source fetch records a failed run but does not mark previously known proxies absent.
 
 The database contains:
 
