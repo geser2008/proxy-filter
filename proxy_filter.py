@@ -126,9 +126,7 @@ def _selected_source_ids(cfg: dict, args: list[str]) -> tuple[dict[str, dict], s
 def _import_history_snapshot(cfg: dict, args: list[str]) -> int:
     configured, source_ids = _selected_source_ids(cfg, args)
     data_dir = Path(cfg.get("paths", {}).get("data_dir", "/srv/proxy-filter/data"))
-    history_cfg = cfg.get("history", {}) or {}
     db_path = _history_db_path(cfg, data_dir)
-    store_details = str(history_cfg.get("store_details", "failures"))
     imported = 0
     skipped = 0
 
@@ -149,7 +147,6 @@ def _import_history_snapshot(cfg: dict, args: list[str]) -> int:
                 work_dir=work_dir,
                 started_at=started_at,
                 finished_at=finished_at,
-                store_details=store_details,
             )
             imported += 1
             print(f"[history] source={source_id} imported run_id={run_id}")
@@ -192,7 +189,6 @@ def _record_history(
 
     configured, source_ids = _selected_source_ids(cfg, remaining)
     db_path = _history_db_path(cfg, data_dir)
-    store_details = str(history_cfg.get("store_details", "failures"))
 
     for source_id in sorted(source_ids):
         source = configured.get(source_id) or {}
@@ -221,7 +217,6 @@ def _record_history(
                     work_dir=data_dir / "work" / source_id,
                     started_at=history_started,
                     finished_at=history_finished,
-                    store_details=store_details,
                 )
                 print(f"[history] source={source_id} recorded run_id={run_id}")
             else:
