@@ -6,30 +6,23 @@ from .model import ProxyConfig
 
 
 class RunDeduplicator:
-    """Stateful deduplicator used for the per-source ingest calls in one run.
+    """Deduplicate all source inputs against one canonical registry for one run.
 
-    The first ``source_calls`` invocations correspond to per-source dedup stages.
-    They share one canonical registry, so a proxy seen in a later source is not
-    sent through network tests again. The following invocation is the existing
-    final merge dedup and delegates to the original implementation.
+    The normal per-source dedup call is therefore also a cross-source dedup
+    point, before TCP/core/urltest/speed tests. A later final merge is safe:
+    canonical objects already stored in the registry are kept when the exact
+    same object is seen again.
     """
 
     def __init__(
         self,
         base_deduplicate: Callable[[list[ProxyConfig]], tuple[list[ProxyConfig], list[ProxyConfig]]],
-        source_calls: int,
     ) -> None:
         self.base_deduplicate = base_deduplicate
-        self.source_calls = max(0, int(source_calls))
-        self.calls = 0
         self.registry: dict[str, ProxyConfig] = {}
         self.cross_source_duplicates: list[ProxyConfig] = []
 
     def __call__(self, proxies: list[ProxyConfig]):
-        self.calls += 1
-        if self.calls > self.source_calls:
-            return self.base_deduplicate(proxies)
-
         local_unique, local_duplicates = self.base_deduplicate(proxies)
         unique: list[ProxyConfig] = []
         duplicates = list(local_duplicates)
@@ -39,6 +32,10 @@ class RunDeduplicator:
             canonical = self.registry.get(proxy_id)
             if canonical is None:
                 self.registry[proxy_id] = proxy
+                unique.append(proxy)
+                continue
+
+            if canonical is proxy:
                 unique.append(proxy)
                 continue
 
