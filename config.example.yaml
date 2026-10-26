@@ -44,9 +44,10 @@ filters:
     # very short, noisy transfers.
     download_min_stream_bytes: 5000000
 
-    # Alternate backend. Switching policy is fixed in code: retry on invalid
-    # payload or HTTP 403/429 from the primary provider. Transport/TLS/SOCKS
-    # failures and other HTTP statuses do not switch provider.
+    # Alternate backend. Switching policy is fixed in code and is intentionally
+    # not configurable: retry on invalid payload, HTTP 403/429, or HTTP 5xx from
+    # the primary provider. Transport/TLS/SOCKS failures and zero-byte timeouts
+    # do not switch provider.
     download_fallback_urls:
       - https://cachefly.cachefly.net/100mb.test
 
