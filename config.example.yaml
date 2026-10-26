@@ -44,15 +44,11 @@ filters:
     # very short, noisy transfers.
     download_min_stream_bytes: 5000000
 
-    # On a retryable primary failure, rerun the whole staged test against the
-    # fallback backend instead of measuring only one fallback stream. For the
-    # known CacheFly 100mb.test endpoint the same primary total byte count is
-    # split into non-overlapping HTTP Range requests for every stream stage.
+    # Alternate backend. Switching policy is fixed in code: retry on invalid
+    # payload or HTTP 403/429 from the primary provider. Transport/TLS/SOCKS
+    # failures and other HTTP statuses do not switch provider.
     download_fallback_urls:
       - https://cachefly.cachefly.net/100mb.test
-    download_fallback_http_codes:
-      - 403
-      - 429
 
     # Multi-stream stages with inconsistent per-stream outcomes (for example,
     # some streams succeed while siblings time out or fail at the transport
