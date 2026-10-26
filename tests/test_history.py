@@ -37,25 +37,98 @@ class HistoryTests(unittest.TestCase):
         proxy.tests.security = {"status": "pass", "reasons": []}
         proxy.tests.tcp = {"status": "pass", "latency_ms": 25.0, "error": None}
         proxy.tests.core = {"status": "pass", "error": None}
-        proxy.tests.latency = {"status": "pass", "latency_ms": 120.0, "error": None}
+        proxy.tests.latency = {
+            "status": "pass",
+            "latency_ms": 120.0,
+            "error": None,
+            "method": "sing-box-clash-api",
+            "attempts": [{"ok": True, "latency_ms": 120.0, "error": None}],
+        }
         proxy.tests.latency_ms = 120.0
         proxy.tests.download = {
             "status": "pass",
             "mbps": 100.0,
+            "single_mbps": 90.0,
+            "aggregate_mbps": 100.0,
             "backend": "cloudflare",
             "stream_reliability": reliability,
+            "stages": [
+                {
+                    "backend": "cloudflare",
+                    "streams": 1,
+                    "skipped": False,
+                    "ok": True,
+                    "classification": "success",
+                    "mbps": 90.0,
+                    "bytes": 80_000_000,
+                    "expected_bytes": 80_000_000,
+                    "payload_valid": True,
+                    "time_seconds": 7.1,
+                    "http_code": 200,
+                    "error": None,
+                    "stream_results": [
+                        {
+                            "backend": "cloudflare",
+                            "url": "https://speed.cloudflare.com/__down?bytes=80000000",
+                            "ok": True,
+                            "mbps": 90.0,
+                            "bytes": 80_000_000,
+                            "expected_bytes": 80_000_000,
+                            "payload_valid": True,
+                            "time_seconds": 7.1,
+                            "http_code": 200,
+                            "error": None,
+                            "expect_disabled": False,
+                        }
+                    ],
+                }
+            ],
         }
         proxy.tests.download_mbps = 100.0
-        proxy.tests.upload = {"status": "pass", "mbps": 50.0, "error": None}
+        proxy.tests.upload = {
+            "status": "pass",
+            "mbps": 50.0,
+            "error": None,
+            "stages": [
+                {
+                    "backend": "upload",
+                    "streams": 1,
+                    "skipped": False,
+                    "ok": True,
+                    "mbps": 50.0,
+                    "bytes": 20_000_000,
+                    "expected_bytes": 20_000_000,
+                    "payload_valid": True,
+                    "time_seconds": 3.2,
+                    "http_code": 200,
+                    "error": None,
+                    "stream_results": [
+                        {
+                            "backend": None,
+                            "url": "https://speed.cloudflare.com/__up",
+                            "ok": True,
+                            "mbps": 50.0,
+                            "bytes": 20_000_000,
+                            "expected_bytes": 20_000_000,
+                            "payload_valid": True,
+                            "time_seconds": 3.2,
+                            "http_code": 200,
+                            "error": None,
+                            "expect_disabled": True,
+                        }
+                    ],
+                }
+            ],
+        }
         proxy.tests.upload_mbps = 50.0
         proxy.tests.exit_ip_probe = {"status": "pass", "ip": "198.51.100.10", "error": None}
         proxy.tests.exit_ip = "198.51.100.10"
-        proxy.tests.geo = {"status": "ok", "country_code": "US", "asn": 64500}
+        proxy.tests.geo = {"status": "ok", "country": "United States", "country_code": "US", "asn": 64500}
         proxy.tests.render = {"status": "pass", "name": "x", "uri": "vless://x", "error": None}
         proxy.tests.status = "published"
         write_jsonl(work / "12-published.jsonl", [proxy])
 
-    def test_available_proxy_is_recorded_and_state_is_aggregated(self):
+    def test_available_proxy_is_recorded_with_normalized_details(self):
         work = self.root / "run1"
         proxy = self._proxy()
         self._write_successful_run(work, proxy)
@@ -68,13 +141,12 @@ class HistoryTests(unittest.TestCase):
             work_dir=work,
             started_at="2026-10-26T00:00:00+00:00",
             finished_at="2026-10-26T00:10:00+00:00",
-            store_details="failures",
         )
 
         with sqlite3.connect(self.db) as conn:
             obs = conn.execute(
-                "SELECT availability_state, published, download_mbps, stream_reliability, details_json "
-                "FROM proxy_observations WHERE proxy_id=?",
+                "SELECT observation_id, availability_state, published, download_mbps, "
+                "stream_reliability FROM proxy_observations WHERE proxy_id=?",
                 (proxy.id,),
             ).fetchone()
             state = conn.execute(
@@ -82,10 +154,28 @@ class HistoryTests(unittest.TestCase):
                 "FROM proxy_source_state WHERE proxy_id=?",
                 (proxy.id,),
             ).fetchone()
+            stage_rows = conn.execute(
+                "SELECT direction, streams, mbps FROM transfer_stages "
+                "WHERE observation_id=? ORDER BY direction",
+                (obs[0],),
+            ).fetchall()
+            attempt_rows = conn.execute(
+                "SELECT COUNT(*) FROM transfer_attempts"
+            ).fetchone()[0]
+            latency_attempts = conn.execute(
+                "SELECT ok, latency_ms FROM latency_attempts WHERE observation_id=?",
+                (obs[0],),
+            ).fetchall()
+            schema_version = conn.execute(
+                "SELECT value FROM schema_meta WHERE key='schema_version'"
+            ).fetchone()[0]
 
-        self.assertEqual(obs[:4], ("available", 1, 100.0, "stable"))
-        self.assertIsNone(obs[4])
+        self.assertEqual(obs[1:], ("available", 1, 100.0, "stable"))
         self.assertEqual(state, (1, 1, 0, "available"))
+        self.assertEqual(stage_rows, [("download", 1, 90.0), ("upload", 1, 50.0)])
+        self.assertEqual(attempt_rows, 2)
+        self.assertEqual(latency_attempts, [(1, 120.0)])
+        self.assertEqual(schema_version, "2")
 
     def test_missing_proxy_in_next_successful_source_run_is_absent(self):
         work1 = self.root / "run1"
@@ -150,12 +240,13 @@ class HistoryTests(unittest.TestCase):
                 (proxy.id,),
             ).fetchone()
             state = conn.execute(
-                "SELECT available_count, last_availability_state FROM proxy_source_state WHERE proxy_id=?",
+                "SELECT available_count, degraded_count, last_availability_state "
+                "FROM proxy_source_state WHERE proxy_id=?",
                 (proxy.id,),
             ).fetchone()
 
         self.assertEqual(obs, ("degraded", "degraded"))
-        self.assertEqual(state, (1, "degraded"))
+        self.assertEqual(state, (1, 1, "degraded"))
 
     def test_failed_source_run_does_not_create_absent_observation(self):
         work = self.root / "run1"
@@ -194,6 +285,24 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(observation_count, 1)
         self.assertEqual(absent_count, 0)
         self.assertEqual(failed, ("error", "source fetch failed"))
+
+    def test_schema_v1_database_is_rejected_without_mutation(self):
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            conn.execute("INSERT INTO schema_meta(key, value) VALUES('schema_version', '1')")
+
+        work = self.root / "run1"
+        proxy = self._proxy()
+        self._write_successful_run(work, proxy)
+        with self.assertRaisesRegex(RuntimeError, "schema v1.*schema v2"):
+            record_source_run(
+                self.db,
+                run_id="run1",
+                source_id="radikal",
+                source_name="Radikal",
+                work_dir=work,
+                started_at="2026-10-26T00:00:00+00:00",
+            )
 
 
 if __name__ == "__main__":
