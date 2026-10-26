@@ -151,6 +151,7 @@ def format_output_name(
     include_original_name: bool = True,
 ) -> str:
     geo = proxy.tests.geo or {}
+    download = proxy.tests.download or {}
     original_name = proxy.name if include_original_name else ""
     provenance = proxy.provenance_sources()
     source_ids = [source.id for source in provenance if source.id]
@@ -160,6 +161,7 @@ def format_output_name(
     def metric(value: float | None) -> str:
         return "?" if value is None else str(int(round(value)))
 
+    stream_reliability = str(download.get("stream_reliability") or "unknown")
     values = {
         "flag": geo.get("flag") or "🌐",
         "country_code": geo.get("country_code") or "??",
@@ -174,6 +176,8 @@ def format_output_name(
         "latency_ms": metric(proxy.tests.latency_ms),
         "download_mbps": metric(proxy.tests.download_mbps),
         "upload_mbps": metric(proxy.tests.upload_mbps),
+        "stream_reliability": stream_reliability,
+        "reliability": stream_reliability,
         "exit_ip": proxy.tests.exit_ip or "unknown",
         "asn": geo.get("asn") if geo.get("asn") is not None else "?",
         "org": geo.get("org") or "Unknown",
