@@ -15,7 +15,9 @@ filters:
     mode: singbox-api
     test_url: https://www.gstatic.com/generate_204
     timeout_seconds: 12
-    max_ms: 1200
+    # -1 keeps urltest as a mandatory functional gate but disables rejection
+    # by the measured latency value itself.
+    max_ms: -1
     batch_size: 128
     workers: 32
     # Fallback/debug mode only:
