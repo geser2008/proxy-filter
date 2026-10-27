@@ -8,6 +8,9 @@ from .model import ProxyConfig
 from .reliability import DEGRADED, STABLE
 
 
+FINAL_SUBSCRIPTION_NAMES = ("all.txt", "stable.txt", "unstable.txt")
+
+
 def _rendered_uri(proxy: ProxyConfig) -> str:
     render = proxy.tests.render or {}
     if render.get("status") != "pass":
@@ -24,31 +27,37 @@ def subscription_text(proxies: list[ProxyConfig]) -> str:
     return "\n".join(_rendered_uri(proxy) for proxy in proxies) + "\n"
 
 
-def publish_subscription(
+def publish_subscription(proxies: list[ProxyConfig], *, txt_path: Path) -> None:
+    """Atomically publish one rendered TXT subscription."""
+    write_text(txt_path, subscription_text(proxies))
+
+
+def publish_source(
+    data_dir: Path,
+    source_id: str,
     proxies: list[ProxyConfig],
-    *,
-    txt_path: Path,
-    jsonl_path: Path,
-) -> None:
-    """Atomically publish a rendered subscription and its canonical JSONL snapshot."""
-    text = subscription_text(proxies)
-    write_text(txt_path, text)
-    write_jsonl(jsonl_path, proxies)
+) -> tuple[None, None]:
+    """Compatibility no-op: per-source final subscriptions are disabled.
 
-
-def publish_source(data_dir: Path, source_id: str, proxies: list[ProxyConfig]) -> tuple[Path, Path]:
-    output_dir = data_dir / "output"
-    txt_path = output_dir / f"{source_id}.txt"
-    jsonl_path = output_dir / f"{source_id}.jsonl"
-    publish_subscription(proxies, txt_path=txt_path, jsonl_path=jsonl_path)
-    return txt_path, jsonl_path
+    Source provenance remains available in work/state/history JSONL records, but
+    final publication is intentionally global only: all/stable/unstable.
+    """
+    return None, None
 
 
 def _reliability_status(proxy: ProxyConfig) -> str:
     return str((proxy.tests.reliability or {}).get("status") or "unknown")
 
 
-def _publish_reliability_views(data_dir: Path, proxies: list[ProxyConfig]) -> dict[str, int]:
+def _clean_output_dir(output_dir: Path) -> None:
+    """Remove stale publication files before writing the canonical final set."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for path in output_dir.iterdir():
+        if path.is_file():
+            path.unlink()
+
+
+def _publish_reliability_views(data_dir: Path, proxies: list[ProxyConfig]) -> tuple[Path, Path, dict[str, int]]:
     """Publish stable/degraded views of the already diversity-selected set.
 
     Diversity is intentionally applied before this split so infrastructure limits
@@ -58,17 +67,11 @@ def _publish_reliability_views(data_dir: Path, proxies: list[ProxyConfig]) -> di
     stable = [proxy for proxy in proxies if _reliability_status(proxy) == STABLE]
     unstable = [proxy for proxy in proxies if _reliability_status(proxy) == DEGRADED]
 
-    publish_subscription(
-        stable,
-        txt_path=output_dir / "stable.txt",
-        jsonl_path=output_dir / "stable.jsonl",
-    )
-    publish_subscription(
-        unstable,
-        txt_path=output_dir / "unstable.txt",
-        jsonl_path=output_dir / "unstable.jsonl",
-    )
-    return {
+    stable_path = output_dir / "stable.txt"
+    unstable_path = output_dir / "unstable.txt"
+    publish_subscription(stable, txt_path=stable_path)
+    publish_subscription(unstable, txt_path=unstable_path)
+    return stable_path, unstable_path, {
         "all": len(proxies),
         "stable": len(stable),
         "unstable": len(unstable),
@@ -80,13 +83,11 @@ def publish_merged(
     data_dir: Path,
     proxies: list[ProxyConfig],
     diversity_cfg: dict | None = None,
-) -> tuple[Path, Path]:
-    """Publish merged all/stable/unstable subscriptions after diversity selection.
+) -> tuple[Path, Path, Path]:
+    """Publish exactly all.txt, stable.txt and unstable.txt after diversity.
 
-    The input set is the qualified working set: every proxy here has already
-    passed the functional/speed pipeline and rendering. Diversity never turns a
-    working proxy into a failure; it only selects which working proxies appear
-    in the merged subscriptions.
+    Canonical JSONL snapshots remain in data/work and data/state. The public
+    output directory contains only the three subscription TXT files.
     """
     diversity_cfg = diversity_cfg or {}
     enabled = bool(diversity_cfg.get("enabled", True))
@@ -119,8 +120,7 @@ def publish_merged(
         proxy.tests.diversity["status"] = "suppressed"
         proxy.tests.status = "diversity_suppressed"
 
-    # New explicit stage files. Keep the legacy unnumbered names as compatibility
-    # aliases for existing tooling/tests.
+    # Internal diagnostic/checkpoint files remain JSONL under work/.
     write_jsonl(work_dir / "13-diversity-selected.jsonl", selected)
     write_jsonl(work_dir / "13-diversity-suppressed.jsonl", suppressed)
     write_jsonl(work_dir / "diversity-selected.jsonl", selected)
@@ -145,9 +145,11 @@ def publish_merged(
     write_jsonl(work_dir / "14-published.jsonl", proxies)
 
     output_dir = data_dir / "output"
-    txt_path = output_dir / "all.txt"
-    jsonl_path = output_dir / "all.jsonl"
-    publish_subscription(proxies, txt_path=txt_path, jsonl_path=jsonl_path)
-    split_counts = _publish_reliability_views(data_dir, proxies)
+    _clean_output_dir(output_dir)
+
+    all_path = output_dir / "all.txt"
+    publish_subscription(proxies, txt_path=all_path)
+    stable_path, unstable_path, split_counts = _publish_reliability_views(data_dir, proxies)
     write_json(reports_dir / "subscriptions.json", split_counts)
-    return txt_path, jsonl_path
+
+    return all_path, stable_path, unstable_path
