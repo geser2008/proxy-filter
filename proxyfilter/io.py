@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 from .core_category import annotate_core_category
+from .failure_reason import annotate_failure_reasons
 from .model import ProxyConfig
 from .summary_diagnostics import enrich_summary
 
@@ -22,6 +23,7 @@ def write_jsonl(path: Path, proxies: list[ProxyConfig]) -> None:
     with tmp.open("w", encoding="utf-8") as fh:
         for proxy in proxies:
             annotate_core_category(proxy)
+            annotate_failure_reasons(proxy)
             fh.write(json.dumps(proxy.to_dict(), ensure_ascii=False, separators=(",", ":")) + "\n")
     os.replace(tmp, path)
 
