@@ -110,7 +110,7 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(serialized["tests"]["download"]["stream_reliability"], "degraded")
         self.assertTrue(serialized["tests"]["download"]["stream_reliability_details"]["degraded"])
 
-    def test_output_policy_excludes_degraded_when_disabled(self):
+    def test_output_policy_keeps_degraded_even_with_legacy_exclusion_flag(self):
         proxy = make_proxy()
         proxy.tests.download["stages"] = [
             {
@@ -127,10 +127,11 @@ class ReliabilityTests(unittest.TestCase):
             "output": {"rename_template": "{protocol}", "include_stream_reliability": True},
         }
         accepted, rejected = render_proxies([proxy], cfg)
-        self.assertEqual(accepted, [])
-        self.assertEqual(rejected, [proxy])
-        self.assertEqual(proxy.tests.status, "excluded_unreliable")
-        self.assertEqual(proxy.tests.render["status"], "excluded")
+        self.assertEqual(rejected, [])
+        self.assertEqual(accepted, [proxy])
+        self.assertEqual(proxy.tests.status, "render_pass")
+        self.assertEqual(proxy.tests.render["status"], "pass")
+        self.assertIn("reliability:degraded", proxy.tests.render["name"])
 
     def test_output_policy_keeps_degraded_and_marks_subscription_name(self):
         proxy = make_proxy()
