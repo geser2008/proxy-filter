@@ -61,6 +61,38 @@ class ReliabilityTests(unittest.TestCase):
         self.assertIn("mixed_success_failure", result["mixed_stages"][0]["reasons"])
         self.assertIn("mixed_timeout_transport", result["mixed_stages"][0]["reasons"])
 
+    def test_annotation_ignores_failed_primary_when_fallback_backend_is_selected(self):
+        proxy = make_proxy()
+        proxy.tests.download["backend"] = "cachefly"
+        proxy.tests.download["stages"] = [
+            {
+                "backend": "cloudflare",
+                "streams": 8,
+                "skipped": False,
+                "stream_results": [
+                    {"ok": False, "bytes": 0, "error": "HTTP 429"}
+                    for _ in range(8)
+                ],
+            },
+            {
+                "backend": "cachefly",
+                "streams": 8,
+                "skipped": False,
+                "stream_results": [
+                    {"ok": True, "bytes": 10_000_000, "error": None}
+                    for _ in range(8)
+                ],
+            },
+        ]
+        reliability = annotate_download_reliability(proxy)
+        self.assertEqual(reliability["status"], "stable")
+        self.assertEqual(reliability["successful_streams"], 8)
+        self.assertEqual(reliability["failed_streams"], 0)
+        self.assertEqual(reliability["total_streams"], 8)
+        self.assertEqual(reliability["ignored_stage_count"], 1)
+        self.assertTrue(reliability["provider_fallback"])
+        self.assertTrue(proxy.tests.download["provider_fallback"])
+
     def test_annotation_is_serialized_inside_download(self):
         proxy = make_proxy()
         proxy.tests.download["stages"] = [
