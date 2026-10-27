@@ -159,7 +159,7 @@ def record_global_source_run(
         present_ids,
     )
     counts = {
-        "parsed_count": len(present_ids),
+        "parsed_count": len(parsed_rows),
         "unique_count": _count_source_present(work_dir / "02-unique.jsonl", source_id, present_ids),
         "security_pass_count": _count_source_present(work_dir / "03-safe.jsonl", source_id, present_ids),
         "tcp_pass_count": _count_source_present(work_dir / "04-tcp-ok.jsonl", source_id, present_ids),
