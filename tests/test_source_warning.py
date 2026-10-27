@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -90,7 +91,7 @@ class SourceWarningTests(unittest.TestCase):
                 warning_message="Source could not be fetched; retained proxies were still tested",
             )
 
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn:
                 run = conn.execute(
                     "SELECT status, error FROM runs WHERE run_id='warning-run'"
                 ).fetchone()
