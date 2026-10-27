@@ -9,6 +9,25 @@ Deferred improvements to revisit after the end-to-end pipeline is working reliab
 - Candidate checks include protocol-required fields, enum values, parameter combinations, ranges, and other semantic constraints that can be validated without guessing or repairing source data.
 - Preserve the project rule: parse exactly what the declared format means; reject malformed/unsupported configurations explicitly; do not infer intended values.
 
+## Proxy identity / dedup canonicalization
+
+- Preserve the current global dedup architecture in `global-pipeline-carryover`: combine newly parsed proxies from all selected sources with `state/working.jsonl`, then deduplicate once before the common pipeline. New records intentionally precede carryover records so a current observation wins when `proxy_id` is identical.
+- Replace the current mostly structural `proxy_id` canonicalization with protocol-aware semantic canonicalization so equivalent proxy configurations receive the same stable ID across URI, Clash, and sing-box inputs. The global dedup stage itself does not need redesign; the defect is in identity construction.
+- Keep display/provenance/runtime fields out of identity: proxy `name`, Clash `name`, sing-box `tag`, VMess `ps`, source ID/name/format, original raw text, lifecycle/test state, measured `exit_ip`, latency, throughput, reliability, and other observations must not affect `proxy_id`.
+- Continue normalizing protocol casing, server casing/whitespace, integer ports, and deterministic dictionary key ordering.
+- Normalize protocol aliases before hashing, especially `hy2` -> `hysteria2`, including plain URI input where this alias is not currently normalized at ingest time.
+- Normalize known parameter aliases to one canonical key per semantic field. Examples already treated as aliases by the backend include `sni` / `server_name` / `servername` / `server-name`, `uuid` / `id`, `security` / `scy` / `cipher`, `alter_id` / `alterId` / `aid`, `allowInsecure` / `allow_insecure` / `skip-cert-verify` / `insecure`, `fp` / `client-fingerprint` / `fingerprint`, `plugin_opts` / `plugin-opts`, and `password` / `auth` where protocol semantics make them equivalent.
+- Normalize value types where the backend treats them equivalently, for example explicit boolean spellings and integer-like strings for fields that are semantically integers. Do not guess or repair invalid values; invalid values should remain distinguishable and be rejected by validation.
+- Make canonicalization protocol-specific rather than globally rewriting arbitrary keys. A key alias valid for one protocol must not silently change another protocol's identity.
+- Avoid recursively dropping every nested key named `name`, `tag`, or `ps`. Exclude display-only fields at the appropriate top-level ingest boundary so a future nested semantic field with one of those names cannot disappear from identity accidentally.
+- Canonicalize list-valued parameters according to protocol semantics: preserve order where meaningful and sort only fields explicitly known to be order-insensitive.
+- Preserve provenance merging with `merge_sources_from()` when duplicate IDs are collapsed so one globally tested proxy retains all source memberships.
+- Preserve the separation between deduplication and infrastructure diversity: identical/equivalent proxy configuration belongs to `proxy_id` dedup; shared exit IP/subnet/ASN belongs to the diversity stage and must not affect identity.
+- Add regression tests proving that syntactically different but semantically equivalent configurations collapse to one `proxy_id`, while configurations differing in connection-relevant semantics remain distinct.
+- Include cross-format fixtures for equivalent URI/Clash/sing-box representations and cases covering alias spelling, boolean/integer representation, query parameter ordering, display names, and `hy2` versus `hysteria2`.
+- Add carryover-specific tests showing that an equivalent new proxy and old `working.jsonl` proxy collapse before testing, while a semantically distinct proxy is retained even if server/exit infrastructure is shared.
+- After changing identity semantics, define an explicit history/state migration or versioning strategy because existing database and `working.jsonl` records were keyed with the old SHA-256 identity payload. Do not silently reinterpret old `proxy_id` values without a documented transition path.
+
 ## CLI / configuration error handling
 
 - Add explicit fail-fast validation for launcher arguments and configuration before any source download or pipeline stage starts.
