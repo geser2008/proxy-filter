@@ -268,8 +268,15 @@ def process_proxies(
     if stage_should_run("latency", resume_from):
         latency_cfg = cfg.get("filters", {}).get("latency", {})
         latency_mode = str(latency_cfg.get("mode", "singbox-api")).lower()
+        primary_url = str(
+            latency_cfg.get(
+                "primary_url",
+                latency_cfg.get("test_url", "https://www.gstatic.com/generate_204"),
+            )
+        )
+        fallback_url = str(latency_cfg.get("fallback_url", "")).strip() or None
         common_latency_args = {
-            "url": str(latency_cfg.get("test_url", "https://www.gstatic.com/generate_204")),
+            "url": primary_url,
             "timeout": float(latency_cfg.get("timeout_seconds", 8)),
             "max_ms": float(latency_cfg.get("max_ms", 800)),
             "workers": int(latency_cfg.get("workers", 32)),
@@ -282,6 +289,7 @@ def process_proxies(
                 engine,
                 **common_latency_args,
                 batch_size=int(latency_cfg.get("batch_size", 128)),
+                fallback_url=fallback_url,
             )
         elif latency_mode == "curl":
             latency_ok, latency_rejected = check_latency_many(
@@ -307,7 +315,14 @@ def process_proxies(
         speed_connect_timeout = float(speed_cfg.get("connect_timeout_seconds", 10))
         speed_workers = int(speed_cfg.get("workers", 1))
         speed_curl = str(speed_cfg.get("command", "curl"))
-        download_fallback_urls = _as_string_list(speed_cfg.get("download_fallback_urls", []))
+
+        configured_fallback = str(speed_cfg.get("download_fallback_url", "")).strip()
+        if configured_fallback:
+            download_fallback_urls = [configured_fallback]
+        else:
+            # Backward-compatible old config, but intentionally keep only one
+            # alternate provider so CacheFly is never followed by a retry chain.
+            download_fallback_urls = _as_string_list(speed_cfg.get("download_fallback_urls", []))[:1]
 
         download_ok, download_rejected = check_download_many(
             current,
@@ -353,6 +368,8 @@ def process_proxies(
             curl_command=speed_curl,
             fallback_urls=upload_fallback_urls,
             fallback_http_codes=upload_fallback_http_codes,
+            stream_stages=speed_cfg.get("upload_streams"),
+            min_stream_bytes=int(speed_cfg.get("upload_min_stream_bytes", 1_000_000)),
         )
         write_jsonl(work / "08-upload-ok.jsonl", upload_ok)
         write_jsonl(work / "08-rejected-upload.jsonl", upload_rejected)
@@ -464,7 +481,12 @@ def main() -> int:
             parser.error(str(exc))
 
         latency_cfg = cfg.get("filters", {}).get("latency", {})
-        test_url = str(latency_cfg.get("test_url", "https://www.gstatic.com/generate_204"))
+        test_url = str(
+            latency_cfg.get(
+                "primary_url",
+                latency_cfg.get("test_url", "https://www.gstatic.com/generate_204"),
+            )
+        )
         timeout = float(latency_cfg.get("timeout_seconds", 8))
         result, runtime = debug_latency_proxy(
             proxy,
