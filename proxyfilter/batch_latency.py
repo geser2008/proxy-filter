@@ -186,7 +186,17 @@ def _is_retryable_transient(result: BatchLatencyResult) -> bool:
     if _http_code(result) in {503, 504}:
         return True
     text = result.error.lower()
-    return "timed out" in text or "timeout" in text
+    transient_markers = (
+        "timed out",
+        "timeout",
+        "connection reset",
+        "connection aborted",
+        "temporarily unavailable",
+        "temporary failure",
+        "network is unreachable",
+        "remote end closed connection",
+    )
+    return any(marker in text for marker in transient_markers)
 
 
 def check_latency_batched(
@@ -203,9 +213,9 @@ def check_latency_batched(
     """Run sing-box URL tests in batches.
 
     ``max_ms < 0`` disables latency-threshold rejection while keeping a
-    successful URL test mandatory. Transient 503/504/timeout failures get one
-    retry against the same URL. ``retry_503_batch_size`` is retained as a
-    backward-compatible parameter name for the retry batch size.
+    successful URL test mandatory. Transient 503/504/timeout/network failures
+    get exactly one retry against the same URL. ``retry_503_batch_size`` is
+    retained as a backward-compatible parameter name for the retry batch size.
     """
     passed: list[ProxyConfig] = []
     rejected: list[ProxyConfig] = []
