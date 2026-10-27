@@ -2,6 +2,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from proxyfilter.history import _connect, _insert_record
@@ -77,7 +78,7 @@ class GeoHistoryTests(unittest.TestCase):
                 work_dir=work,
             )
 
-            with sqlite3.connect(db) as conn:
+            with closing(sqlite3.connect(db)) as conn:
                 obs = conn.execute(
                     "SELECT geo_provider,geo_fallback_used,geo_reason,geo_error FROM proxy_observations"
                 ).fetchone()
