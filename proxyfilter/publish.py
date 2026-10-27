@@ -50,12 +50,21 @@ def publish_merged(
 ) -> tuple[Path, Path]:
     """Publish the merged subscription after infrastructure diversity selection.
 
-    Source-specific subscriptions stay complete. Only merged all.txt/all.jsonl
-    are diversity-limited. Work artifacts now live in one common work directory
-    because proxies are de-duplicated before network testing.
+    The input set is the qualified working set: every proxy here has already
+    passed the functional/speed pipeline and rendering. Diversity never turns a
+    working proxy into a failure; it only selects which working proxies appear
+    in the merged subscription.
     """
     diversity_cfg = diversity_cfg or {}
     enabled = bool(diversity_cfg.get("enabled", True))
+    work_dir = data_dir / "work"
+    reports_dir = data_dir / "reports"
+
+    # Snapshot the complete working set before diversity. This is also the set
+    # that should be carried into the next full run for re-testing.
+    for proxy in proxies:
+        proxy.tests.status = "qualified"
+    write_jsonl(work_dir / "12-qualified.jsonl", proxies)
 
     if enabled:
         selected, suppressed, report = select_diverse(
@@ -67,9 +76,20 @@ def publish_merged(
         )
     else:
         selected, suppressed, report = list(proxies), [], []
+        for proxy in selected:
+            proxy.tests.diversity = {"status": "selected", "reason": None, "stages": {}}
 
-    work_dir = data_dir / "work"
-    reports_dir = data_dir / "reports"
+    for proxy in selected:
+        proxy.tests.diversity["status"] = "selected"
+        proxy.tests.status = "diversity_selected"
+    for proxy in suppressed:
+        proxy.tests.diversity["status"] = "suppressed"
+        proxy.tests.status = "diversity_suppressed"
+
+    # New explicit stage files. Keep the legacy unnumbered names as compatibility
+    # aliases for existing tooling/tests.
+    write_jsonl(work_dir / "13-diversity-selected.jsonl", selected)
+    write_jsonl(work_dir / "13-diversity-suppressed.jsonl", suppressed)
     write_jsonl(work_dir / "diversity-selected.jsonl", selected)
     write_jsonl(work_dir / "diversity-suppressed.jsonl", suppressed)
     write_json(reports_dir / "diversity.json", {
@@ -87,6 +107,9 @@ def publish_merged(
     })
 
     proxies[:] = selected
+    for proxy in proxies:
+        proxy.tests.status = "published"
+    write_jsonl(work_dir / "14-published.jsonl", proxies)
 
     output_dir = data_dir / "output"
     txt_path = output_dir / "all.txt"
