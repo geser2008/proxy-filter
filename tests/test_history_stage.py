@@ -95,7 +95,7 @@ class HistoryStageTests(unittest.TestCase):
                 ).fetchone()[0]
             self.assertEqual(run_count, 1)
             self.assertEqual(observation_count, 1)
-            self.assertEqual(schema_version, "2")
+            self.assertEqual(schema_version, "3")
 
     def test_incomplete_snapshot_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
