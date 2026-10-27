@@ -35,17 +35,14 @@ class PublishTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             subscription_text([proxy])
 
-    def test_publish_source_writes_txt_and_jsonl_atomically(self):
+    def test_publish_source_is_disabled(self):
         proxy = self._proxy("vless://abc@example.com:443#test")
         with TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
-            txt_path, jsonl_path = publish_source(data_dir, "test", [proxy])
+            result = publish_source(data_dir, "test", [proxy])
 
-            self.assertEqual(txt_path.read_text(encoding="utf-8"), "vless://abc@example.com:443#test\n")
-            record = json.loads(jsonl_path.read_text(encoding="utf-8").strip())
-            self.assertEqual(record["id"], proxy.id)
-            self.assertFalse(txt_path.with_suffix(".txt.tmp").exists())
-            self.assertFalse(jsonl_path.with_suffix(".jsonl.tmp").exists())
+            self.assertEqual(result, (None, None))
+            self.assertFalse((data_dir / "output").exists())
 
     def test_publish_preserves_unicode_country_label_exactly(self):
         name = "🇳🇱 NL | 126ms | ↓105 ↑132 | trojan"
@@ -56,16 +53,16 @@ class PublishTests(unittest.TestCase):
         )
         proxy = self._proxy(uri)
         proxy.tests.render["name"] = name
+        proxy.tests.reliability = {"status": "stable", "reason": None, "details": {}}
 
         with TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
-            txt_path, jsonl_path = publish_source(data_dir, "test", [proxy])
+            publish_merged(data_dir, [proxy], {"enabled": False})
 
-            self.assertIn("%F0%9F%87%B3%F0%9F%87%B1%20NL%20%7C", txt_path.read_text(encoding="utf-8"))
-            record = json.loads(jsonl_path.read_text(encoding="utf-8").strip())
-            self.assertEqual(record["tests"]["render"]["name"], name)
+            text = (data_dir / "output" / "all.txt").read_text(encoding="utf-8")
+            self.assertIn("%F0%9F%87%B3%F0%9F%87%B1%20NL%20%7C", text)
 
-    def test_publish_merged_writes_all_stable_and_unstable_views(self):
+    def test_publish_merged_writes_only_all_stable_and_unstable_txt(self):
         stable = self._proxy("vless://stable@example1.com:443#stable", suffix=1)
         unstable = self._proxy("vless://unstable@example2.com:443#unstable", suffix=2)
         stable.tests.reliability = {"status": "stable", "reason": None, "details": {}}
@@ -79,11 +76,22 @@ class PublishTests(unittest.TestCase):
 
         with TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
-            publish_merged(data_dir, [stable, unstable], {"enabled": False})
+            output_dir = data_dir / "output"
+            output_dir.mkdir(parents=True)
+            (output_dir / "old-source.txt").write_text("stale\n", encoding="utf-8")
+            (output_dir / "all.jsonl").write_text("stale\n", encoding="utf-8")
 
-            self.assertEqual(len((data_dir / "output" / "all.txt").read_text().splitlines()), 2)
-            self.assertEqual((data_dir / "output" / "stable.txt").read_text().splitlines(), [stable.tests.render["uri"]])
-            self.assertEqual((data_dir / "output" / "unstable.txt").read_text().splitlines(), [unstable.tests.render["uri"]])
+            all_path, legacy_jsonl = publish_merged(data_dir, [stable, unstable], {"enabled": False})
+
+            self.assertIsNone(legacy_jsonl)
+            self.assertEqual(all_path, output_dir / "all.txt")
+            self.assertEqual(
+                sorted(path.name for path in output_dir.iterdir()),
+                ["all.txt", "stable.txt", "unstable.txt"],
+            )
+            self.assertEqual(len((output_dir / "all.txt").read_text().splitlines()), 2)
+            self.assertEqual((output_dir / "stable.txt").read_text().splitlines(), [stable.tests.render["uri"]])
+            self.assertEqual((output_dir / "unstable.txt").read_text().splitlines(), [unstable.tests.render["uri"]])
             counts = json.loads((data_dir / "reports" / "subscriptions.json").read_text())
             self.assertEqual(counts, {"all": 2, "stable": 1, "unstable": 1, "unclassified": 0})
 
@@ -103,17 +111,22 @@ class PublishTests(unittest.TestCase):
             proxy.tests.upload_mbps = up
             proxy.tests.exit_ip = exit_ip
             proxy.tests.geo = {"status": "ok", "asn": 30088}
+            proxy.tests.reliability = {"status": "stable", "reason": None, "details": {}}
             proxies.append(proxy)
 
         expected = [proxies[0].id, proxies[2].id]
         with TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
-            txt_path, jsonl_path = publish_merged(data_dir, proxies)
+            txt_path, legacy_jsonl = publish_merged(data_dir, proxies)
 
+            self.assertIsNone(legacy_jsonl)
             self.assertEqual([proxy.id for proxy in proxies], expected)
             self.assertEqual(len(txt_path.read_text(encoding="utf-8").splitlines()), 2)
-            records = [json.loads(line) for line in jsonl_path.read_text(encoding="utf-8").splitlines()]
-            self.assertEqual([record["id"] for record in records], expected)
+            published_records = [
+                json.loads(line)
+                for line in (data_dir / "work" / "14-published.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual([record["id"] for record in published_records], expected)
             report = json.loads((data_dir / "reports" / "diversity.json").read_text(encoding="utf-8"))
             self.assertEqual(report["input"], 5)
             self.assertEqual(report["selected"], 2)
