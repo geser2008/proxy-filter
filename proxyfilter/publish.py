@@ -83,11 +83,14 @@ def publish_merged(
     data_dir: Path,
     proxies: list[ProxyConfig],
     diversity_cfg: dict | None = None,
-) -> tuple[Path, Path, Path]:
+) -> tuple[Path, None]:
     """Publish exactly all.txt, stable.txt and unstable.txt after diversity.
 
     Canonical JSONL snapshots remain in data/work and data/state. The public
     output directory contains only the three subscription TXT files.
+
+    The second return value is kept as None for compatibility with the existing
+    caller that previously expected an output JSONL path.
     """
     diversity_cfg = diversity_cfg or {}
     enabled = bool(diversity_cfg.get("enabled", True))
@@ -149,7 +152,7 @@ def publish_merged(
 
     all_path = output_dir / "all.txt"
     publish_subscription(proxies, txt_path=all_path)
-    stable_path, unstable_path, split_counts = _publish_reliability_views(data_dir, proxies)
+    _stable_path, _unstable_path, split_counts = _publish_reliability_views(data_dir, proxies)
     write_json(reports_dir / "subscriptions.json", split_counts)
 
-    return all_path, stable_path, unstable_path
+    return all_path, None
