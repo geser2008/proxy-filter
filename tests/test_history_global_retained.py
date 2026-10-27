@@ -77,6 +77,42 @@ class GlobalHistoryRetainedTests(unittest.TestCase):
             self.assertEqual(source_state, (0, 0, 1, "absent"))
             self.assertEqual(run, (0, 0))
 
+    def test_parsed_count_preserves_duplicate_rows_before_dedup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            work = root / "work"
+            db = root / "history.sqlite3"
+            source = SourceInfo("iboxz", "iboxz", "plain")
+            proxy = ProxyConfig(
+                source,
+                "vless",
+                "203.0.113.30",
+                443,
+                params={"uuid": "550e8400-e29b-41d4-a716-446655440002"},
+            )
+            proxy.ensure_id()
+
+            duplicate = ProxyConfig.from_dict(proxy.to_dict())
+            write_jsonl(work / "01-parsed.jsonl", [proxy, duplicate])
+            write_jsonl(work / "02-unique.jsonl", [proxy])
+
+            record_global_source_run(
+                db,
+                run_id="run1",
+                source_id="iboxz",
+                source_name="iboxz",
+                work_dir=work,
+                started_at="2026-10-27T00:00:00+00:00",
+                finished_at="2026-10-27T00:01:00+00:00",
+            )
+
+            with closing(sqlite3.connect(db)) as conn:
+                run = conn.execute(
+                    "SELECT parsed_count,unique_count FROM runs WHERE run_id='run1'"
+                ).fetchone()
+
+            self.assertEqual(run, (2, 1))
+
 
 if __name__ == "__main__":
     unittest.main()
