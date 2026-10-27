@@ -56,11 +56,11 @@ filters:
     download_fallback_urls:
       - https://cachefly.cachefly.net/100mb.test
 
-    # Multi-stream stages with inconsistent per-stream outcomes (for example,
-    # some streams succeed while siblings time out or fail at the transport
-    # layer) are marked stream_reliability=degraded. Keep them in diagnostic
-    # work files either way; this switch controls whether they may reach the
-    # final rendered files and subscriptions.
+    # Multi-stream stages with inconsistent per-stream outcomes are annotated
+    # separately as reliability=degraded. Reliability does not rewrite speed
+    # pass/fail: a numeric Mbps result is still judged only against the speed
+    # threshold. This switch is an output policy deciding whether a degraded
+    # but otherwise passing proxy may be published.
     include_unreliable_proxies: true
 
     # Upload uses Cloudflare's public upload endpoint. If an upload ends after
@@ -96,16 +96,20 @@ filters:
     workers: 4
     command: curl
 
+    # If the primary service fails or returns no valid IP, exactly one retry is
+    # made through an independent service: https://checkip.amazonaws.com . A
+    # valid primary response never triggers fallback, even if it matches WAN IP.
+
     # Reject confirmed direct-WAN leaks.
     reject_direct_wan_ip: true
 
-    # If the exit-IP lookup itself fails, keep the proxy by default and mark
-    # the result as unknown. Set true for strict fail-closed behavior.
+    # If both exit-IP lookups fail, keep the proxy by default and mark the
+    # result as unknown. Set true for strict fail-closed behavior.
     reject_unknown_exit_ip: false
 
-    # Discover the server's current direct public IP using the same endpoint
-    # without a proxy. For multi-WAN systems, list any additional public WAN
-    # addresses in direct_ips so a leak through either ISP is rejected.
+    # Discover the server's current direct public IP using the same primary +
+    # independent fallback lookup. For multi-WAN systems, list any additional
+    # public WAN addresses in direct_ips so a leak through either ISP is rejected.
     auto_discover_direct_ip: true
     direct_ips: []
 
@@ -141,7 +145,8 @@ history:
 
 # Applied only to merged all.txt/all.jsonl after all real proxy tests and the
 # global canonical dedup. Exact exit IP duplicates are reduced first; only the
-# winners then compete inside the broader exit-subnet + ASN cluster.
+# winners then compete inside the broader exit-subnet + ASN cluster. Selection
+# still uses equal-weight rank sum: latency rank + download rank + upload rank.
 diversity:
   enabled: true
   max_same_exit_ip: 1
