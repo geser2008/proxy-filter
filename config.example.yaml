@@ -1,6 +1,13 @@
 paths:
   data_dir: /srv/proxy-filter/data
 
+# Proxies that have passed the full qualifying pipeline at least once are kept
+# in data/state/known-working.jsonl and re-tested on every fresh full run. A
+# previously working proxy may fail temporarily and remain in this retained set;
+# it expires only after its last successful run is older than this period.
+state:
+  working_retention_days: 30
+
 filters:
   security:
     reject_allow_insecure: true
@@ -47,13 +54,6 @@ filters:
     # provider failure of the primary backend. CacheFly runs the same configured
     # download_streams once; it is not retried and there is no further fallback.
     download_fallback_url: https://cachefly.cachefly.net/100mb.test
-
-    # Multi-stream stages with inconsistent per-stream outcomes are annotated
-    # separately as reliability=degraded. Reliability does not rewrite speed
-    # pass/fail: a numeric Mbps result is still judged only against the speed
-    # threshold. This switch is an output policy deciding whether a degraded
-    # but otherwise passing proxy may be published.
-    include_unreliable_proxies: true
 
     # Upload uses the same configurable stage model. [8] is one eight-stream
     # measurement; any non-empty list of positive unique integers is allowed.
@@ -136,10 +136,11 @@ history:
   # history/proxy-history.sqlite3 under data_dir.
   database: history/proxy-history.sqlite3
 
-# Applied only to merged all.txt/all.jsonl after all real proxy tests and the
-# global canonical dedup. Exact exit IP duplicates are reduced first; only the
-# winners then compete inside the broader exit-subnet + ASN cluster. Selection
-# still uses equal-weight rank sum: latency rank + download rank + upload rank.
+# Applied only to merged publication after all real proxy tests and the global
+# canonical dedup. Exact exit IP duplicates are reduced first; only the winners
+# then compete inside the broader exit-subnet + ASN cluster. The selected set is
+# subsequently split by reliability into output/stable.* and output/unstable.*;
+# output/all.* always contains both classes.
 diversity:
   enabled: true
   max_same_exit_ip: 1
@@ -165,5 +166,7 @@ output:
 
   # Append an explicit reliability:<status> marker to every rendered URI name,
   # unless the rename_template already contains {stream_reliability} or
-  # {reliability}. This makes the field visible in plain-text subscriptions.
+  # {reliability}. Reliability no longer excludes a proxy before publication:
+  # all.txt contains every diversity-selected proxy, stable.txt only stable,
+  # and unstable.txt only degraded.
   include_stream_reliability: true
