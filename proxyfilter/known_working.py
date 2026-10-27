@@ -96,6 +96,13 @@ def load_known_working(
     return proxies, path
 
 
+def load_seen_ids(data_dir: Path) -> set[str]:
+    return {
+        proxy.ensure_id()
+        for proxy in _read_jsonl(data_dir / "work" / "01-parsed.jsonl")
+    }
+
+
 def load_rejected_candidates(data_dir: Path) -> list[ProxyConfig]:
     rejected: dict[str, ProxyConfig] = {}
     work_dir = data_dir / "work"
