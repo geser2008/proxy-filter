@@ -14,19 +14,31 @@ def _is_timeout(error: str | None) -> bool:
     return "curl: (28)" in text or "timed out" in text or "timeout" in text
 
 
-def analyze_stream_reliability(stages: list[dict] | None) -> dict:
-    """Summarize instability without deciding whether the speed test passes.
+def analyze_stream_reliability(
+    stages: list[dict] | None,
+    *,
+    selected_backend: str | None = None,
+) -> dict:
+    """Summarize stream instability for the backend whose speed was selected.
 
     Reliability is diagnostic metadata. Pass/fail remains controlled by the
-    measured speed and the configured speed threshold.
+    measured speed and the configured speed threshold. Provider attempts that
+    were abandoned in favour of a fallback backend do not make the proxy itself
+    unreliable.
     """
     mixed_stages: list[dict] = []
     total_streams = 0
     successful_streams = 0
     failed_streams = 0
+    ignored_stage_count = 0
     reasons_seen: set[str] = set()
 
     for stage in stages or []:
+        stage_backend = stage.get("backend")
+        if selected_backend and stage_backend and stage_backend != selected_backend:
+            ignored_stage_count += 1
+            continue
+
         streams = int(stage.get("streams") or 0)
         if streams <= 1 or stage.get("skipped"):
             continue
@@ -56,7 +68,7 @@ def analyze_stream_reliability(stages: list[dict] | None) -> dict:
         if reasons:
             mixed_stages.append(
                 {
-                    "backend": stage.get("backend"),
+                    "backend": stage_backend,
                     "streams": streams,
                     "successful_streams": len(ok),
                     "failed_streams": len(failed),
@@ -72,6 +84,8 @@ def analyze_stream_reliability(stages: list[dict] | None) -> dict:
         "status": DEGRADED if degraded else STABLE,
         "reason": reason,
         "degraded": degraded,
+        "selected_backend": selected_backend,
+        "ignored_stage_count": ignored_stage_count,
         "mixed_stage_count": len(mixed_stages),
         "successful_streams": successful_streams,
         "failed_streams": failed_streams,
@@ -82,11 +96,28 @@ def analyze_stream_reliability(stages: list[dict] | None) -> dict:
 
 def annotate_download_reliability(proxy: ProxyConfig) -> dict:
     download = proxy.tests.download or {}
-    reliability = analyze_stream_reliability(download.get("stages") or [])
+    stages = download.get("stages") or []
+    selected_backend = download.get("backend")
+    reliability = analyze_stream_reliability(
+        stages,
+        selected_backend=selected_backend,
+    )
+
+    attempted_backends = {
+        stage.get("backend")
+        for stage in stages
+        if stage.get("backend") and not stage.get("skipped")
+    }
+    provider_fallback = bool(
+        selected_backend
+        and any(backend != selected_backend for backend in attempted_backends)
+    )
+    reliability["provider_fallback"] = provider_fallback
 
     # Preserve the legacy download-level fields used by render/output policy.
     download["stream_reliability"] = reliability["status"]
     download["stream_reliability_details"] = reliability
+    download["provider_fallback"] = provider_fallback
     proxy.tests.download = download
 
     # Also expose reliability as its own test dimension. It is deliberately not
