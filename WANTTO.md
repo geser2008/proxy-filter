@@ -9,23 +9,6 @@ Deferred improvements to revisit after the end-to-end pipeline is working reliab
 - Candidate checks include protocol-required fields, enum values, parameter combinations, ranges, and other semantic constraints that can be validated without guessing or repairing source data.
 - Preserve the project rule: parse exactly what the declared format means; reject malformed/unsupported configurations explicitly; do not infer intended values.
 
-## Proxy identity / dedup canonicalization
-
-- Replace the current mostly structural `proxy_id` canonicalization with protocol-aware semantic canonicalization so equivalent proxy configurations receive the same stable ID across URI, Clash, and sing-box inputs.
-- Keep display/provenance fields out of identity: proxy `name`, Clash `name`, sing-box `tag`, VMess `ps`, source ID/name/format, original raw text, and measured runtime properties such as `exit_ip` must not affect `proxy_id`.
-- Continue normalizing protocol casing, server casing/whitespace, integer ports, and deterministic dictionary key ordering.
-- Normalize protocol aliases before hashing, especially `hy2` -> `hysteria2`, including plain URI input where this alias is currently not normalized at ingest time.
-- Normalize known parameter aliases to one canonical key per semantic field. Examples currently accepted by the backend include `sni` / `server_name` / `servername` / `server-name`, `uuid` / `id`, `security` / `scy` / `cipher`, `alter_id` / `alterId` / `aid`, `allowInsecure` / `allow_insecure` / `skip-cert-verify` / `insecure`, `fp` / `client-fingerprint` / `fingerprint`, `plugin_opts` / `plugin-opts`, and `password` / `auth` where protocol semantics make them equivalent.
-- Normalize value types where the backend treats them equivalently, for example explicit boolean spellings (`true`, `1`, `yes`, `on`) and integer-like strings for fields that are semantically integers. Do not guess or repair invalid values; invalid values should remain distinguishable and be rejected by validation.
-- Make canonicalization protocol-specific rather than globally rewriting arbitrary keys. A key alias that is valid for one protocol must not silently change the identity of another protocol.
-- Avoid recursively dropping every nested key named `name`, `tag`, or `ps`. Exclude display-only fields at the appropriate top-level ingest boundary so a future nested semantic field with one of those names cannot disappear from identity accidentally.
-- Ensure list-valued parameters are canonicalized according to protocol semantics: preserve order where order is meaningful; sort only fields whose semantics are explicitly order-insensitive.
-- Preserve the current two-stage dedup behavior: deduplicate within each source after parsing, then deduplicate surviving proxies across sources while merging provenance with `merge_sources_from()`.
-- Preserve the separation between deduplication and infrastructure diversity: identical/equivalent proxy configuration belongs to `proxy_id` dedup; shared exit IP/subnet/ASN belongs to the diversity stage and must not affect identity.
-- Add regression tests proving that syntactically different but semantically equivalent configurations collapse to one `proxy_id`, while configurations that differ in connection-relevant semantics remain distinct.
-- Include cross-format test fixtures for equivalent URI/Clash/sing-box representations and specific regression cases for alias spelling, boolean/integer representation, query parameter ordering, display names, and `hy2` versus `hysteria2`.
-- After changing identity semantics, define an explicit history migration/versioning strategy because existing database rows were keyed with the old SHA-256 identity payload. Do not silently reinterpret old `proxy_id` values without a documented migration path.
-
 ## CLI / configuration error handling
 
 - Add explicit fail-fast validation for launcher arguments and configuration before any source download or pipeline stage starts.
