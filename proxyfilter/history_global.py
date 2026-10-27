@@ -18,6 +18,7 @@ from .history import (
     _update_state,
     utc_now,
 )
+from .history_geo import sync_geo_history
 
 
 def _row_source_ids(row: dict) -> set[str]:
@@ -75,8 +76,6 @@ def _source_published_reliability_counts(
     source_id: str,
     present_ids: set[str],
 ) -> tuple[int, int]:
-    # Reuse the canonical helper on an in-memory source-filtered snapshot by
-    # evaluating the same reliability fields directly.
     stable = 0
     unstable = 0
     for row in _source_rows(path, source_id):
@@ -222,3 +221,12 @@ def record_global_source_run(
                 "absent",
                 False,
             )
+
+    # GeoIP fallback metadata is an additive schema-v3 extension. Sync after the
+    # canonical observation transaction so existing databases upgrade in place.
+    sync_geo_history(
+        db_path,
+        run_id=run_id,
+        source_id=source_id,
+        work_dir=work_dir,
+    )
