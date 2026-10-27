@@ -209,44 +209,90 @@ def check_latency_batched(
     workers: int = 32,
     batch_size: int = 128,
     retry_503_batch_size: int = 16,
+    fallback_url: str | None = None,
 ) -> tuple[list[ProxyConfig], list[ProxyConfig]]:
     """Run sing-box URL tests in batches.
 
     ``max_ms < 0`` disables latency-threshold rejection while keeping a
-    successful URL test mandatory. Transient 503/504/timeout/network failures
-    get exactly one retry against the same URL. ``retry_503_batch_size`` is
-    retained as a backward-compatible parameter name for the retry batch size.
+    successful URL test mandatory.
+
+    When ``fallback_url`` is configured, every failed primary URL test gets one
+    attempt against that alternate URL and the primary URL is not retried. This
+    is the normal pipeline mode: latency is an auxiliary reachability/ordering
+    signal, so an alternate provider avoids rejecting a proxy merely because the
+    primary test endpoint is unavailable through it.
+
+    When no fallback URL is configured, the legacy behavior is retained for
+    direct callers: transient 503/504/timeout/network failures get one retry
+    against the same URL. ``retry_503_batch_size`` remains the retry/fallback
+    batch size for backward compatibility.
     """
     passed: list[ProxyConfig] = []
     rejected: list[ProxyConfig] = []
     batch_size = max(1, int(batch_size))
     retry_batch_size = max(1, int(retry_503_batch_size))
-    first_results: dict[str, BatchLatencyResult] = {}
+    fallback_url = str(fallback_url or "").strip() or None
+    if fallback_url == url:
+        fallback_url = None
 
+    first_results: dict[str, BatchLatencyResult] = {}
     for offset in range(0, len(proxies), batch_size):
         batch = proxies[offset : offset + batch_size]
         results = _run_batch(batch, engine, url=url, timeout=timeout, workers=workers)
         first_results.update(results)
-        print(f"[latency] batch={offset // batch_size + 1} checked={min(offset + len(batch), len(proxies))}/{len(proxies)}")
+        print(
+            f"[latency] primary batch={offset // batch_size + 1} "
+            f"checked={min(offset + len(batch), len(proxies))}/{len(proxies)}"
+        )
 
-    retry_candidates = [
-        proxy for proxy in proxies
-        if _is_retryable_transient(first_results.get(proxy.ensure_id(), BatchLatencyResult(False, error="missing batch result")))
-    ]
+    if fallback_url:
+        retry_candidates = [
+            proxy
+            for proxy in proxies
+            if not first_results.get(
+                proxy.ensure_id(), BatchLatencyResult(False, error="missing batch result")
+            ).ok
+        ]
+        second_url = fallback_url
+        second_label = "fallback"
+    else:
+        retry_candidates = [
+            proxy
+            for proxy in proxies
+            if _is_retryable_transient(
+                first_results.get(
+                    proxy.ensure_id(), BatchLatencyResult(False, error="missing batch result")
+                )
+            )
+        ]
+        second_url = url
+        second_label = "retry"
+
     final_results = dict(first_results)
+    second_attempted: set[str] = set()
 
     if retry_candidates:
         recovered = 0
         for offset in range(0, len(retry_candidates), retry_batch_size):
             batch = retry_candidates[offset : offset + retry_batch_size]
-            retry_results = _run_batch(batch, engine, url=url, timeout=timeout, workers=min(workers, len(batch)))
+            retry_results = _run_batch(
+                batch,
+                engine,
+                url=second_url,
+                timeout=timeout,
+                workers=min(workers, len(batch)),
+            )
             final_results.update(retry_results)
+            second_attempted.update(proxy.ensure_id() for proxy in batch)
             recovered += sum(1 for result in retry_results.values() if result.ok)
             print(
-                f"[latency-retry] batch={offset // retry_batch_size + 1} "
+                f"[latency-{second_label}] batch={offset // retry_batch_size + 1} "
                 f"checked={min(offset + len(batch), len(retry_candidates))}/{len(retry_candidates)}"
             )
-        print(f"[latency-retry] candidates={len(retry_candidates)} recovered={recovered}")
+        print(
+            f"[latency-{second_label}] candidates={len(retry_candidates)} "
+            f"recovered={recovered} url={second_url}"
+        )
 
     for proxy in proxies:
         proxy_id = proxy.ensure_id()
@@ -260,13 +306,15 @@ def check_latency_batched(
             and (not threshold_enabled or result.latency_ms <= max_ms)
         )
         attempts = [{
+            "url": url,
             "ok": first.ok,
             "latency_ms": first.latency_ms,
             "http_code": _http_code(first),
             "error": first.error,
         }]
-        if _is_retryable_transient(first):
+        if proxy_id in second_attempted:
             attempts.append({
+                "url": second_url,
                 "ok": result.ok,
                 "latency_ms": result.latency_ms,
                 "http_code": _http_code(result),
@@ -277,6 +325,8 @@ def check_latency_batched(
             "latency_ms": result.latency_ms,
             "http_code": _http_code(result),
             "error": result.error,
+            "url": second_url if proxy_id in second_attempted else url,
+            "fallback_used": bool(fallback_url and proxy_id in second_attempted),
             "method": "sing-box-clash-api",
             "attempts": attempts,
         }
