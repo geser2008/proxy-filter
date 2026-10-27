@@ -283,8 +283,20 @@ def main() -> int:
 
     original_render = cli._render_proxies
     original_load_previous = cli._load_previous_working
+    original_ingest_sources = cli._ingest_sources
     original_publish_merged = cli.publish_merged
+    original_write_jsonl = cli.write_jsonl
     state_context: dict[str, object] = {}
+
+    def ingest_sources_allow_partial_publish(sources, data_dir: Path, summary: dict):
+        parsed, all_sources_ok = original_ingest_sources(sources, data_dir, summary)
+        state_context["all_sources_ok"] = bool(all_sources_ok)
+        if not all_sources_ok:
+            print("[all] source_errors_present=true publish_policy=successful_sources")
+        # Publication and source-fetch health are independent. The package CLI
+        # may finish the global pipeline and publish the tested result, while the
+        # launcher preserves the real source-error status for state/history/exit.
+        return parsed, True
 
     def load_previous_with_retention(data_dir: Path, selected_sources: set[str]):
         proxies, path = load_known_working(data_dir, selected_sources)
@@ -292,16 +304,31 @@ def main() -> int:
         state_context["path"] = path
         return proxies, path
 
+    def write_jsonl_with_state_guard(path, proxies):
+        target = Path(path)
+        if (
+            state_context.get("all_sources_ok") is False
+            and target.name == "working.jsonl"
+            and target.parent.name == "state"
+        ):
+            print("[state] working_update_skipped=source_error")
+            return None
+        return original_write_jsonl(path, proxies)
+
     def publish_merged_with_retention(data_dir: Path, proxies, diversity_cfg=None):
         # Capture the complete qualified set before publish_merged mutates the
         # list down to the diversity-selected publication set.
         qualified = list(proxies)
         result = original_publish_merged(data_dir, proxies, diversity_cfg)
 
-        # Retained state is updated only by a fresh full publish. Resume runs do
-        # not rewrite availability history, and partial-source runs never call
-        # publish_merged in cli.py.
-        if not resume_from and "previous" in state_context:
+        # Retained state is updated only by a fresh full publish with complete
+        # source input. A failed source must not look like proxy disappearance,
+        # but it must not block publication of successfully tested results.
+        if (
+            not resume_from
+            and "previous" in state_context
+            and state_context.get("all_sources_ok", True) is True
+        ):
             previous = list(state_context["previous"])
             retention_days = int((cfg.get("state", {}) or {}).get("working_retention_days", 30))
             counts = update_known_working(
@@ -319,6 +346,8 @@ def main() -> int:
                 f"new={counts['new_working']} recovered={counts['recovered']} "
                 f"expired={counts['expired']} retention_days={retention_days}"
             )
+        elif not resume_from and state_context.get("all_sources_ok") is False:
+            print("[state] known_working_update_skipped=source_error")
         return result
 
     try:
@@ -336,7 +365,9 @@ def main() -> int:
         # retained-state integration here, where merged config is available.
         cli._render_proxies = render_proxies_with_reliability
         cli._load_previous_working = load_previous_with_retention
+        cli._ingest_sources = ingest_sources_allow_partial_publish
         cli.publish_merged = publish_merged_with_retention
+        cli.write_jsonl = write_jsonl_with_state_guard
 
         # history is a launcher-owned non-filtering stage after publish. The
         # package CLI still executes through publish; then the snapshot is stored.
@@ -358,11 +389,18 @@ def main() -> int:
             run_ids,
             force=history_stage,
         )
+
+        # Keep a failed source visible to schedulers/operators even though the
+        # successfully tested global result was published.
+        if result == 0 and state_context.get("all_sources_ok") is False:
+            return 1
         return result
     finally:
         cli._render_proxies = original_render
         cli._load_previous_working = original_load_previous
+        cli._ingest_sources = original_ingest_sources
         cli.publish_merged = original_publish_merged
+        cli.write_jsonl = original_write_jsonl
         if tmp_path:
             try:
                 os.unlink(tmp_path)
