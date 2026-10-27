@@ -17,10 +17,15 @@ class SourceInfo:
 class TestState:
     security: dict[str, Any] = field(default_factory=lambda: {"status": "pending", "reasons": []})
     tcp: dict[str, Any] = field(default_factory=lambda: {"status": "pending", "latency_ms": None})
-    core: dict[str, Any] = field(default_factory=lambda: {"status": "pending", "error": None})
+    core: dict[str, Any] = field(default_factory=lambda: {"status": "pending", "category": None, "error": None})
     latency: dict[str, Any] = field(default_factory=lambda: {"status": "pending", "latency_ms": None, "http_code": None, "error": None})
     download: dict[str, Any] = field(default_factory=lambda: {"status": "pending", "mbps": None, "error": None})
     upload: dict[str, Any] = field(default_factory=lambda: {"status": "pending", "mbps": None, "error": None})
+    reliability: dict[str, Any] = field(default_factory=lambda: {
+        "status": "unknown",
+        "reason": None,
+        "details": {},
+    })
     exit_ip_probe: dict[str, Any] = field(default_factory=lambda: {"status": "pending", "ip": None, "error": None})
     geo: dict[str, Any] = field(default_factory=lambda: {
         "status": "pending",
@@ -144,10 +149,15 @@ class ProxyConfig:
         tests = TestState(
             security=tests_data.get("security", {"status": "pending", "reasons": []}),
             tcp=tests_data.get("tcp", {"status": "pending", "latency_ms": None}),
-            core=tests_data.get("core", {"status": "pending", "error": None}),
+            core=tests_data.get("core", {"status": "pending", "category": None, "error": None}),
             latency=tests_data.get("latency", {"status": "pending", "latency_ms": None, "http_code": None, "error": None}),
             download=tests_data.get("download", {"status": "pending", "mbps": None, "error": None}),
             upload=tests_data.get("upload", {"status": "pending", "mbps": None, "error": None}),
+            reliability=tests_data.get("reliability", {
+                "status": "unknown",
+                "reason": None,
+                "details": {},
+            }),
             exit_ip_probe=tests_data.get("exit_ip_probe", {"status": "pending", "ip": None, "error": None}),
             geo=tests_data.get("geo", {
                 "status": "pending",
