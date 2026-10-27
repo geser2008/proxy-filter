@@ -61,6 +61,42 @@ class ReliabilityTests(unittest.TestCase):
         self.assertIn("mixed_success_failure", result["mixed_stages"][0]["reasons"])
         self.assertIn("mixed_timeout_transport", result["mixed_stages"][0]["reasons"])
 
+    def test_success_failed_success_stages_are_degraded(self):
+        stages = [
+            {
+                "backend": "cloudflare",
+                "streams": 1,
+                "skipped": False,
+                "stream_results": [
+                    {"ok": True, "bytes": 80_000_000, "error": None},
+                ],
+            },
+            {
+                "backend": "cloudflare",
+                "streams": 4,
+                "skipped": False,
+                "stream_results": [
+                    {"ok": False, "bytes": 0, "error": "curl: (28) Operation timed out"}
+                    for _ in range(4)
+                ],
+            },
+            {
+                "backend": "cloudflare",
+                "streams": 8,
+                "skipped": False,
+                "stream_results": [
+                    {"ok": True, "bytes": 10_000_000, "error": None}
+                    for _ in range(8)
+                ],
+            },
+        ]
+        result = analyze_stream_reliability(stages, selected_backend="cloudflare")
+        self.assertEqual(result["status"], "degraded")
+        self.assertTrue(result["mixed_stage_outcomes"])
+        self.assertEqual(result["successful_stage_count"], 2)
+        self.assertEqual(result["failed_stage_count"], 1)
+        self.assertIn("stage_consistency", result["reason"])
+
     def test_annotation_ignores_failed_primary_when_fallback_backend_is_selected(self):
         proxy = make_proxy()
         proxy.tests.download["backend"] = "cachefly"
