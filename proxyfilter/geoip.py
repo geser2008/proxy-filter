@@ -6,6 +6,7 @@ import json
 import subprocess
 from urllib.parse import quote
 
+from .failure_reason import classify_error
 from .model import ProxyConfig
 
 
@@ -20,25 +21,39 @@ class GeoIPResult:
     org: str | None = None
     isp: str | None = None
     error: str | None = None
+    reason: str | None = None
+    provider: str | None = None
+    url: str | None = None
+    http_code: int | None = None
+
+
+def _flag_from_code(country_code: str | None) -> str | None:
+    code = (country_code or "").upper()
+    if len(code) != 2 or not code.isalpha():
+        return None
+    return "".join(chr(0x1F1E6 + ord(char) - ord("A")) for char in code)
 
 
 def _parse_ipwhois(payload: str, expected_ip: str) -> GeoIPResult:
     try:
         data = json.loads(payload)
     except json.JSONDecodeError as exc:
-        return GeoIPResult(False, ip=expected_ip, error=f"invalid JSON: {exc}")
+        return GeoIPResult(False, ip=expected_ip, error=f"invalid JSON: {exc}", reason="invalid_response")
 
     if not isinstance(data, dict):
-        return GeoIPResult(False, ip=expected_ip, error="GeoIP response is not an object")
+        return GeoIPResult(False, ip=expected_ip, error="GeoIP response is not an object", reason="invalid_response")
     if data.get("success") is not True:
-        return GeoIPResult(False, ip=expected_ip, error=str(data.get("message") or "GeoIP lookup failed"))
+        return GeoIPResult(
+            False,
+            ip=expected_ip,
+            error=str(data.get("message") or "GeoIP lookup failed"),
+            reason="provider_error",
+        )
 
     country_code = str(data.get("country_code") or "").upper() or None
     country = str(data.get("country") or "") or None
-
     flag_data = data.get("flag") or {}
     flag = str(flag_data.get("emoji") or "") or None if isinstance(flag_data, dict) else None
-
     connection = data.get("connection") or {}
     if not isinstance(connection, dict):
         connection = {}
@@ -49,28 +64,83 @@ def _parse_ipwhois(payload: str, expected_ip: str) -> GeoIPResult:
     except (TypeError, ValueError):
         asn = None
 
-    response_ip = str(data.get("ip") or expected_ip)
     return GeoIPResult(
         True,
-        ip=response_ip,
+        ip=str(data.get("ip") or expected_ip),
         country_code=country_code,
         country=country,
-        flag=flag,
+        flag=flag or _flag_from_code(country_code),
         asn=asn,
         org=str(connection.get("org") or "") or None,
         isp=str(connection.get("isp") or "") or None,
     )
 
 
-def _lookup_ipwhois(
+def _parse_ipapi(payload: str, expected_ip: str) -> GeoIPResult:
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        return GeoIPResult(False, ip=expected_ip, error=f"invalid JSON: {exc}", reason="invalid_response")
+
+    if not isinstance(data, dict):
+        return GeoIPResult(False, ip=expected_ip, error="GeoIP response is not an object", reason="invalid_response")
+    if data.get("error") is True:
+        return GeoIPResult(
+            False,
+            ip=expected_ip,
+            error=str(data.get("reason") or data.get("message") or "GeoIP lookup failed"),
+            reason="provider_error",
+        )
+
+    country_code = str(data.get("country_code") or "").upper() or None
+    asn_raw = str(data.get("asn") or "").upper()
+    if asn_raw.startswith("AS"):
+        asn_raw = asn_raw[2:]
+    try:
+        asn = int(asn_raw) if asn_raw else None
+    except ValueError:
+        asn = None
+
+    return GeoIPResult(
+        True,
+        ip=str(data.get("ip") or expected_ip),
+        country_code=country_code,
+        country=str(data.get("country_name") or "") or None,
+        flag=_flag_from_code(country_code),
+        asn=asn,
+        org=str(data.get("org") or "") or None,
+        isp=str(data.get("org") or "") or None,
+    )
+
+
+def _provider_parser(provider: str):
+    name = provider.strip().lower()
+    if name == "ipwhois":
+        return _parse_ipwhois
+    if name == "ipapi":
+        return _parse_ipapi
+    raise ValueError(f"unsupported GeoIP provider: {provider}")
+
+
+def _lookup_provider(
     ip: str,
     *,
+    provider: str,
     url_template: str,
     timeout: float,
     curl_command: str,
 ) -> GeoIPResult:
+    provider_name = provider.strip().lower()
+    parser = _provider_parser(provider_name)
     if "{ip}" not in url_template:
-        return GeoIPResult(False, ip=ip, error="geo.url_template must contain {ip}")
+        return GeoIPResult(
+            False,
+            ip=ip,
+            provider=provider_name,
+            error="geo URL template must contain {ip}",
+            reason="invalid_config",
+        )
+
     url = url_template.replace("{ip}", quote(ip, safe=""))
     try:
         proc = subprocess.run(
@@ -90,15 +160,61 @@ def _lookup_ipwhois(
             timeout=timeout + 5,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
-        return GeoIPResult(False, ip=ip, error=str(exc))
-
-    if proc.returncode != 0:
+        error = str(exc)
         return GeoIPResult(
             False,
             ip=ip,
-            error=(proc.stderr or proc.stdout).strip() or f"curl exited {proc.returncode}",
+            provider=provider_name,
+            url=url,
+            error=error,
+            reason=classify_error(error),
         )
-    return _parse_ipwhois(proc.stdout, ip)
+
+    if proc.returncode != 0:
+        error = (proc.stderr or proc.stdout).strip() or f"curl exited {proc.returncode}"
+        return GeoIPResult(
+            False,
+            ip=ip,
+            provider=provider_name,
+            url=url,
+            error=error,
+            reason=classify_error(error),
+        )
+
+    result = parser(proc.stdout, ip)
+    result.provider = provider_name
+    result.url = url
+    if not result.ok and not result.reason:
+        result.reason = classify_error(result.error)
+    return result
+
+
+# Backward-compatible helper retained for existing tests/callers.
+def _lookup_ipwhois(
+    ip: str,
+    *,
+    url_template: str,
+    timeout: float,
+    curl_command: str,
+) -> GeoIPResult:
+    return _lookup_provider(
+        ip,
+        provider="ipwhois",
+        url_template=url_template,
+        timeout=timeout,
+        curl_command=curl_command,
+    )
+
+
+def _attempt_dict(result: GeoIPResult) -> dict:
+    return {
+        "provider": result.provider,
+        "url": result.url,
+        "ok": result.ok,
+        "http_code": result.http_code,
+        "reason": result.reason,
+        "error": result.error,
+    }
 
 
 def enrich_geo_many(
@@ -106,26 +222,47 @@ def enrich_geo_many(
     *,
     provider: str = "ipwhois",
     url_template: str = "https://ipwho.is/{ip}",
+    fallback_provider: str | None = "ipapi",
+    fallback_url_template: str | None = "https://ipapi.co/{ip}/json/",
     timeout: float = 8,
     workers: int = 4,
     curl_command: str = "curl",
 ) -> list[ProxyConfig]:
     provider_name = provider.strip().lower()
-    if provider_name != "ipwhois":
-        raise ValueError(f"unsupported GeoIP provider: {provider}")
+    _provider_parser(provider_name)
+    fallback_name = (fallback_provider or "").strip().lower() or None
+    if fallback_name:
+        _provider_parser(fallback_name)
+    if fallback_name == provider_name:
+        fallback_name = None
+        fallback_url_template = None
 
     unique_ips = sorted({proxy.tests.exit_ip for proxy in proxies if proxy.tests.exit_ip})
-    results: dict[str, GeoIPResult] = {}
+    results: dict[str, tuple[GeoIPResult, list[dict], bool]] = {}
     total = len(unique_ips)
     checked = 0
 
-    def lookup(ip: str) -> GeoIPResult:
-        return _lookup_ipwhois(
+    def lookup(ip: str) -> tuple[GeoIPResult, list[dict], bool]:
+        primary = _lookup_provider(
             ip,
+            provider=provider_name,
             url_template=url_template,
             timeout=timeout,
             curl_command=curl_command,
         )
+        attempts = [_attempt_dict(primary)]
+        if primary.ok or not fallback_name or not fallback_url_template:
+            return primary, attempts, False
+
+        fallback = _lookup_provider(
+            ip,
+            provider=fallback_name,
+            url_template=fallback_url_template,
+            timeout=timeout,
+            curl_command=curl_command,
+        )
+        attempts.append(_attempt_dict(fallback))
+        return fallback, attempts, True
 
     if workers <= 1:
         for ip in unique_ips:
@@ -140,7 +277,15 @@ def enrich_geo_many(
                 try:
                     results[ip] = future.result()
                 except Exception as exc:
-                    results[ip] = GeoIPResult(False, ip=ip, error=str(exc))
+                    error = str(exc)
+                    failed = GeoIPResult(
+                        False,
+                        ip=ip,
+                        provider=None,
+                        error=error,
+                        reason=classify_error(error),
+                    )
+                    results[ip] = (failed, [], False)
                 checked += 1
                 print(f"[geo] checked={checked}/{total}")
 
@@ -156,12 +301,24 @@ def enrich_geo_many(
                 "asn": None,
                 "org": None,
                 "isp": None,
+                "provider": None,
+                "fallback_used": False,
+                "attempts": [],
+                "reason": "exit_ip_unknown",
                 "error": "exit IP is unknown",
-                "provider": provider_name,
             }
             continue
 
-        result = results[ip]
+        result, attempts, fallback_used = results[ip]
+        if result.ok:
+            reason = None
+            error = None
+            selected_provider = result.provider
+        else:
+            reason = "all_providers_failed" if len(attempts) > 1 else (result.reason or "geo_lookup_failed")
+            error = result.error or "GeoIP lookup failed"
+            selected_provider = None
+
         proxy.tests.geo = {
             "status": "ok" if result.ok else "error",
             "ip": result.ip,
@@ -171,8 +328,11 @@ def enrich_geo_many(
             "asn": result.asn,
             "org": result.org,
             "isp": result.isp,
-            "error": result.error,
-            "provider": provider_name,
+            "provider": selected_provider,
+            "fallback_used": fallback_used,
+            "attempts": attempts,
+            "reason": reason,
+            "error": error,
         }
         if result.ok:
             proxy.tests.country = result.country_code
