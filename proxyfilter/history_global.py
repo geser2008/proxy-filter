@@ -6,16 +6,14 @@ from .history import (
     _STAGE_FILES,
     _availability_state,
     _connect,
-    _count_present,
     _insert_latency_attempts,
     _insert_record,
     _insert_security_reasons,
     _insert_transfer_data,
     _observation_record,
-    _published_reliability_counts,
-    _read_jsonl,
     _record_run,
     _update_state,
+    _read_jsonl,
     utc_now,
 )
 from .history_geo import sync_geo_history
@@ -95,6 +93,29 @@ def _source_published_reliability_counts(
     return stable, unstable
 
 
+def _ensure_run_warnings_schema(conn) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS run_warnings (
+            warning_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            message TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            UNIQUE(run_id, source_id, stage, reason),
+            FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_run_warnings_source_time
+            ON run_warnings(source_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_run_warnings_reason
+            ON run_warnings(reason, created_at);
+        """
+    )
+
+
 def record_global_source_run(
     db_path: Path,
     *,
@@ -104,15 +125,24 @@ def record_global_source_run(
     work_dir: Path,
     started_at: str,
     finished_at: str | None = None,
+    source_available: bool = True,
+    run_status: str = "ok",
+    run_error: str | None = None,
+    warning_stage: str | None = None,
+    warning_reason: str | None = None,
+    warning_message: str | None = None,
 ) -> None:
-    """Record one source view from the global pipeline into schema v3.
+    """Record one source view from the global pipeline into history.
 
-    Source provenance remains analytical metadata. Presence is derived from the
-    current 01-parsed snapshot, while retained known-working proxies may still
-    contribute detailed test observations with present=0.
+    Presence is derived from the current 01-parsed snapshot only when the source
+    was actually fetched. If source_available is false, retained proxies can still
+    contribute test observations, but proxy_source_state is left untouched so a
+    fetch outage never becomes a false source-absence event.
     """
     finished_at = finished_at or utc_now()
     latest, present_ids = _latest_source_snapshots(work_dir, source_id)
+    if not source_available:
+        present_ids = set()
 
     parsed_rows = _source_rows(work_dir / "01-parsed.jsonl", source_id)
     source_format = None
@@ -146,6 +176,7 @@ def record_global_source_run(
     }
 
     with _connect(db_path) as conn:
+        _ensure_run_warnings_schema(conn)
         _record_run(
             conn,
             run_id=run_id,
@@ -156,11 +187,37 @@ def record_global_source_run(
             source_format=source_format,
             counts=counts,
         )
+        if run_status != "ok" or run_error:
+            conn.execute(
+                "UPDATE runs SET status=?, error=? WHERE run_id=?",
+                (run_status, run_error, run_id),
+            )
+        if warning_reason:
+            conn.execute(
+                """
+                INSERT INTO run_warnings(
+                    run_id, source_id, stage, reason, message, error, created_at
+                ) VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT(run_id, source_id, stage, reason) DO UPDATE SET
+                    message=excluded.message,
+                    error=excluded.error,
+                    created_at=excluded.created_at
+                """,
+                (
+                    run_id,
+                    source_id,
+                    warning_stage or "fetch",
+                    warning_reason,
+                    warning_message,
+                    run_error,
+                    finished_at,
+                ),
+            )
 
         candidate_ids = set(latest)
         for proxy_id in sorted(candidate_ids):
             row = latest[proxy_id]
-            present = proxy_id in present_ids
+            present = source_available and proxy_id in present_ids
             observation_id = _insert_record(
                 conn,
                 "proxy_observations",
@@ -177,52 +234,54 @@ def record_global_source_run(
             _insert_latency_attempts(conn, observation_id, tests)
             _insert_transfer_data(conn, observation_id, tests, "download")
             _insert_transfer_data(conn, observation_id, tests, "upload")
-            state = _availability_state(tests, tests.get("status"))
-            _update_state(
-                conn,
-                source_id,
-                proxy_id,
-                run_id,
-                finished_at,
-                state,
-                tests.get("status"),
-                present,
-            )
+            if source_available:
+                state = _availability_state(tests, tests.get("status"))
+                _update_state(
+                    conn,
+                    source_id,
+                    proxy_id,
+                    run_id,
+                    finished_at,
+                    state,
+                    tests.get("status"),
+                    present,
+                )
 
-        previous_ids = {
-            str(row[0])
-            for row in conn.execute(
-                "SELECT proxy_id FROM proxy_source_state WHERE source_id=?",
-                (source_id,),
-            )
-        }
-        for proxy_id in sorted(previous_ids - candidate_ids):
-            _insert_record(
-                conn,
-                "proxy_observations",
-                {
-                    "run_id": run_id,
-                    "source_id": source_id,
-                    "proxy_id": proxy_id,
-                    "observed_at": finished_at,
-                    "present": 0,
-                    "availability_state": "absent",
-                    "final_status": "absent",
-                    "published": 0,
-                },
-            )
-            _update_state(
-                conn,
-                source_id,
-                proxy_id,
-                run_id,
-                finished_at,
-                "absent",
-                "absent",
-                False,
-            )
+        if source_available:
+            previous_ids = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT proxy_id FROM proxy_source_state WHERE source_id=?",
+                    (source_id,),
+                )
+            }
+            for proxy_id in sorted(previous_ids - candidate_ids):
+                _insert_record(
+                    conn,
+                    "proxy_observations",
+                    {
+                        "run_id": run_id,
+                        "source_id": source_id,
+                        "proxy_id": proxy_id,
+                        "observed_at": finished_at,
+                        "present": 0,
+                        "availability_state": "absent",
+                        "final_status": "absent",
+                        "published": 0,
+                    },
+                )
+                _update_state(
+                    conn,
+                    source_id,
+                    proxy_id,
+                    run_id,
+                    finished_at,
+                    "absent",
+                    "absent",
+                    False,
+                )
 
-    # GeoIP fallback metadata is an additive schema-v3 extension. Sync after the
+    # GeoIP fallback metadata is an additive schema extension. Sync after the
     # canonical observation transaction so existing databases upgrade in place.
     sync_geo_history(
         db_path,
