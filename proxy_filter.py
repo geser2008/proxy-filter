@@ -16,6 +16,12 @@ import yaml
 from proxyfilter import cli
 from proxyfilter.history import new_run_id, record_failed_run, record_source_run, utc_now
 from proxyfilter.history_global import record_global_source_run
+from proxyfilter.known_working import (
+    load_known_working,
+    load_rejected_candidates,
+    load_seen_ids,
+    update_known_working,
+)
 from proxyfilter.output_policy import render_proxies as render_proxies_with_reliability
 from proxyfilter.source_config import merged_config
 
@@ -275,6 +281,46 @@ def main() -> int:
     if history_stage and resume_from and resume_from[-1] != "publish":
         pre_parser.error("--until history may resume only from --resume-from publish")
 
+    original_render = cli._render_proxies
+    original_load_previous = cli._load_previous_working
+    original_publish_merged = cli.publish_merged
+    state_context: dict[str, object] = {}
+
+    def load_previous_with_retention(data_dir: Path, selected_sources: set[str]):
+        proxies, path = load_known_working(data_dir, selected_sources)
+        state_context["previous"] = list(proxies)
+        state_context["path"] = path
+        return proxies, path
+
+    def publish_merged_with_retention(data_dir: Path, proxies, diversity_cfg=None):
+        # Capture the complete qualified set before publish_merged mutates the
+        # list down to the diversity-selected publication set.
+        qualified = list(proxies)
+        result = original_publish_merged(data_dir, proxies, diversity_cfg)
+
+        # Retained state is updated only by a fresh full publish. Resume runs do
+        # not rewrite availability history, and partial-source runs never call
+        # publish_merged in cli.py.
+        if not resume_from and "previous" in state_context:
+            previous = list(state_context["previous"])
+            retention_days = int((cfg.get("state", {}) or {}).get("working_retention_days", 30))
+            counts = update_known_working(
+                data_dir,
+                previous,
+                qualified,
+                load_rejected_candidates(data_dir),
+                seen_ids=load_seen_ids(data_dir),
+                retention_days=retention_days,
+            )
+            print(
+                "[state] known_working="
+                f"{counts['retained']} working_now={counts['working_now']} "
+                f"failing_retained={counts['failing_retained']} "
+                f"new={counts['new_working']} recovered={counts['recovered']} "
+                f"expired={counts['expired']} retention_days={retention_days}"
+            )
+        return result
+
     try:
         with tempfile.NamedTemporaryFile(
             mode="w",
@@ -286,9 +332,11 @@ def main() -> int:
             yaml.safe_dump(cfg, fh, allow_unicode=True, sort_keys=False)
             tmp_path = fh.name
 
-        # Keep cli.py as the pipeline implementation while applying the output
-        # policy here, where the merged config is already available.
+        # Keep cli.py as the pipeline implementation while applying policy and
+        # retained-state integration here, where merged config is available.
         cli._render_proxies = render_proxies_with_reliability
+        cli._load_previous_working = load_previous_with_retention
+        cli.publish_merged = publish_merged_with_retention
 
         # history is a launcher-owned non-filtering stage after publish. The
         # package CLI still executes through publish; then the snapshot is stored.
@@ -312,6 +360,9 @@ def main() -> int:
         )
         return result
     finally:
+        cli._render_proxies = original_render
+        cli._load_previous_working = original_load_previous
+        cli.publish_merged = original_publish_merged
         if tmp_path:
             try:
                 os.unlink(tmp_path)
