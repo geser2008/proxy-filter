@@ -77,6 +77,7 @@ class ProxyConfig:
     tests: TestState = field(default_factory=TestState)
     id: str = ""
     sources: list[SourceInfo] = field(default_factory=list)
+    lifecycle: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.sources = self._merge_source_lists([self.source], self.sources)
@@ -221,6 +222,7 @@ class ProxyConfig:
             tests=tests,
             id=str(data.get("id", "")),
             sources=sources,
+            lifecycle=dict(data.get("lifecycle") or {}),
         )
         if not proxy.id:
             proxy.ensure_id()
