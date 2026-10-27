@@ -24,6 +24,12 @@ from proxyfilter.known_working import (
 )
 from proxyfilter.output_policy import render_proxies as render_proxies_with_reliability
 from proxyfilter.source_config import merged_config
+from proxyfilter.source_status import (
+    apply_warning_summary,
+    build_source_status_rows,
+    warning_source_ids,
+    write_source_status,
+)
 
 # Backward-compatible public import used by existing tests and callers.
 # The implementation now lives in proxyfilter.cli, but the old import path
@@ -205,7 +211,7 @@ def _record_history(
     for source_id in sorted(source_ids):
         source = configured.get(source_id) or {}
         source_name = str(source.get("name", source_id))
-        result = (summary.get("sources") or {}).get(source_id) or {}
+        source_result = (summary.get("sources") or {}).get(source_id) or {}
         try:
             if requested_until == "history" and resume_from:
                 # A history-only stage consumes the existing complete global work
@@ -219,7 +225,10 @@ def _record_history(
                 history_started = started_at
                 history_finished = utc_now()
 
-            if result.get("status") == "ok":
+            status = str(source_result.get("status") or "error")
+            if status in {"ok", "warning"}:
+                warning = status == "warning"
+                error = str(source_result.get("error") or "source unavailable") if warning else None
                 record_global_source_run(
                     db_path,
                     run_id=run_id,
@@ -228,8 +237,19 @@ def _record_history(
                     work_dir=work_dir,
                     started_at=history_started,
                     finished_at=history_finished,
+                    source_available=not warning,
+                    run_status=status,
+                    run_error=error,
+                    warning_stage="fetch" if warning else None,
+                    warning_reason="source_unavailable" if warning else None,
+                    warning_message=(
+                        "Source could not be fetched; retained proxies were still tested"
+                        if warning
+                        else None
+                    ),
                 )
-                print(f"[history] source={source_id} recorded run_id={run_id}")
+                suffix = " warning=source_unavailable" if warning else ""
+                print(f"[history] source={source_id} recorded run_id={run_id}{suffix}")
             else:
                 record_failed_run(
                     db_path,
@@ -238,7 +258,7 @@ def _record_history(
                     source_name=source_name,
                     started_at=history_started,
                     finished_at=history_finished,
-                    error=str(result.get("error") or "source run failed"),
+                    error=str(source_result.get("error") or "source run failed"),
                 )
         except sqlite3.IntegrityError:
             print(f"[history] source={source_id} already_recorded")
@@ -285,17 +305,25 @@ def main() -> int:
     original_load_previous = cli._load_previous_working
     original_ingest_sources = cli._ingest_sources
     original_publish_merged = cli.publish_merged
-    original_write_jsonl = cli.write_jsonl
     state_context: dict[str, object] = {}
 
     def ingest_sources_allow_partial_publish(sources, data_dir: Path, summary: dict):
         parsed, all_sources_ok = original_ingest_sources(sources, data_dir, summary)
+        rows = build_source_status_rows(sources, summary)
+        apply_warning_summary(summary, rows)
+        write_source_status(data_dir / "work" / "00-source-status.jsonl", rows)
+        warning_ids = warning_source_ids(rows)
         state_context["all_sources_ok"] = bool(all_sources_ok)
-        if not all_sources_ok:
-            print("[all] source_errors_present=true publish_policy=successful_sources")
-        # Publication and source-fetch health are independent. The package CLI
-        # may finish the global pipeline and publish the tested result, while the
-        # launcher preserves the real source-error status for state/history/exit.
+        state_context["source_status_rows"] = rows
+        state_context["warning_sources"] = warning_ids
+        if warning_ids:
+            print(
+                "[all] WARNING source_unavailable="
+                + ",".join(sorted(warning_ids))
+                + " publish_policy=successful_sources_plus_retained"
+            )
+        # Fetch health and publication are independent: a source outage is a
+        # warning, not a reason to abort the global pipeline.
         return parsed, True
 
     def load_previous_with_retention(data_dir: Path, selected_sources: set[str]):
@@ -304,31 +332,17 @@ def main() -> int:
         state_context["path"] = path
         return proxies, path
 
-    def write_jsonl_with_state_guard(path, proxies):
-        target = Path(path)
-        if (
-            state_context.get("all_sources_ok") is False
-            and target.name == "working.jsonl"
-            and target.parent.name == "state"
-        ):
-            print("[state] working_update_skipped=source_error")
-            return None
-        return original_write_jsonl(path, proxies)
-
     def publish_merged_with_retention(data_dir: Path, proxies, diversity_cfg=None):
         # Capture the complete qualified set before publish_merged mutates the
         # list down to the diversity-selected publication set.
         qualified = list(proxies)
         result = original_publish_merged(data_dir, proxies, diversity_cfg)
 
-        # Retained state is updated only by a fresh full publish with complete
-        # source input. A failed source must not look like proxy disappearance,
-        # but it must not block publication of successfully tested results.
-        if (
-            not resume_from
-            and "previous" in state_context
-            and state_context.get("all_sources_ok", True) is True
-        ):
+        # Retained state follows actual proxy test outcomes even when a source
+        # fetch warned. last_seen is updated only for ids in current 01-parsed;
+        # retained proxies from an unavailable source therefore keep their prior
+        # last_seen while last_tested/last_working/failures still advance.
+        if not resume_from and "previous" in state_context:
             previous = list(state_context["previous"])
             retention_days = int((cfg.get("state", {}) or {}).get("working_retention_days", 30))
             counts = update_known_working(
@@ -346,8 +360,6 @@ def main() -> int:
                 f"new={counts['new_working']} recovered={counts['recovered']} "
                 f"expired={counts['expired']} retention_days={retention_days}"
             )
-        elif not resume_from and state_context.get("all_sources_ok") is False:
-            print("[state] known_working_update_skipped=source_error")
         return result
 
     try:
@@ -367,7 +379,6 @@ def main() -> int:
         cli._load_previous_working = load_previous_with_retention
         cli._ingest_sources = ingest_sources_allow_partial_publish
         cli.publish_merged = publish_merged_with_retention
-        cli.write_jsonl = write_jsonl_with_state_guard
 
         # history is a launcher-owned non-filtering stage after publish. The
         # package CLI still executes through publish; then the snapshot is stored.
@@ -380,6 +391,17 @@ def main() -> int:
         sys.argv = [sys.argv[0], "--config", tmp_path, *cli_args]
         result = cli.main()
 
+        # cli.py writes its final pipeline summary after ingest, so re-apply the
+        # source warning after it has populated the terminal pipeline fields.
+        rows = list(state_context.get("source_status_rows") or [])
+        if rows:
+            data_dir = Path(cfg.get("paths", {}).get("data_dir", "/srv/proxy-filter/data"))
+            summary_path = data_dir / "reports" / "summary.json"
+            if summary_path.exists():
+                with summary_path.open("r", encoding="utf-8") as fh:
+                    summary = json.load(fh)
+                cli.write_json(summary_path, apply_warning_summary(summary, rows))
+
         # Use the original requested arguments so explicit history remains
         # distinguishable from a normal publish with automatic history enabled.
         _record_history(
@@ -390,17 +412,18 @@ def main() -> int:
             force=history_stage,
         )
 
-        # Keep a failed source visible to schedulers/operators even though the
-        # successfully tested global result was published.
-        if result == 0 and state_context.get("all_sources_ok") is False:
-            return 1
+        warning_ids = set(state_context.get("warning_sources") or set())
+        if result == 0 and warning_ids:
+            print(
+                "[all] WARNING completed_with_source_warnings="
+                + ",".join(sorted(warning_ids))
+            )
         return result
     finally:
         cli._render_proxies = original_render
         cli._load_previous_working = original_load_previous
         cli._ingest_sources = original_ingest_sources
         cli.publish_merged = original_publish_merged
-        cli.write_jsonl = original_write_jsonl
         if tmp_path:
             try:
                 os.unlink(tmp_path)
