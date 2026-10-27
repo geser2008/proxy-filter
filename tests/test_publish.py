@@ -65,6 +65,28 @@ class PublishTests(unittest.TestCase):
             record = json.loads(jsonl_path.read_text(encoding="utf-8").strip())
             self.assertEqual(record["tests"]["render"]["name"], name)
 
+    def test_publish_merged_writes_all_stable_and_unstable_views(self):
+        stable = self._proxy("vless://stable@example1.com:443#stable", suffix=1)
+        unstable = self._proxy("vless://unstable@example2.com:443#unstable", suffix=2)
+        stable.tests.reliability = {"status": "stable", "reason": None, "details": {}}
+        unstable.tests.reliability = {"status": "degraded", "reason": "transport", "details": {}}
+        for idx, proxy in enumerate((stable, unstable), 1):
+            proxy.tests.latency_ms = 100 + idx
+            proxy.tests.download_mbps = 100 - idx
+            proxy.tests.upload_mbps = 50 - idx
+            proxy.tests.exit_ip = f"203.0.113.{idx}"
+            proxy.tests.geo = {"status": "ok", "asn": 64500 + idx}
+
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            publish_merged(data_dir, [stable, unstable], {"enabled": False})
+
+            self.assertEqual(len((data_dir / "output" / "all.txt").read_text().splitlines()), 2)
+            self.assertEqual((data_dir / "output" / "stable.txt").read_text().splitlines(), [stable.tests.render["uri"]])
+            self.assertEqual((data_dir / "output" / "unstable.txt").read_text().splitlines(), [unstable.tests.render["uri"]])
+            counts = json.loads((data_dir / "reports" / "subscriptions.json").read_text())
+            self.assertEqual(counts, {"all": 2, "stable": 1, "unstable": 1, "unclassified": 0})
+
     def test_publish_merged_keeps_two_best_from_same_infrastructure(self):
         values = [
             (199, 164, 56, "80.174.118.30"),
