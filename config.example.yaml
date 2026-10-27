@@ -13,48 +13,40 @@ filters:
 
   latency:
     mode: singbox-api
-    test_url: https://www.gstatic.com/generate_204
+
+    # Latency is an auxiliary reachability/ordering metric. Test the primary
+    # endpoint first; if that URL test fails, try the fallback endpoint once.
+    # A successful primary result is final and never triggers fallback merely
+    # because the measured latency is high.
+    primary_url: https://www.gstatic.com/generate_204
+    fallback_url: https://www.cloudflare.com/cdn-cgi/trace
     timeout_seconds: 12
 
     # A negative value disables rejection by the measured latency while keeping
-    # a successful sing-box URL test mandatory. Set a non-negative value to use
-    # latency as an additional quality threshold.
+    # a successful primary or fallback URL test mandatory.
     max_ms: -1
 
     batch_size: 128
     workers: 32
-    # Fallback/debug mode only:
+    # Debug/curl mode only:
     command: curl
 
   speed:
-    # Primary staged speed-test endpoint. The total payload is kept constant
-    # across stream stages. 80 MB avoids Cloudflare's observed rejected byte
-    # ranges for the default 1/2/4/8/10 stages.
+    # Cloudflare is the primary download backend. The configured stream stages
+    # are measurements, not retries: each number is one aggregate test using
+    # that many parallel streams. [8] therefore means one eight-stream test;
+    # [1, 4, 8] means three measurements. The best valid aggregate result wins.
     download_url: https://speed.cloudflare.com/__down?bytes=80000000
+    download_streams: [8]
 
-    # Aggregate download stages. Any non-empty sequence of unique positive
-    # integers is allowed and the configured order is preserved. Examples:
-    # [1] = single-stream only, [10] = one 10-stream aggregate test,
-    # [1, 2, 4, 8, 10] = five stages. If omitted, defaults to [1, 2, 4, 8].
-    download_streams:
-      - 1
-      - 2
-      - 4
-      - 8
-      - 10
-
-    # Skip stages whose share of the fixed total payload would be smaller than
-    # this value. With 80 MB total and 5 MB minimum, stages through 16 streams
-    # are allowed; higher counts are recorded as skipped rather than producing
-    # very short, noisy transfers.
+    # Skip a configured stage when its share of the fixed payload would be too
+    # small for a meaningful measurement.
     download_min_stream_bytes: 5000000
 
-    # Alternate backend. Switching policy is fixed in code and is intentionally
-    # not configurable: retry on invalid payload, HTTP 403/429, or HTTP 5xx from
-    # the primary provider. Transport/TLS/SOCKS failures and zero-byte timeouts
-    # do not switch provider.
-    download_fallback_urls:
-      - https://cachefly.cachefly.net/100mb.test
+    # Exactly one alternate download backend. It is used only for an eligible
+    # provider failure of the primary backend. CacheFly runs the same configured
+    # download_streams once; it is not retried and there is no further fallback.
+    download_fallback_url: https://cachefly.cachefly.net/100mb.test
 
     # Multi-stream stages with inconsistent per-stream outcomes are annotated
     # separately as reliability=degraded. Reliability does not rewrite speed
@@ -63,12 +55,13 @@ filters:
     # but otherwise passing proxy may be published.
     include_unreliable_proxies: true
 
-    # Upload uses Cloudflare's public upload endpoint. If an upload ends after
-    # only an interim HTTP 100 response, retry once against the same URL with
-    # the Expect header disabled. Optional fallback URLs can then be tried for
-    # another interim-100 failure or the configured HTTP status codes.
+    # Upload uses the same configurable stage model. [8] is one eight-stream
+    # measurement; any non-empty list of positive unique integers is allowed.
+    # Upload keeps its existing HTTP-specific retry/fallback behavior.
     upload_url: https://speed.cloudflare.com/__up
     upload_bytes: 20000000
+    upload_streams: [8]
+    upload_min_stream_bytes: 1000000
     upload_fallback_urls: []
     upload_fallback_http_codes:
       - 429
