@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from proxyfilter.history import record_failed_run, record_source_run
@@ -131,7 +132,7 @@ class HistoryTests(unittest.TestCase):
             finished_at="2026-10-26T00:10:00+00:00",
         )
 
-        with sqlite3.connect(self.db) as conn:
+        with closing(sqlite3.connect(self.db)) as conn:
             run = conn.execute(
                 "SELECT qualified_count,diversity_selected_count,diversity_suppressed_count,"
                 "published_count,stable_published_count,unstable_published_count FROM runs"
@@ -169,7 +170,7 @@ class HistoryTests(unittest.TestCase):
             work_dir=work,
             started_at="2026-10-26T00:00:00+00:00",
         )
-        with sqlite3.connect(self.db) as conn:
+        with closing(sqlite3.connect(self.db)) as conn:
             row = conn.execute(
                 "SELECT tcp_reason,tcp_error,failure_stage,failure_reason FROM proxy_observations"
             ).fetchone()
@@ -190,7 +191,7 @@ class HistoryTests(unittest.TestCase):
             work_dir=work,
             started_at="2026-10-26T00:00:00+00:00",
         )
-        with sqlite3.connect(self.db) as conn:
+        with closing(sqlite3.connect(self.db)) as conn:
             obs = conn.execute(
                 "SELECT availability_state,reliability_status,reliability_reason,"
                 "reliability_mixed_stage_outcomes,reliability_successful_stage_count,"
@@ -216,7 +217,7 @@ class HistoryTests(unittest.TestCase):
             work_dir=work,
             started_at="2026-10-26T00:00:00+00:00",
         )
-        with sqlite3.connect(self.db) as conn:
+        with closing(sqlite3.connect(self.db)) as conn:
             obs = conn.execute(
                 "SELECT present,availability_state,published FROM proxy_observations"
             ).fetchone()
@@ -254,14 +255,14 @@ class HistoryTests(unittest.TestCase):
             work_dir=work2,
             started_at="2026-10-27T00:00:00+00:00",
         )
-        with sqlite3.connect(self.db) as conn:
+        with closing(sqlite3.connect(self.db)) as conn:
             obs = conn.execute(
                 "SELECT present,availability_state FROM proxy_observations WHERE run_id='run2'"
             ).fetchone()
         self.assertEqual(obs, (0, "absent"))
 
     def test_schema_v2_is_migrated_in_place_to_v3(self):
-        with sqlite3.connect(self.db) as conn:
+        with closing(sqlite3.connect(self.db)) as conn:
             conn.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
             conn.execute("INSERT INTO schema_meta VALUES('schema_version','2')")
             conn.execute("CREATE TABLE runs(run_id TEXT PRIMARY KEY,source_id TEXT,source_name TEXT,started_at TEXT,finished_at TEXT,status TEXT,error TEXT)")
@@ -269,6 +270,7 @@ class HistoryTests(unittest.TestCase):
             conn.execute("CREATE TABLE latency_attempts(observation_id INTEGER,attempt_index INTEGER)")
             conn.execute("CREATE TABLE transfer_stages(stage_id INTEGER PRIMARY KEY,observation_id INTEGER,direction TEXT,stage_index INTEGER)")
             conn.execute("CREATE TABLE transfer_attempts(attempt_id INTEGER PRIMARY KEY,stage_id INTEGER,attempt_index INTEGER,error_code INTEGER)")
+            conn.commit()
 
         record_failed_run(
             self.db,
@@ -278,7 +280,7 @@ class HistoryTests(unittest.TestCase):
             started_at="2026-10-27T00:00:00+00:00",
             error="fetch failed",
         )
-        with sqlite3.connect(self.db) as conn:
+        with closing(sqlite3.connect(self.db)) as conn:
             version = conn.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0]
             obs_columns = {row[1] for row in conn.execute("PRAGMA table_info(proxy_observations)")}
             stage_columns = {row[1] for row in conn.execute("PRAGMA table_info(transfer_stages)")}
@@ -288,9 +290,10 @@ class HistoryTests(unittest.TestCase):
         self.assertIn("reason", stage_columns)
 
     def test_schema_v1_database_is_rejected_without_mutation(self):
-        with sqlite3.connect(self.db) as conn:
+        with closing(sqlite3.connect(self.db)) as conn:
             conn.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
             conn.execute("INSERT INTO schema_meta VALUES('schema_version','1')")
+            conn.commit()
         with self.assertRaisesRegex(RuntimeError, "schema v1.*schema v3"):
             record_failed_run(
                 self.db,
