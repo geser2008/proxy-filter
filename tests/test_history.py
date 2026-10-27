@@ -206,8 +206,6 @@ class HistoryTests(unittest.TestCase):
         work = self.root / "run1"
         proxy = self._proxy()
         self._write_successful_run(work, proxy)
-        # Simulate known-working carryover: pipeline contains/tests it, but the
-        # current source did not return it.
         write_jsonl(work / "01-parsed.jsonl", [])
 
         record_source_run(
@@ -270,7 +268,7 @@ class HistoryTests(unittest.TestCase):
             conn.execute("CREATE TABLE proxy_observations(observation_id INTEGER PRIMARY KEY,run_id TEXT,source_id TEXT,proxy_id TEXT,observed_at TEXT,present INTEGER,availability_state TEXT,published INTEGER DEFAULT 0)")
             conn.execute("CREATE TABLE latency_attempts(observation_id INTEGER,attempt_index INTEGER)")
             conn.execute("CREATE TABLE transfer_stages(stage_id INTEGER PRIMARY KEY,observation_id INTEGER,direction TEXT,stage_index INTEGER)")
-            conn.execute("CREATE TABLE transfer_attempts(attempt_id INTEGER PRIMARY KEY,stage_id INTEGER,attempt_index INTEGER)")
+            conn.execute("CREATE TABLE transfer_attempts(attempt_id INTEGER PRIMARY KEY,stage_id INTEGER,attempt_index INTEGER,error_code INTEGER)")
 
         record_failed_run(
             self.db,
