@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from proxyfilter.history_global import record_global_source_run
@@ -57,7 +58,7 @@ class GlobalHistoryRetainedTests(unittest.TestCase):
                 finished_at="2026-10-27T00:10:00+00:00",
             )
 
-            with sqlite3.connect(db) as conn:
+            with closing(sqlite3.connect(db)) as conn:
                 observation = conn.execute(
                     "SELECT present,availability_state,published,download_mbps "
                     "FROM proxy_observations WHERE proxy_id=?",
