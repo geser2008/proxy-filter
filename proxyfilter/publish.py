@@ -5,6 +5,7 @@ from pathlib import Path
 from .diversity import select_diverse
 from .io import write_json, write_jsonl, write_text
 from .model import ProxyConfig
+from .reliability import DEGRADED, STABLE
 
 
 def _rendered_uri(proxy: ProxyConfig) -> str:
@@ -43,17 +44,49 @@ def publish_source(data_dir: Path, source_id: str, proxies: list[ProxyConfig]) -
     return txt_path, jsonl_path
 
 
+def _reliability_status(proxy: ProxyConfig) -> str:
+    return str((proxy.tests.reliability or {}).get("status") or "unknown")
+
+
+def _publish_reliability_views(data_dir: Path, proxies: list[ProxyConfig]) -> dict[str, int]:
+    """Publish stable/degraded views of the already diversity-selected set.
+
+    Diversity is intentionally applied before this split so infrastructure limits
+    are global rather than independently refilled by each reliability class.
+    """
+    output_dir = data_dir / "output"
+    stable = [proxy for proxy in proxies if _reliability_status(proxy) == STABLE]
+    unstable = [proxy for proxy in proxies if _reliability_status(proxy) == DEGRADED]
+
+    publish_subscription(
+        stable,
+        txt_path=output_dir / "stable.txt",
+        jsonl_path=output_dir / "stable.jsonl",
+    )
+    publish_subscription(
+        unstable,
+        txt_path=output_dir / "unstable.txt",
+        jsonl_path=output_dir / "unstable.jsonl",
+    )
+    return {
+        "all": len(proxies),
+        "stable": len(stable),
+        "unstable": len(unstable),
+        "unclassified": len(proxies) - len(stable) - len(unstable),
+    }
+
+
 def publish_merged(
     data_dir: Path,
     proxies: list[ProxyConfig],
     diversity_cfg: dict | None = None,
 ) -> tuple[Path, Path]:
-    """Publish the merged subscription after infrastructure diversity selection.
+    """Publish merged all/stable/unstable subscriptions after diversity selection.
 
     The input set is the qualified working set: every proxy here has already
     passed the functional/speed pipeline and rendering. Diversity never turns a
     working proxy into a failure; it only selects which working proxies appear
-    in the merged subscription.
+    in the merged subscriptions.
     """
     diversity_cfg = diversity_cfg or {}
     enabled = bool(diversity_cfg.get("enabled", True))
@@ -115,4 +148,6 @@ def publish_merged(
     txt_path = output_dir / "all.txt"
     jsonl_path = output_dir / "all.jsonl"
     publish_subscription(proxies, txt_path=txt_path, jsonl_path=jsonl_path)
+    split_counts = _publish_reliability_views(data_dir, proxies)
+    write_json(reports_dir / "subscriptions.json", split_counts)
     return txt_path, jsonl_path
