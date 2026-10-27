@@ -15,18 +15,16 @@ def _is_timeout(error: str | None) -> bool:
 
 
 def analyze_stream_reliability(stages: list[dict] | None) -> dict:
-    """Summarize instability visible inside multi-stream download stages.
+    """Summarize instability without deciding whether the speed test passes.
 
-    A proxy is marked degraded only when a multi-stream stage shows inconsistent
-    per-stream behavior: some streams succeed while siblings fail, or failures
-    mix timeout and non-timeout transport outcomes while data was transferred.
-    A uniformly slow stage where every stream simply times out is not, by itself,
-    considered a reliability failure.
+    Reliability is diagnostic metadata. Pass/fail remains controlled by the
+    measured speed and the configured speed threshold.
     """
     mixed_stages: list[dict] = []
     total_streams = 0
     successful_streams = 0
     failed_streams = 0
+    reasons_seen: set[str] = set()
 
     for stage in stages or []:
         streams = int(stage.get("streams") or 0)
@@ -50,8 +48,10 @@ def analyze_stream_reliability(stages: list[dict] | None) -> dict:
         reasons: list[str] = []
         if ok and failed:
             reasons.append("mixed_success_failure")
+            reasons_seen.add("transport")
         if failure_timeouts and failure_non_timeouts and transferred > 0:
             reasons.append("mixed_timeout_transport")
+            reasons_seen.add("transport")
 
         if reasons:
             mixed_stages.append(
@@ -67,8 +67,10 @@ def analyze_stream_reliability(stages: list[dict] | None) -> dict:
             )
 
     degraded = bool(mixed_stages)
+    reason = "+".join(sorted(reasons_seen)) if reasons_seen else None
     return {
         "status": DEGRADED if degraded else STABLE,
+        "reason": reason,
         "degraded": degraded,
         "mixed_stage_count": len(mixed_stages),
         "successful_streams": successful_streams,
@@ -81,15 +83,29 @@ def analyze_stream_reliability(stages: list[dict] | None) -> dict:
 def annotate_download_reliability(proxy: ProxyConfig) -> dict:
     download = proxy.tests.download or {}
     reliability = analyze_stream_reliability(download.get("stages") or [])
+
+    # Preserve the legacy download-level fields used by render/output policy.
     download["stream_reliability"] = reliability["status"]
     download["stream_reliability_details"] = reliability
     proxy.tests.download = download
+
+    # Also expose reliability as its own test dimension. It is deliberately not
+    # used to rewrite download/upload pass/fail results.
+    proxy.tests.reliability = {
+        "status": reliability["status"],
+        "reason": reliability["reason"],
+        "details": reliability,
+    }
     return reliability
 
 
 def is_unreliable(proxy: ProxyConfig) -> bool:
+    status = (proxy.tests.reliability or {}).get("status")
+    if status in {STABLE, DEGRADED}:
+        return status == DEGRADED
+
     download = proxy.tests.download or {}
-    status = download.get("stream_reliability")
-    if status is None:
-        status = annotate_download_reliability(proxy)["status"]
-    return status == DEGRADED
+    legacy_status = download.get("stream_reliability")
+    if legacy_status is None:
+        legacy_status = annotate_download_reliability(proxy)["status"]
+    return legacy_status == DEGRADED
