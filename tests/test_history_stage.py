@@ -1,4 +1,5 @@
 import json
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -87,7 +88,7 @@ class HistoryStageTests(unittest.TestCase):
             self.assertEqual(proxy_filter._import_history_snapshot(cfg, args), 0)
 
             db = root / "history" / "test.sqlite3"
-            with sqlite3.connect(db) as conn:
+            with closing(sqlite3.connect(db)) as conn:
                 run_count = conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
                 observation_count = conn.execute("SELECT COUNT(*) FROM proxy_observations").fetchone()[0]
                 schema_version = conn.execute(
