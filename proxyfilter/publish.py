@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import shutil
+from tempfile import TemporaryDirectory
 
 from .diversity import select_diverse
 from .io import write_json, write_jsonl, write_text
@@ -49,34 +52,79 @@ def _reliability_status(proxy: ProxyConfig) -> str:
     return str((proxy.tests.reliability or {}).get("status") or "unknown")
 
 
-def _clean_output_dir(output_dir: Path) -> None:
-    """Remove stale publication files before writing the canonical final set."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    for path in output_dir.iterdir():
-        if path.is_file():
-            path.unlink()
-
-
-def _publish_reliability_views(data_dir: Path, proxies: list[ProxyConfig]) -> tuple[Path, Path, dict[str, int]]:
-    """Publish stable/degraded views of the already diversity-selected set.
-
-    Diversity is intentionally applied before this split so infrastructure limits
-    are global rather than independently refilled by each reliability class.
-    """
-    output_dir = data_dir / "output"
+def _subscription_generation(proxies: list[ProxyConfig]) -> tuple[dict[str, str], dict[str, int]]:
+    """Render the complete publication generation before touching live files."""
     stable = [proxy for proxy in proxies if _reliability_status(proxy) == STABLE]
     unstable = [proxy for proxy in proxies if _reliability_status(proxy) == DEGRADED]
-
-    stable_path = output_dir / "stable.txt"
-    unstable_path = output_dir / "unstable.txt"
-    publish_subscription(stable, txt_path=stable_path)
-    publish_subscription(unstable, txt_path=unstable_path)
-    return stable_path, unstable_path, {
+    texts = {
+        "all.txt": subscription_text(proxies),
+        "stable.txt": subscription_text(stable),
+        "unstable.txt": subscription_text(unstable),
+    }
+    counts = {
         "all": len(proxies),
         "stable": len(stable),
         "unstable": len(unstable),
         "unclassified": len(proxies) - len(stable) - len(unstable),
     }
+    return texts, counts
+
+
+def _publish_subscription_generation(output_dir: Path, texts: dict[str, str]) -> None:
+    """Transactionally replace only proxy-filter managed subscription files.
+
+    The complete next generation is prepared first. Existing managed files are
+    copied into a rollback area, then each prepared file is moved into place with
+    os.replace(). If any commit step raises, the previous managed generation is
+    restored. Unmanaged files in output_dir are never removed or modified.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    unexpected = set(texts) - set(FINAL_SUBSCRIPTION_NAMES)
+    missing = set(FINAL_SUBSCRIPTION_NAMES) - set(texts)
+    if unexpected or missing:
+        raise ValueError(
+            "invalid subscription generation: "
+            f"missing={sorted(missing)} unexpected={sorted(unexpected)}"
+        )
+
+    with TemporaryDirectory(prefix=".publish-", dir=output_dir) as tmp:
+        transaction_dir = Path(tmp)
+        new_dir = transaction_dir / "new"
+        backup_dir = transaction_dir / "backup"
+        new_dir.mkdir()
+        backup_dir.mkdir()
+
+        existed: set[str] = set()
+        for name in FINAL_SUBSCRIPTION_NAMES:
+            target = output_dir / name
+            if target.exists():
+                if not target.is_file():
+                    raise ValueError(f"publication target is not a regular file: {target}")
+                shutil.copy2(target, backup_dir / name)
+                existed.add(name)
+            (new_dir / name).write_text(texts[name], encoding="utf-8")
+
+        try:
+            for name in FINAL_SUBSCRIPTION_NAMES:
+                os.replace(new_dir / name, output_dir / name)
+        except Exception:
+            rollback_errors: list[Exception] = []
+            for name in FINAL_SUBSCRIPTION_NAMES:
+                target = output_dir / name
+                try:
+                    if name in existed:
+                        backup = backup_dir / name
+                        if backup.exists():
+                            os.replace(backup, target)
+                    elif target.exists():
+                        target.unlink()
+                except Exception as rollback_exc:  # pragma: no cover - catastrophic filesystem failure
+                    rollback_errors.append(rollback_exc)
+            if rollback_errors:
+                raise RuntimeError(
+                    "subscription publication failed and rollback was incomplete"
+                ) from rollback_errors[0]
+            raise
 
 
 def publish_merged(
@@ -84,10 +132,11 @@ def publish_merged(
     proxies: list[ProxyConfig],
     diversity_cfg: dict | None = None,
 ) -> tuple[Path, None]:
-    """Publish exactly all.txt, stable.txt and unstable.txt after diversity.
+    """Publish all.txt, stable.txt and unstable.txt after diversity.
 
-    Canonical JSONL snapshots remain in data/work and data/state. The public
-    output directory contains only the three subscription TXT files.
+    Canonical JSONL snapshots remain in data/work and data/state. Only the three
+    managed subscription files are replaced in data/output; unrelated files are
+    preserved.
 
     The second return value is kept as None for compatibility with the existing
     caller that previously expected an output JSONL path.
@@ -147,12 +196,11 @@ def publish_merged(
         proxy.tests.status = "published"
     write_jsonl(work_dir / "14-published.jsonl", proxies)
 
+    # Render/validate the whole next generation before changing any live
+    # subscription file. This prevents one bad view from leaving a partial set.
+    texts, split_counts = _subscription_generation(proxies)
     output_dir = data_dir / "output"
-    _clean_output_dir(output_dir)
-
-    all_path = output_dir / "all.txt"
-    publish_subscription(proxies, txt_path=all_path)
-    _stable_path, _unstable_path, split_counts = _publish_reliability_views(data_dir, proxies)
+    _publish_subscription_generation(output_dir, texts)
     write_json(reports_dir / "subscriptions.json", split_counts)
 
-    return all_path, None
+    return output_dir / "all.txt", None
