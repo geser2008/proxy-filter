@@ -7,6 +7,7 @@ from urllib.parse import quote
 from proxyfilter.engine import EngineError
 from proxyfilter.ingest import parse_uri
 from proxyfilter.model import SourceInfo
+from proxyfilter.render import render_uri, validate_round_trip
 from proxyfilter.singbox_backend import SingBoxBackend
 
 
@@ -62,6 +63,37 @@ class XHTTPTransportTests(unittest.TestCase):
                 "h_max_request_times": "600-900",
             },
         )
+
+    def test_xhttp_uri_round_trip_preserves_extra_object_semantics(self) -> None:
+        extra = {
+            "xPaddingBytes": "200-800",
+            "scMinPostsIntervalMs": 30,
+            "xmux": {
+                "maxConcurrency": "16-32",
+                "maxConnections": 0,
+            },
+        }
+        proxy = parse_uri(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?"
+            "encryption=none&security=tls&type=xhttp&mode=stream-up"
+            "&host=cdn.example.com&path=%2Fapi&extra="
+            + quote(json.dumps(extra, separators=(",", ":")), safe=""),
+            self.source,
+        )
+        self.assertIsInstance(proxy.identity_payload()["params"]["transport"]["extra"], dict)
+        rendered = render_uri(proxy, "roundtrip")
+        self.assertIn("type=xhttp", rendered)
+        self.assertIn("extra=", rendered)
+        validate_round_trip(proxy, rendered)
+
+    def test_invalid_xhttp_extra_remains_rejected_at_render(self) -> None:
+        proxy = parse_uri(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?"
+            "encryption=none&type=xhttp&extra=not-json",
+            self.source,
+        )
+        with self.assertRaisesRegex(ValueError, "XHTTP extra must be a JSON object"):
+            render_uri(proxy, "bad")
 
     def test_invalid_but_present_xhttp_values_are_not_repaired(self) -> None:
         extra = {
