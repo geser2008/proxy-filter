@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from proxyfilter.ingest import detect_and_parse
 from proxyfilter.model import ProxyConfig, SourceInfo
 from proxyfilter.security import check_static_security
 from proxyfilter.singbox_backend import SingBoxBackend
@@ -64,6 +65,31 @@ class SecurityBackendSemanticTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("certificate_verification_disabled", reasons)
         self.assertTrue(outbound["tls"]["insecure"])
+
+    def test_clash_yaml_preserves_boolean_tls_for_shared_semantics(self) -> None:
+        raw = f"""
+proxies:
+  - name: clash-vless
+    type: vless
+    server: example.com
+    port: 443
+    uuid: {UUID}
+    tls: false
+    servername: example.com
+"""
+        proxies, errors, detected = detect_and_parse(raw, "clash-test", "Clash Test")
+
+        self.assertEqual(errors, [])
+        self.assertEqual(detected, "clash")
+        self.assertEqual(len(proxies), 1)
+        self.assertIs(proxies[0].params["tls"], False)
+
+        ok, reasons = check_static_security(proxies[0])
+        outbound = self.backend._render_outbound(proxies[0])
+
+        self.assertFalse(ok)
+        self.assertIn("vless_without_tls_or_reality", reasons)
+        self.assertNotIn("tls", outbound)
 
 
 if __name__ == "__main__":
