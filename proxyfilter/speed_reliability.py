@@ -3,6 +3,7 @@ from __future__ import annotations
 from .engine import EngineBackend
 from .model import ProxyConfig
 from . import speed_policy
+from .payload_semantics import normalize_payload_valid
 from .reliability import annotate_download_reliability
 
 
@@ -52,6 +53,9 @@ def check_download_many(
             proxy.tests.status = "rejected_download_error"
             proxy.tests.download["status"] = "fail"
 
+    # Normalize only after acceptance/error classification so this diagnostic
+    # cleanup cannot change threshold or transport policy.
     for proxy in [*corrected_passed, *corrected_rejected]:
+        normalize_payload_valid(proxy.tests.download)
         annotate_download_reliability(proxy)
     return corrected_passed, corrected_rejected
