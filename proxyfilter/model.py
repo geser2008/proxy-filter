@@ -5,7 +5,7 @@ from typing import Any
 import hashlib
 import json
 
-from .semantics import canonical_identity_params
+from .identity_semantics import canonical_identity_params, canonical_identity_protocol
 
 
 @dataclass(slots=True)
@@ -105,7 +105,7 @@ class ProxyConfig:
 
     def identity_payload(self) -> dict[str, Any]:
         return {
-            "protocol": self.protocol.lower(),
+            "protocol": canonical_identity_protocol(self.protocol),
             "server": self.server.strip().lower(),
             "port": int(self.port),
             "params": canonical_identity_params(self.protocol, self.params),
@@ -226,6 +226,5 @@ class ProxyConfig:
             sources=sources,
             lifecycle=dict(data.get("lifecycle") or {}),
         )
-        if not proxy.id:
-            proxy.ensure_id()
+        proxy.ensure_id()
         return proxy
