@@ -52,6 +52,68 @@ def _query_items(params: dict[str, Any], excluded: set[str]) -> list[tuple[str, 
     return items
 
 
+def _validate_semantic_source_fields(protocol: str, params: dict[str, Any]) -> None:
+    common_tls = {
+        "security",
+        "tls",
+        "sni",
+        "server_name",
+        "servername",
+        "server-name",
+        "allowInsecure",
+        "allow_insecure",
+        "skip-cert-verify",
+        "skip_cert_verify",
+        "insecure",
+        "alpn",
+        "fp",
+        "client-fingerprint",
+        "fingerprint",
+        "reality-opts",
+        "pbk",
+        "public_key",
+        "sid",
+        "short_id",
+    }
+    common_transport = {
+        "transport",
+        "network",
+        "net",
+        "type",
+        "headerType",
+        "header_type",
+        "ws-opts",
+        "grpc-opts",
+        "path",
+        "host",
+        "serviceName",
+        "service_name",
+        "mode",
+        "extra",
+    }
+    harmless = {"udp", "name", "tag", "ps"}
+
+    if protocol == "vless":
+        allowed = common_tls | common_transport | harmless | {
+            "uuid",
+            "id",
+            "flow",
+            "packet_encoding",
+            "packet-encoding",
+            "encryption",
+        }
+    elif protocol == "trojan":
+        allowed = common_tls | common_transport | harmless | {"password"}
+    else:
+        return
+
+    unknown = sorted(str(key) for key in params if key not in allowed)
+    if unknown:
+        raise RenderError(
+            f"unsupported source field(s) for {protocol} URI rendering: " + ", ".join(unknown)
+        )
+
+
 def _canonical_transport_query(transport: dict[str, Any]) -> dict[str, str | list[str]]:
     transport_type = str(transport.get("type") or "tcp")
     query: dict[str, str | list[str]] = {"type": transport_type}
@@ -168,6 +230,7 @@ def _canonical_tls_query(tls: dict[str, Any]) -> dict[str, str | list[str]]:
 
 def _semantic_generic_uri(proxy: ProxyConfig, name: str) -> str:
     protocol = proxy.protocol.lower()
+    _validate_semantic_source_fields(protocol, proxy.params)
     canonical = canonical_identity_params(protocol, proxy.params)
 
     if protocol == "vless":
@@ -189,15 +252,13 @@ def _semantic_generic_uri(proxy: ProxyConfig, name: str) -> str:
     if "flow" in canonical:
         query["flow"] = str(canonical["flow"])
     if "packet_encoding" in canonical:
-        query["packetEncoding"] = str(canonical["packet_encoding"])
+        query["packet-encoding"] = str(canonical["packet_encoding"])
     if "tls" in canonical:
         tls = canonical["tls"]
         if not isinstance(tls, dict):
             raise RenderError("canonical TLS settings must be an object")
         query.update(_canonical_tls_query(tls))
     elif protocol == "trojan":
-        # Trojan TLS is protocol-implied. Emit it explicitly so the generic URI
-        # reparses to the same canonical TLS semantics.
         query["security"] = "tls"
 
     transport = canonical.get("transport", {"type": "tcp"})
