@@ -123,15 +123,18 @@ def _parse_plain(text: str, source_id: str, source_name: str, fmt: str) -> tuple
 
 
 def _validate_percent_escapes(uri: str) -> None:
-    """Reject malformed percent escapes instead of letting tolerant parsers guess.
-
-    URI percent-encoding is syntactic: every literal percent sign must be followed
-    by exactly two hexadecimal digits.  This check is protocol-independent and
-    intentionally does not repair malformed input (for example ``%`` -> ``%25``).
-    """
+    """Reject malformed percent escapes instead of letting tolerant parsers guess."""
     match = _INVALID_PERCENT_ESCAPE_RE.search(uri)
     if match:
         raise ValueError(f"invalid URI percent escape at offset {match.start()}")
+
+
+def _parse_unique_query(query: str) -> dict[str, str]:
+    parsed = parse_qs(query, keep_blank_values=True)
+    duplicates = sorted(key for key, values in parsed.items() if len(values) != 1)
+    if duplicates:
+        raise ValueError("duplicate URI query parameter(s): " + ", ".join(duplicates))
+    return {key: values[0] for key, values in parsed.items()}
 
 
 def parse_uri(uri: str, source: SourceInfo) -> ProxyConfig:
@@ -147,7 +150,7 @@ def parse_uri(uri: str, source: SourceInfo) -> ProxyConfig:
     parts = urlsplit(uri)
     if not parts.hostname or parts.port is None:
         raise ValueError("missing server or port")
-    params = {k: v[-1] if len(v) == 1 else v for k, v in parse_qs(parts.query, keep_blank_values=True).items()}
+    params = _parse_unique_query(parts.query)
     if parts.username:
         key = "uuid" if scheme in {"vless", "tuic"} else "password"
         params[key] = unquote(parts.username)
@@ -175,15 +178,8 @@ def _parse_vmess_uri(uri: str, source: SourceInfo) -> ProxyConfig:
 
 
 def _normalize_ss_query(query: str) -> dict[str, str]:
-    """Parse SIP002 query parameters with exactly one URI-decoding pass.
-
-    ``parse_qs`` performs the URI percent-decoding required for the query.  The
-    decoded ``plugin`` value is then split according to SIP002's
-    ``plugin;option=value`` syntax.  Extra percent-decoding layers are not
-    guessed: a double-encoded feed remains double-encoded and is rejected later
-    if the resulting plugin cannot be represented by the backend.
-    """
-    params = {k: v[-1] for k, v in parse_qs(query, keep_blank_values=True).items()}
+    """Parse SIP002 query parameters with exactly one URI-decoding pass."""
+    params = _parse_unique_query(query)
     plugin = params.get("plugin")
     if plugin and ";" in plugin:
         name, opts = plugin.split(";", 1)
@@ -228,7 +224,6 @@ def _parse_ss_uri(uri: str, source: SourceInfo) -> ProxyConfig:
     if method.strip().lower() == "ss":
         raise ValueError("invalid shadowsocks method: ss")
     params = {"method": method, "password": unquote(reparsed.password)}
-    # Query parameters belong to the original URI, not to the base64 token.
     original_query = urlsplit(uri).query
     if original_query:
         params.update(_normalize_ss_query(original_query))
