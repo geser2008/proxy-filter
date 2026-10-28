@@ -104,6 +104,39 @@ def _validate_semantic_source_fields(protocol: str, params: dict[str, Any]) -> N
         }
     elif protocol == "trojan":
         allowed = common_tls | common_transport | harmless | {"password"}
+    elif protocol == "vmess":
+        allowed = common_tls | common_transport | harmless | {
+            "uuid",
+            "id",
+            "alter_id",
+            "alterId",
+            "aid",
+            "scy",
+            "cipher",
+            "packet_encoding",
+            "packet-encoding",
+            "global_padding",
+            "global-padding",
+            "authenticated_length",
+            "authenticated-length",
+            "v",
+            "pcs",
+            "vcn",
+        }
+    elif protocol in {"ss", "shadowsocks"}:
+        allowed = harmless | {
+            "method",
+            "cipher",
+            "password",
+            "plugin",
+            "plugin_opts",
+            "plugin-opts",
+            "network",
+            "udp_over_tcp",
+            "udp-over-tcp",
+            "multiplex",
+            "smux",
+        }
     else:
         return
 
@@ -228,6 +261,129 @@ def _canonical_tls_query(tls: dict[str, Any]) -> dict[str, str | list[str]]:
     return query
 
 
+def _canonical_tls_vmess_fields(tls: dict[str, Any]) -> dict[str, Any]:
+    fields: dict[str, Any] = {"tls": str(tls.get("mode") or "tls")}
+    if "server_name" in tls:
+        fields["sni"] = str(tls["server_name"])
+    if tls.get("insecure") is True:
+        fields["insecure"] = True
+    elif isinstance(tls.get("insecure"), dict):
+        raise RenderError("invalid insecure value cannot be represented losslessly")
+
+    if "alpn" in tls:
+        alpn = tls["alpn"]
+        if not isinstance(alpn, list) or not all(isinstance(item, str) for item in alpn):
+            raise RenderError("ALPN must be a list of strings")
+        fields["alpn"] = alpn
+
+    if "utls_fingerprint" in tls:
+        fields["fp"] = str(tls["utls_fingerprint"])
+    if "utls_enabled" in tls:
+        raise RenderError("invalid uTLS enabled value cannot be represented losslessly")
+
+    reality = tls.get("reality")
+    if reality is not None:
+        if not isinstance(reality, dict):
+            raise RenderError("Reality settings must be an object")
+        if "public_key" in reality:
+            fields["pbk"] = str(reality["public_key"])
+        if "short_id" in reality:
+            fields["sid"] = str(reality["short_id"])
+
+    allowed = {"mode", "server_name", "insecure", "alpn", "utls_fingerprint", "utls_enabled", "reality"}
+    extra = set(tls) - allowed
+    if extra:
+        raise RenderError(
+            "VMess TLS cannot represent field(s) losslessly: " + ", ".join(sorted(extra))
+        )
+    return fields
+
+
+def _canonical_vmess_transport_fields(transport: dict[str, Any]) -> dict[str, Any]:
+    transport_type = str(transport.get("type") or "tcp")
+    fields: dict[str, Any] = {"net": transport_type}
+
+    if transport_type == "tcp":
+        header = transport.get("header")
+        if header not in {None, "", "none"}:
+            fields["headerType"] = str(header)
+        return fields
+
+    if transport_type == "ws":
+        if "path" in transport:
+            fields["path"] = transport["path"]
+        headers = transport.get("headers")
+        if headers is not None:
+            if not isinstance(headers, dict):
+                raise RenderError("VMess WebSocket headers must be an object")
+            unknown = [key for key in headers if str(key).strip().lower() != "host"]
+            if unknown:
+                raise RenderError(
+                    "VMess URI cannot represent WebSocket header(s) losslessly: "
+                    + ", ".join(sorted(map(str, unknown)))
+                )
+            for key, value in headers.items():
+                if str(key).strip().lower() == "host":
+                    fields["host"] = value
+        return fields
+
+    if transport_type == "grpc":
+        if "service_name" in transport:
+            fields["serviceName"] = transport["service_name"]
+        extra = set(transport) - {"type", "service_name"}
+        if extra:
+            raise RenderError(
+                "VMess gRPC cannot represent transport field(s) losslessly: "
+                + ", ".join(sorted(extra))
+            )
+        return fields
+
+    if transport_type == "http":
+        if "path" in transport:
+            fields["path"] = transport["path"]
+        if "host" in transport:
+            host = transport["host"]
+            if isinstance(host, list) and len(host) == 1:
+                fields["host"] = host[0]
+            elif isinstance(host, str):
+                fields["host"] = host
+            else:
+                raise RenderError("VMess URI cannot represent multiple HTTP hosts losslessly")
+        extra = set(transport) - {"type", "path", "host"}
+        if extra:
+            raise RenderError(
+                "VMess HTTP cannot represent transport field(s) losslessly: "
+                + ", ".join(sorted(extra))
+            )
+        return fields
+
+    if transport_type == "httpupgrade":
+        for key in ("path", "host"):
+            if key in transport:
+                fields[key] = transport[key]
+        extra = set(transport) - {"type", "path", "host"}
+        if extra:
+            raise RenderError(
+                "VMess HTTPUpgrade cannot represent transport field(s) losslessly: "
+                + ", ".join(sorted(extra))
+            )
+        return fields
+
+    if transport_type == "xhttp":
+        for key in ("path", "host", "mode", "extra"):
+            if key in transport:
+                fields[key] = transport[key]
+        unknown = set(transport) - {"type", "path", "host", "mode", "extra"}
+        if unknown:
+            raise RenderError(
+                "VMess XHTTP cannot represent transport field(s) losslessly: "
+                + ", ".join(sorted(unknown))
+            )
+        return fields
+
+    raise RenderError(f"VMess transport {transport_type!r} cannot be represented losslessly")
+
+
 def _semantic_generic_uri(proxy: ProxyConfig, name: str) -> str:
     protocol = proxy.protocol.lower()
     _validate_semantic_source_fields(protocol, proxy.params)
@@ -315,33 +471,89 @@ def _generic_uri(proxy: ProxyConfig, name: str) -> str:
 
 
 def _vmess_uri(proxy: ProxyConfig, name: str) -> str:
-    data = dict(proxy.params)
-    data["add"] = proxy.server
-    data["port"] = str(int(proxy.port))
-    data["ps"] = name
+    _validate_semantic_source_fields("vmess", proxy.params)
+    canonical = canonical_identity_params("vmess", proxy.params)
+    allowed = {
+        "uuid",
+        "cipher",
+        "alter_id",
+        "packet_encoding",
+        "global_padding",
+        "authenticated_length",
+        "tls",
+        "transport",
+    }
+    extra = set(canonical) - allowed
+    if extra:
+        raise RenderError(
+            "VMess URI cannot represent canonical field(s): " + ", ".join(sorted(extra))
+        )
+
+    data: dict[str, Any] = {
+        "v": "2",
+        "add": proxy.server,
+        "port": str(int(proxy.port)),
+        "ps": name,
+    }
+    if "uuid" in canonical:
+        data["id"] = _require_text(canonical["uuid"], "vmess uuid")
+    if "cipher" in canonical:
+        data["scy"] = canonical["cipher"]
+    if "alter_id" in canonical:
+        data["aid"] = canonical["alter_id"]
+    if "packet_encoding" in canonical:
+        data["packet_encoding"] = canonical["packet_encoding"]
+
+    for key in ("global_padding", "authenticated_length"):
+        if key in canonical:
+            value = canonical[key]
+            if isinstance(value, dict):
+                raise RenderError(f"invalid VMess {key} value cannot be represented losslessly")
+            data[key] = value
+
+    tls = canonical.get("tls")
+    if tls is not None:
+        if not isinstance(tls, dict):
+            raise RenderError("canonical VMess TLS settings must be an object")
+        data.update(_canonical_tls_vmess_fields(tls))
+
+    transport = canonical.get("transport", {"type": "tcp"})
+    if not isinstance(transport, dict):
+        raise RenderError("canonical VMess transport must be an object")
+    data.update(_canonical_vmess_transport_fields(transport))
+
     payload = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     token = base64.b64encode(payload).decode("ascii").rstrip("=")
     return "vmess://" + token
 
 
 def _ss_uri(proxy: ProxyConfig, name: str) -> str:
-    params = proxy.params
-    method = _require_text(params.get("method"), "shadowsocks method")
-    password = _require_text(params.get("password"), "shadowsocks password")
+    _validate_semantic_source_fields("ss", proxy.params)
+    canonical = canonical_identity_params("ss", proxy.params)
+    allowed = {"method", "password", "plugin", "plugin_opts"}
+    extra = set(canonical) - allowed
+    if extra:
+        raise RenderError(
+            "Shadowsocks SIP002 cannot represent canonical field(s) losslessly: "
+            + ", ".join(sorted(extra))
+        )
+
+    method = _require_text(canonical.get("method"), "shadowsocks method")
+    password = _require_text(canonical.get("password"), "shadowsocks password")
     token = base64.urlsafe_b64encode(f"{method}:{password}".encode("utf-8")).decode("ascii").rstrip("=")
 
-    query_params = dict(params)
-    query_params.pop("method", None)
-    query_params.pop("password", None)
-    plugin_opts = query_params.pop("plugin_opts", None)
-    plugin = query_params.get("plugin")
+    query_params: dict[str, str] = {}
+    plugin = canonical.get("plugin")
+    plugin_opts = canonical.get("plugin_opts")
     if plugin_opts is not None:
         plugin_name = _require_text(plugin, "shadowsocks plugin")
         if not isinstance(plugin_opts, str):
             raise RenderError("shadowsocks plugin_opts must be a string")
         query_params["plugin"] = f"{plugin_name};{plugin_opts}"
+    elif plugin is not None:
+        query_params["plugin"] = _require_text(plugin, "shadowsocks plugin")
 
-    query = urlencode(_query_items(query_params, set()), doseq=True)
+    query = urlencode(query_params)
     uri = f"ss://{token}@{_host_for_uri(proxy.server)}:{int(proxy.port)}"
     if query:
         uri += "?" + query
