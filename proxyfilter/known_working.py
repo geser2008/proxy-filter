@@ -59,32 +59,47 @@ def _read_jsonl(path: Path) -> list[ProxyConfig]:
     return proxies
 
 
+def _initialize_missing_lifecycle(proxies: list[ProxyConfig], source_path: Path) -> None:
+    baseline = None
+    if source_path.is_file():
+        baseline = _iso(datetime.fromtimestamp(source_path.stat().st_mtime, tz=timezone.utc))
+
+    for proxy in proxies:
+        if proxy.lifecycle:
+            continue
+        proxy.lifecycle = {
+            "first_seen": baseline,
+            "last_seen": baseline,
+            "last_working": baseline,
+            "last_tested": baseline,
+            "consecutive_failures": 0,
+        }
+
+
 def load_known_working(
     data_dir: Path,
     selected_sources: set[str] | None = None,
 ) -> tuple[list[ProxyConfig], Path]:
-    """Load retained working proxies, migrating transparently from working.jsonl."""
+    """Load the single authoritative retained-working state.
+
+    ``state/known-working.jsonl`` is the runtime source of truth. The legacy
+    ``state/working.jsonl`` file is consulted only when the authoritative file
+    does not yet exist; its contents are migrated immediately to
+    ``known-working.jsonl`` and are never used as an ongoing fallback.
+    """
     state_dir = data_dir / "state"
     primary = state_dir / "known-working.jsonl"
     legacy = state_dir / "working.jsonl"
-    path = primary if primary.is_file() else legacy
-    proxies = _read_jsonl(path)
 
-    legacy_time = None
-    if path.is_file():
-        legacy_time = _iso(datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc))
-
-    for proxy in proxies:
-        if not proxy.lifecycle:
-            # Legacy working.jsonl contained only proxies that had just passed a
-            # full run, so its mtime is a safe migration baseline.
-            proxy.lifecycle = {
-                "first_seen": legacy_time,
-                "last_seen": legacy_time,
-                "last_working": legacy_time,
-                "last_tested": legacy_time,
-                "consecutive_failures": 0,
-            }
+    if primary.is_file():
+        proxies = _read_jsonl(primary)
+        _initialize_missing_lifecycle(proxies, primary)
+    elif legacy.is_file():
+        proxies = _read_jsonl(legacy)
+        _initialize_missing_lifecycle(proxies, legacy)
+        write_jsonl(primary, proxies)
+    else:
+        proxies = []
 
     selected = selected_sources or set()
     if selected:
@@ -93,7 +108,7 @@ def load_known_working(
             for proxy in proxies
             if {source.id for source in proxy.provenance_sources()} & selected
         ]
-    return proxies, path
+    return proxies, primary
 
 
 def load_seen_ids(data_dir: Path) -> set[str]:
