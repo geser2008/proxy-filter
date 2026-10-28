@@ -134,17 +134,50 @@ class KnownWorkingTests(unittest.TestCase):
             self.assertEqual(retained[0].lifecycle["last_working"], "2026-10-27T08:00:00Z")
             self.assertEqual(counts["recovered"], 1)
 
-    def test_legacy_working_file_is_used_as_migration_source(self):
+    def test_legacy_working_file_is_migrated_once_to_authoritative_state(self):
         proxy = make_proxy(6)
         with TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
             legacy = data_dir / "state" / "working.jsonl"
+            primary = data_dir / "state" / "known-working.jsonl"
             write_jsonl(legacy, [proxy])
+
             retained, path = load_known_working(data_dir)
-            self.assertEqual(path, legacy)
+
+            self.assertEqual(path, primary)
+            self.assertTrue(primary.is_file())
             self.assertEqual(len(retained), 1)
             self.assertTrue(retained[0].lifecycle["last_working"])
             self.assertEqual(retained[0].lifecycle["consecutive_failures"], 0)
+
+    def test_existing_authoritative_state_never_falls_back_to_legacy(self):
+        authoritative = make_proxy(7)
+        legacy_only = make_proxy(8)
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            primary = data_dir / "state" / "known-working.jsonl"
+            legacy = data_dir / "state" / "working.jsonl"
+            write_jsonl(primary, [authoritative])
+            write_jsonl(legacy, [legacy_only])
+
+            retained, path = load_known_working(data_dir)
+
+            self.assertEqual(path, primary)
+            self.assertEqual([proxy.id for proxy in retained], [authoritative.id])
+
+    def test_empty_authoritative_state_does_not_resurrect_legacy_entries(self):
+        legacy_only = make_proxy(9)
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            primary = data_dir / "state" / "known-working.jsonl"
+            legacy = data_dir / "state" / "working.jsonl"
+            write_jsonl(primary, [])
+            write_jsonl(legacy, [legacy_only])
+
+            retained, path = load_known_working(data_dir)
+
+            self.assertEqual(path, primary)
+            self.assertEqual(retained, [])
 
 
 if __name__ == "__main__":
