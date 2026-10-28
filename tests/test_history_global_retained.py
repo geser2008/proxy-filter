@@ -60,7 +60,7 @@ class GlobalHistoryRetainedTests(unittest.TestCase):
 
             with closing(sqlite3.connect(db)) as conn:
                 observation = conn.execute(
-                    "SELECT present,availability_state,published,download_mbps "
+                    "SELECT present,availability_state,final_status,published,download_mbps,upload_mbps "
                     "FROM proxy_observations WHERE proxy_id=?",
                     (proxy.id,),
                 ).fetchone()
@@ -73,9 +73,66 @@ class GlobalHistoryRetainedTests(unittest.TestCase):
                     "SELECT parsed_count,published_count FROM runs WHERE run_id='run1'"
                 ).fetchone()
 
-            self.assertEqual(observation, (0, "available", 1, 120.0))
+            self.assertEqual(observation, (0, "absent", "published", 1, 120.0, 50.0))
             self.assertEqual(source_state, (0, 0, 1, "absent"))
             self.assertEqual(run, (0, 0))
+
+    def test_retained_failed_proxy_is_absent_but_keeps_failure_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            work = root / "work"
+            db = root / "history.sqlite3"
+            source = SourceInfo("igareck", "igareck", "plain")
+            proxy = ProxyConfig(
+                source,
+                "vless",
+                "203.0.113.21",
+                443,
+                params={"uuid": "550e8400-e29b-41d4-a716-446655440003"},
+            )
+            proxy.ensure_id()
+
+            write_jsonl(work / "01-parsed.jsonl", [])
+            write_jsonl(work / "02-unique.jsonl", [proxy])
+            proxy.tests.security = {"status": "pass", "reasons": []}
+            proxy.tests.tcp = {"status": "pass", "latency_ms": 30.0}
+            proxy.tests.core = {"status": "pass", "error": None}
+            proxy.tests.latency = {
+                "status": "fail",
+                "latency_ms": None,
+                "http_code": 504,
+                "error": "clash_api_http_504",
+            }
+            proxy.tests.status = "rejected_latency_error"
+            write_jsonl(work / "06-rejected-latency.jsonl", [proxy])
+
+            record_global_source_run(
+                db,
+                run_id="run1",
+                source_id="igareck",
+                source_name="igareck",
+                work_dir=work,
+                started_at="2026-10-27T00:00:00+00:00",
+                finished_at="2026-10-27T00:05:00+00:00",
+            )
+
+            with closing(sqlite3.connect(db)) as conn:
+                observation = conn.execute(
+                    "SELECT present,availability_state,final_status,latency_status,latency_http_code "
+                    "FROM proxy_observations WHERE proxy_id=?",
+                    (proxy.id,),
+                ).fetchone()
+                source_state = conn.execute(
+                    "SELECT seen_count,available_count,absent_count,current_streak_state "
+                    "FROM proxy_source_state WHERE proxy_id=?",
+                    (proxy.id,),
+                ).fetchone()
+
+            self.assertEqual(
+                observation,
+                (0, "absent", "rejected_latency_error", "fail", 504),
+            )
+            self.assertEqual(source_state, (0, 0, 1, "absent"))
 
     def test_parsed_count_preserves_duplicate_rows_before_dedup(self):
         with tempfile.TemporaryDirectory() as tmp:
