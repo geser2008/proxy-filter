@@ -150,6 +150,24 @@ class KnownWorkingTests(unittest.TestCase):
             self.assertTrue(retained[0].lifecycle["last_working"])
             self.assertEqual(retained[0].lifecycle["consecutive_failures"], 0)
 
+    def test_legacy_changes_after_migration_are_ignored(self):
+        migrated = make_proxy(10)
+        later_legacy = make_proxy(11)
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            legacy = data_dir / "state" / "working.jsonl"
+            primary = data_dir / "state" / "known-working.jsonl"
+            write_jsonl(legacy, [migrated])
+
+            first, first_path = load_known_working(data_dir)
+            write_jsonl(legacy, [later_legacy])
+            second, second_path = load_known_working(data_dir)
+
+            self.assertEqual(first_path, primary)
+            self.assertEqual(second_path, primary)
+            self.assertEqual([proxy.id for proxy in first], [migrated.id])
+            self.assertEqual([proxy.id for proxy in second], [migrated.id])
+
     def test_existing_authoritative_state_never_falls_back_to_legacy(self):
         authoritative = make_proxy(7)
         legacy_only = make_proxy(8)
