@@ -248,3 +248,4 @@ def _parse_singbox(obj: dict, source_id: str, source_name: str) -> list[ProxyCon
         proxy = ProxyConfig(SourceInfo(source_id, source_name, "sing-box"), protocol, str(server), int(port), str(item.get("tag", "")), params, "sing-box", json.dumps(item, ensure_ascii=False, separators=(",", ":")))
         proxy.ensure_id()
         out.append(proxy)
+    return out
