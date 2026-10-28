@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from proxyfilter.ingest import detect_and_parse
+from proxyfilter.ingest import detect_and_parse_compat
 from proxyfilter.security import check_static_security
 from proxyfilter.singbox_backend import SingBoxBackend
 
@@ -16,7 +16,7 @@ class V2RayIngestTests(unittest.TestCase):
         self.backend = SingBoxBackend()
 
     def _parse(self, obj: dict):
-        return detect_and_parse(json.dumps(obj), "v2ray", "V2Ray")
+        return detect_and_parse_compat(json.dumps(obj), "v2ray", "V2Ray")
 
     def test_vless_reality_websocket_is_flattened_losslessly(self) -> None:
         obj = {
