@@ -99,6 +99,18 @@ def _canonical_bool(value: Any, field: str) -> bool | dict[str, Any]:
         return {"invalid": _canonical_value(value)}
 
 
+def _canonical_integer(value: Any) -> Any:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if text and text.lstrip("+-").isdigit():
+            return int(text)
+    return _canonical_value(value)
+
+
 def _canonical_headers(value: Any) -> Any:
     if not isinstance(value, dict):
         return _canonical_value(value)
@@ -108,16 +120,22 @@ def _canonical_headers(value: Any) -> Any:
     }
 
 
-def _canonical_tls(params: dict[str, Any]) -> dict[str, Any] | None:
+def _canonical_tls(
+    params: dict[str, Any],
+    *,
+    default_enabled: bool = False,
+    use_security_field: bool = True,
+) -> dict[str, Any] | None:
+    tls_params = params if use_security_field else {key: value for key, value in params.items() if key != "security"}
     try:
-        enabled = tls_enabled(params)
+        enabled = tls_enabled(tls_params, default_enabled=default_enabled)
     except ValueError:
         return {"enabled": {"invalid": _canonical_value(params.get("tls"))}}
     if not enabled:
         return None
 
     native_tls = params.get("tls") if isinstance(params.get("tls"), dict) else {}
-    security = str(params.get("security") or "").strip().lower()
+    security = str(params.get("security") or "").strip().lower() if use_security_field else ""
     native_tls_text = "" if isinstance(params.get("tls"), dict) else str(params.get("tls") or "").strip().lower()
     reality_opts = params.get("reality-opts") if isinstance(params.get("reality-opts"), dict) else {}
     native_reality = native_tls.get("reality") if isinstance(native_tls.get("reality"), dict) else {}
@@ -272,24 +290,11 @@ def _canonical_transport(params: dict[str, Any]) -> dict[str, Any]:
                 result[key] = _canonical_value(source[key])
         return result
 
-    # Unknown/unsupported transport: preserve the source representation instead
-    # of collapsing configurations whose semantics we cannot prove equivalent.
     result["raw"] = _canonical_value(native if native is not None else params)
     return result
 
 
-def canonical_identity_params(protocol: str, params: dict[str, Any]) -> dict[str, Any]:
-    """Return connection-semantic params used for stable proxy identity.
-
-    Only equivalences that are explicitly understood are collapsed. Unsupported
-    protocols keep the previous structural canonicalization so identity never
-    guesses across representations.
-    """
-    normalized_protocol = protocol.strip().lower()
-    if normalized_protocol != "vless":
-        value = _canonical_value(params)
-        return value if isinstance(value, dict) else {"value": value}
-
+def _canonical_vless(params: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     uuid = first_present(params, "uuid", "id", default=MISSING)
     if uuid is not MISSING:
@@ -309,3 +314,100 @@ def canonical_identity_params(protocol: str, params: dict[str, Any]) -> dict[str
 
     result["transport"] = _canonical_transport(params)
     return result
+
+
+def _canonical_vmess(params: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    uuid = first_present(params, "uuid", "id", default=MISSING)
+    if uuid is not MISSING:
+        result["uuid"] = uuid
+
+    cipher = first_present(params, "security", "scy", "cipher", default=MISSING)
+    if cipher is not MISSING:
+        result["cipher"] = cipher
+
+    alter_id = first_present(params, "alter_id", "alterId", "aid", default=MISSING)
+    if alter_id is not MISSING:
+        result["alter_id"] = _canonical_integer(alter_id)
+
+    packet_encoding = first_present(params, "packet_encoding", "packet-encoding", default=MISSING)
+    if packet_encoding is not MISSING and packet_encoding not in {None, ""}:
+        result["packet_encoding"] = packet_encoding
+
+    for target, aliases in {
+        "global_padding": ("global_padding", "global-padding"),
+        "authenticated_length": ("authenticated_length", "authenticated-length"),
+    }.items():
+        value = first_present(params, *aliases, default=MISSING)
+        if value is not MISSING:
+            result[target] = _canonical_bool(value, target)
+
+    tls = _canonical_tls(params, use_security_field=False)
+    if tls is not None:
+        result["tls"] = tls
+
+    result["transport"] = _canonical_transport(params)
+    return result
+
+
+def _canonical_trojan(params: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    if "password" in params:
+        result["password"] = params["password"]
+
+    tls = _canonical_tls(params, default_enabled=True)
+    if tls is not None:
+        result["tls"] = tls
+
+    result["transport"] = _canonical_transport(params)
+    return result
+
+
+def _canonical_shadowsocks(params: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    method = first_present(params, "method", "cipher", default=MISSING)
+    if method is not MISSING:
+        result["method"] = method
+    if "password" in params:
+        result["password"] = params["password"]
+
+    plugin = params.get("plugin", MISSING)
+    if plugin is not MISSING:
+        result["plugin"] = plugin
+    plugin_opts = first_present(params, "plugin_opts", "plugin-opts", default=MISSING)
+    if plugin_opts is not MISSING:
+        result["plugin_opts"] = plugin_opts
+
+    if "network" in params:
+        result["network"] = str(params["network"]).strip().lower()
+
+    udp_over_tcp = first_present(params, "udp_over_tcp", "udp-over-tcp", default=MISSING)
+    if udp_over_tcp is not MISSING:
+        result["udp_over_tcp"] = _canonical_value(udp_over_tcp)
+
+    if "multiplex" in params:
+        result["multiplex"] = _canonical_value(params["multiplex"])
+    if "smux" in params:
+        result["smux"] = _canonical_value(params["smux"])
+    return result
+
+
+def canonical_identity_params(protocol: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Return connection-semantic params used for stable proxy identity.
+
+    Only equivalences that are explicitly understood are collapsed. Unsupported
+    protocols keep structural canonicalization so identity never guesses across
+    representations.
+    """
+    normalized_protocol = protocol.strip().lower()
+    if normalized_protocol == "vless":
+        return _canonical_vless(params)
+    if normalized_protocol == "vmess":
+        return _canonical_vmess(params)
+    if normalized_protocol == "trojan":
+        return _canonical_trojan(params)
+    if normalized_protocol in {"ss", "shadowsocks"}:
+        return _canonical_shadowsocks(params)
+
+    value = _canonical_value(params)
+    return value if isinstance(value, dict) else {"value": value}
