@@ -15,6 +15,8 @@ from .model import ProxyConfig
 DEFAULT_DOWNLOAD_STREAM_STAGES = (1, 2, 4, 8)
 DEFAULT_DOWNLOAD_MIN_STREAM_BYTES = 5_000_000
 DEFAULT_SPEED_CONNECT_TIMEOUT = 10.0
+DEFAULT_SPEED_STALL_LIMIT_BPS = 1
+DEFAULT_SPEED_STALL_TIME_SECONDS = 10
 
 
 @dataclass(slots=True)
@@ -32,6 +34,8 @@ class SpeedResult:
     attempts: list[dict] = field(default_factory=list)
     stages: list[dict] = field(default_factory=list)
     backend: str | None = None
+    failure_reason: str | None = None
+    curl_exit_code: int | None = None
 
 
 def _normalize_download_stream_stages(value) -> tuple[int, ...]:
@@ -92,17 +96,35 @@ def _mbps(size_bytes: int, elapsed_seconds: float) -> float:
 
 
 def _partial_mbps(size: int | None, elapsed: float | None, http_code: int | None) -> float | None:
-    """Keep a usable speed measurement from an interrupted transfer.
-
-    Provider HTTP errors (for example 429/5xx) are not measurements. A timeout
-    or other transport failure after a normal transfer response may still have
-    enough bytes/time data to evaluate the configured speed threshold.
-    """
+    """Keep a usable speed measurement from an interrupted transfer."""
     if size is None or elapsed is None or size <= 0 or elapsed <= 0:
         return None
     if http_code not in {None, 0, 100, 200, 201, 202, 204, 206}:
         return None
     return _mbps(size, elapsed)
+
+
+def _curl_failure_reason(returncode: int, error: str) -> str:
+    if returncode == 28:
+        lowered = error.lower()
+        if "operation too slow" in lowered or "less than" in lowered and "bytes/sec" in lowered:
+            return "stalled_transfer"
+        return "timeout"
+    return f"curl_error_{returncode}"
+
+
+def _threshold_eligible(result: SpeedResult) -> bool:
+    """Return whether a numeric result may be evaluated against the speed threshold.
+
+    A complete transfer is eligible. A partial transfer terminated only by curl's
+    max-time is also eligible if it produced a numeric throughput measurement.
+    Stalls and all other transport/provider errors remain technical failures.
+    """
+    if result.mbps is None:
+        return False
+    if result.ok:
+        return True
+    return result.failure_reason == "timeout"
 
 
 def _expected_download_bytes(url: str) -> int | None:
@@ -224,6 +246,8 @@ def _attempt_dict(result: SpeedResult) -> dict:
         "time_seconds": result.time_seconds,
         "http_code": result.http_code,
         "error": result.error,
+        "failure_reason": result.failure_reason,
+        "curl_exit_code": result.curl_exit_code,
         "expect_disabled": result.expect_disabled,
     }
 
@@ -239,6 +263,15 @@ def _max_operation_time(transfer_timeout: float, connect_timeout: float) -> floa
     if transfer_timeout <= 0:
         raise ValueError("speed.transfer_timeout_seconds must be greater than zero")
     return float(connect_timeout) + float(transfer_timeout)
+
+
+def _curl_stall_args() -> list[str]:
+    return [
+        "--speed-limit",
+        str(DEFAULT_SPEED_STALL_LIMIT_BPS),
+        "--speed-time",
+        str(DEFAULT_SPEED_STALL_TIME_SECONDS),
+    ]
 
 
 def _download_via_socks(
@@ -271,6 +304,7 @@ def _download_via_socks(
             str(connect_timeout),
             "--max-time",
             str(max_time),
+            *_curl_stall_args(),
         ]
         for header in headers or []:
             command.extend(["--header", header])
@@ -300,6 +334,8 @@ def _download_via_socks(
                 url=url,
                 expected_bytes=expected_bytes,
                 backend=backend,
+                failure_reason=_curl_failure_reason(proc.returncode, error),
+                curl_exit_code=proc.returncode,
             )
         size, elapsed, http_code = _parse_curl_metrics(proc.stdout)
         if expected_bytes is not None and size != expected_bytes:
@@ -314,6 +350,7 @@ def _download_via_socks(
                 expected_bytes=expected_bytes,
                 payload_valid=False,
                 backend=backend,
+                failure_reason="invalid_payload",
             )
         return SpeedResult(
             True,
@@ -326,13 +363,23 @@ def _download_via_socks(
             payload_valid=True if expected_bytes is not None else None,
             backend=backend,
         )
-    except (subprocess.TimeoutExpired, OSError, ValueError) as exc:
+    except subprocess.TimeoutExpired as exc:
         return SpeedResult(
             False,
             error=str(exc),
             url=url,
             expected_bytes=expected_bytes,
             backend=backend,
+            failure_reason="process_timeout",
+        )
+    except (OSError, ValueError) as exc:
+        return SpeedResult(
+            False,
+            error=str(exc),
+            url=url,
+            expected_bytes=expected_bytes,
+            backend=backend,
+            failure_reason="probe_error",
         )
 
 
@@ -362,6 +409,7 @@ def _download_one(
             url=url,
             expected_bytes=_expected_download_bytes(url),
             backend=_download_backend(url),
+            failure_reason="engine_error",
         )
     finally:
         if session is not None:
@@ -450,7 +498,7 @@ def _download_parallel_stage(
             stream_results = [future.result() for future in futures]
         elapsed = time.monotonic() - started
     except (EngineError, OSError, ValueError) as exc:
-        return SpeedResult(False, error=str(exc), url=url, backend=backend)
+        return SpeedResult(False, error=str(exc), url=url, backend=backend, failure_reason="probe_error")
     finally:
         if session is not None:
             engine.stop(session)
@@ -484,6 +532,8 @@ def _download_parallel_stage(
         payload_valid=payload_valid if expected_total is not None else None,
         attempts=[_attempt_dict(item) for item in stream_results],
         backend=backend,
+        failure_reason=first_failure.failure_reason if first_failure else None,
+        curl_exit_code=first_failure.curl_exit_code if first_failure else None,
     )
 
 
@@ -500,6 +550,8 @@ def _stage_record(streams: int, result: SpeedResult, *, skipped: bool = False) -
         "time_seconds": result.time_seconds,
         "http_code": result.http_code,
         "error": result.error,
+        "failure_reason": result.failure_reason,
+        "curl_exit_code": result.curl_exit_code,
         "stream_results": result.attempts,
     }
 
@@ -533,6 +585,7 @@ def _run_staged_backend(
                 url=url,
                 expected_bytes=total_bytes,
                 backend=backend,
+                failure_reason="stage_skipped",
             )
             stage_records.append(_stage_record(streams, skipped, skipped=True))
             continue
@@ -572,6 +625,7 @@ def _run_staged_backend(
             url=url,
             expected_bytes=total_bytes,
             backend=backend,
+            failure_reason="all_stages_skipped",
         )
     last_result.stages = stage_records
     return last_result, False
@@ -718,6 +772,7 @@ def _upload_one(
             str(connect_timeout),
             "--max-time",
             str(max_time),
+            *_curl_stall_args(),
             "--header",
             "Content-Type: application/octet-stream",
         ]
@@ -740,15 +795,18 @@ def _upload_one(
         )
         if proc.returncode != 0:
             size, elapsed, http_code = _parse_curl_writeout(proc.stdout)
+            error = (proc.stderr or proc.stdout).strip() or f"curl exited {proc.returncode}"
             return SpeedResult(
                 False,
                 mbps=_partial_mbps(size, elapsed, http_code),
                 bytes_transferred=size,
                 time_seconds=elapsed,
                 http_code=http_code,
-                error=(proc.stderr or proc.stdout).strip() or f"curl exited {proc.returncode}",
+                error=error,
                 url=url,
                 expect_disabled=disable_expect,
+                failure_reason=_curl_failure_reason(proc.returncode, error),
+                curl_exit_code=proc.returncode,
             )
         size, elapsed, http_code = _parse_curl_metrics(proc.stdout)
         return SpeedResult(
@@ -760,8 +818,30 @@ def _upload_one(
             url=url,
             expect_disabled=disable_expect,
         )
-    except (EngineError, subprocess.TimeoutExpired, OSError, ValueError) as exc:
-        return SpeedResult(False, error=str(exc), url=url, expect_disabled=disable_expect)
+    except EngineError as exc:
+        return SpeedResult(
+            False,
+            error=str(exc),
+            url=url,
+            expect_disabled=disable_expect,
+            failure_reason="engine_error",
+        )
+    except subprocess.TimeoutExpired as exc:
+        return SpeedResult(
+            False,
+            error=str(exc),
+            url=url,
+            expect_disabled=disable_expect,
+            failure_reason="process_timeout",
+        )
+    except (OSError, ValueError) as exc:
+        return SpeedResult(
+            False,
+            error=str(exc),
+            url=url,
+            expect_disabled=disable_expect,
+            failure_reason="probe_error",
+        )
     finally:
         if session is not None:
             engine.stop(session)
@@ -906,7 +986,7 @@ def _run_many(
             try:
                 result = future.result()
             except Exception as exc:
-                result = SpeedResult(False, error=str(exc))
+                result = SpeedResult(False, error=str(exc), failure_reason="probe_exception")
             results.append((proxy, result))
             checked += 1
             print(f"[{label}] checked={checked}/{total}")
@@ -957,9 +1037,8 @@ def check_download_many(
     rejected: list[ProxyConfig] = []
     for proxy, result in _run_many(proxies, workers, probe, "download"):
         proxy.tests.download_mbps = result.mbps
-        has_measurement = result.mbps is not None
-        successful_measurement = result.ok and has_measurement
-        threshold_ok = successful_measurement and result.mbps >= min_mbps
+        eligible = _threshold_eligible(result)
+        threshold_ok = eligible and result.mbps is not None and result.mbps >= min_mbps
         single_stage = next(
             (
                 stage
@@ -981,18 +1060,22 @@ def check_download_many(
             "connect_timeout_seconds": connect_timeout,
             "transfer_timeout_seconds": timeout,
             "max_time_seconds": max_time,
+            "stall_limit_bps": DEFAULT_SPEED_STALL_LIMIT_BPS,
+            "stall_time_seconds": DEFAULT_SPEED_STALL_TIME_SECONDS,
             "bytes": result.bytes_transferred,
             "expected_bytes": result.expected_bytes,
             "payload_valid": result.payload_valid,
             "time_seconds": result.time_seconds,
             "http_code": result.http_code,
             "error": result.error,
+            "failure_reason": result.failure_reason,
+            "curl_exit_code": result.curl_exit_code,
             "url": result.url,
             "attempts": result.attempts,
             "stages": result.stages,
             "method": "curl-socks5h-staged-parallel",
         }
-        if not result.ok or not has_measurement:
+        if not eligible:
             proxy.tests.status = "rejected_download_error"
             rejected.append(proxy)
         elif not threshold_ok:
@@ -1059,24 +1142,27 @@ def check_upload_many(
     rejected: list[ProxyConfig] = []
     for proxy, result in measured:
         proxy.tests.upload_mbps = result.mbps
-        has_measurement = result.mbps is not None
-        successful_measurement = result.ok and has_measurement
-        threshold_ok = successful_measurement and result.mbps >= min_mbps
+        eligible = _threshold_eligible(result)
+        threshold_ok = eligible and result.mbps is not None and result.mbps >= min_mbps
         proxy.tests.upload = {
             "status": "pass" if threshold_ok else "fail",
             "mbps": result.mbps,
             "connect_timeout_seconds": connect_timeout,
             "transfer_timeout_seconds": timeout,
             "max_time_seconds": max_time,
+            "stall_limit_bps": DEFAULT_SPEED_STALL_LIMIT_BPS,
+            "stall_time_seconds": DEFAULT_SPEED_STALL_TIME_SECONDS,
             "bytes": result.bytes_transferred,
             "time_seconds": result.time_seconds,
             "http_code": result.http_code,
             "error": result.error,
+            "failure_reason": result.failure_reason,
+            "curl_exit_code": result.curl_exit_code,
             "url": result.url,
             "attempts": result.attempts,
             "method": "curl-socks5h",
         }
-        if not result.ok or not has_measurement:
+        if not eligible:
             proxy.tests.status = "rejected_upload_error"
             rejected.append(proxy)
         elif not threshold_ok:
