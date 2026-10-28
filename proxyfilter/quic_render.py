@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 from urllib.parse import quote, urlencode
 
@@ -9,16 +10,16 @@ from .model import ProxyConfig
 
 _HY2_SOURCE_FIELDS = {
     "password", "auth",
-    "server_ports", "ports",
+    "server_ports", "ports", "mport",
     "hop_interval", "hop-interval", "hop_interval_max", "hop-interval-max",
-    "up_mbps", "up-mbps", "up", "down_mbps", "down-mbps", "down",
+    "up_mbps", "up-mbps", "up", "upmbps", "down_mbps", "down-mbps", "down", "downmbps",
     "obfs", "obfs-password", "obfs_password",
     "obfs_min_packet_size", "obfs-min-packet-size",
     "obfs_max_packet_size", "obfs-max-packet-size",
     "network", "bbr_profile", "bbr-profile",
     "brutal_debug", "brutal-debug",
     "disable_chrome_parrot", "disable-chrome-parrot",
-    "realm", "realm-opts",
+    "realm", "realm-opts", "fastopen", "pinSHA256", "pin_sha256", "fm", "final_mask",
     "tls", "security", "sni", "server_name", "servername", "server-name",
     "allowInsecure", "allow_insecure", "skip-cert-verify", "skip_cert_verify", "insecure",
     "alpn", "fp", "client-fingerprint", "fingerprint",
@@ -111,6 +112,14 @@ def _scalar_query_value(value: Any, field: str) -> str:
     raise ValueError(f"{field} cannot be represented losslessly as URI text")
 
 
+def _json_query_value(value: Any, field: str) -> str:
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    if isinstance(value, str):
+        return value
+    raise ValueError(f"{field} cannot be represented losslessly as URI text")
+
+
 def _hysteria2_query(canonical: dict[str, Any]) -> dict[str, str]:
     query: dict[str, str] = {}
 
@@ -124,7 +133,7 @@ def _hysteria2_query(canonical: dict[str, Any]) -> dict[str, str]:
         if key in canonical:
             query[key] = _scalar_query_value(canonical[key], key)
 
-    for key in ("brutal_debug", "disable_chrome_parrot"):
+    for key in ("brutal_debug", "disable_chrome_parrot", "fastopen"):
         if key in canonical:
             query[key] = _bool_text(canonical[key], key)
 
@@ -156,6 +165,10 @@ def _hysteria2_query(canonical: dict[str, Any]) -> dict[str, str]:
         query["fingerprint"] = _scalar_query_value(
             canonical["certificate_fingerprint"], "certificate_fingerprint"
         )
+    if "certificate_sha256" in canonical:
+        query["pinSHA256"] = _scalar_query_value(canonical["certificate_sha256"], "certificate_sha256")
+    if "final_mask" in canonical:
+        query["fm"] = _json_query_value(canonical["final_mask"], "final_mask")
     return query
 
 
@@ -167,11 +180,9 @@ def _tuic_query(canonical: dict[str, Any]) -> dict[str, str]:
     for key in ("congestion_control", "udp_relay_mode", "heartbeat", "network"):
         if key in canonical:
             query[key] = _scalar_query_value(canonical[key], key)
-
     for key in ("udp_over_stream", "zero_rtt_handshake", "disable_sni"):
         if key in canonical:
             query[key] = _bool_text(canonical[key], key)
-
     if "tls" in canonical:
         query.update(_tls_query(canonical["tls"]))
     if "certificate_fingerprint" in canonical:
@@ -197,7 +208,7 @@ def render_quic_uri(proxy: ProxyConfig, name: str) -> str:
             "password", "server_ports", "hop_interval", "hop_interval_max",
             "up_mbps", "down_mbps", "obfs", "network", "bbr_profile",
             "brutal_debug", "disable_chrome_parrot", "realm", "realm_opts",
-            "tls", "certificate_fingerprint",
+            "tls", "certificate_fingerprint", "certificate_sha256", "fastopen", "final_mask",
         }
     else:
         uuid = quote(_text(canonical.get("uuid"), "tuic uuid"), safe="")
