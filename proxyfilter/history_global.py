@@ -218,16 +218,22 @@ def record_global_source_run(
         for proxy_id in sorted(candidate_ids):
             row = latest[proxy_id]
             present = source_available and proxy_id in present_ids
+            observation = _observation_record(
+                run_id=run_id,
+                source_id=source_id,
+                observed_at=finished_at,
+                row=row,
+                present=present,
+            )
+            # availability_state is source-specific: a retained proxy may still
+            # be healthy when re-tested, but if it disappeared from a source that
+            # was fetched successfully it is absent from that source.
+            if source_available and not present:
+                observation["availability_state"] = "absent"
             observation_id = _insert_record(
                 conn,
                 "proxy_observations",
-                _observation_record(
-                    run_id=run_id,
-                    source_id=source_id,
-                    observed_at=finished_at,
-                    row=row,
-                    present=present,
-                ),
+                observation,
             )
             tests = row.get("tests") or {}
             _insert_security_reasons(conn, observation_id, tests)
@@ -235,7 +241,11 @@ def record_global_source_run(
             _insert_transfer_data(conn, observation_id, tests, "download")
             _insert_transfer_data(conn, observation_id, tests, "upload")
             if source_available:
-                state = _availability_state(tests, tests.get("status"))
+                state = (
+                    _availability_state(tests, tests.get("status"))
+                    if present
+                    else "absent"
+                )
                 _update_state(
                     conn,
                     source_id,
