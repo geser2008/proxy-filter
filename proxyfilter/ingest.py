@@ -14,6 +14,7 @@ from .v2ray_ingest import is_v2ray_config, parse_v2ray_config
 SUPPORTED_SCHEMES = {"vless", "vmess", "trojan", "ss", "hysteria2", "hy2", "tuic"}
 URI_RE = re.compile(r"^(vless|vmess|trojan|ss|hysteria2|hy2|tuic)://", re.I)
 _INVALID_PERCENT_ESCAPE_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+_URI_QUERY_ALIASES = {"allowinsecure": "allowInsecure"}
 
 
 def _contains_proxy_uri(text: str) -> bool:
@@ -134,7 +135,16 @@ def _parse_unique_query(query: str) -> dict[str, str]:
     duplicates = sorted(key for key, values in parsed.items() if len(values) != 1)
     if duplicates:
         raise ValueError("duplicate URI query parameter(s): " + ", ".join(duplicates))
-    return {key: values[0] for key, values in parsed.items()}
+    params = {key: values[0] for key, values in parsed.items()}
+    for source_key, target_key in _URI_QUERY_ALIASES.items():
+        if source_key not in params:
+            continue
+        if target_key in params:
+            raise ValueError(
+                f"duplicate semantic URI query parameter: {source_key}/{target_key}"
+            )
+        params[target_key] = params.pop(source_key)
+    return params
 
 
 def parse_uri(uri: str, source: SourceInfo) -> ProxyConfig:
