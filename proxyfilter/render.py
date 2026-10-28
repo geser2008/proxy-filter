@@ -218,6 +218,28 @@ def _canonical_transport_query(transport: dict[str, Any]) -> dict[str, str | lis
             )
         return query
 
+    if transport_type == "xhttp":
+        for key in ("host", "path", "mode"):
+            if key in transport:
+                query[key] = str(transport[key])
+        if "extra" in transport:
+            extra_value = transport["extra"]
+            if not isinstance(extra_value, dict):
+                raise RenderError("XHTTP extra must be a JSON object for lossless URI rendering")
+            query["extra"] = json.dumps(
+                extra_value,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        extra_fields = set(transport) - {"type", "host", "path", "mode", "extra"}
+        if extra_fields:
+            raise RenderError(
+                "XHTTP URI cannot represent transport field(s) losslessly: "
+                + ", ".join(sorted(extra_fields))
+            )
+        return query
+
     raise RenderError(f"transport {transport_type!r} cannot be represented losslessly as URI")
 
 
@@ -371,9 +393,14 @@ def _canonical_vmess_transport_fields(transport: dict[str, Any]) -> dict[str, An
         return fields
 
     if transport_type == "xhttp":
-        for key in ("path", "host", "mode", "extra"):
+        for key in ("path", "host", "mode"):
             if key in transport:
                 fields[key] = transport[key]
+        if "extra" in transport:
+            extra_value = transport["extra"]
+            if not isinstance(extra_value, dict):
+                raise RenderError("VMess XHTTP extra must be a JSON object")
+            fields["extra"] = extra_value
         unknown = set(transport) - {"type", "path", "host", "mode", "extra"}
         if unknown:
             raise RenderError(
