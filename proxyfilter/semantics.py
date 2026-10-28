@@ -35,12 +35,7 @@ def parse_bool(value: Any, field: str) -> bool:
 
 
 def tls_enabled(params: dict[str, Any], *, default_enabled: bool = False) -> bool:
-    """Return whether source semantics explicitly enable TLS/Reality.
-
-    Server-name/SNI fields configure TLS when TLS exists; they never enable TLS
-    by themselves. A native TLS object is considered enabled unless it contains
-    an explicit false `enabled` value.
-    """
+    """Return whether source semantics explicitly enable TLS/Reality."""
     security_value = params.get("security")
     security = "" if security_value is None else str(security_value).strip().lower()
     if security in {"tls", "reality"}:
@@ -63,7 +58,6 @@ def tls_enabled(params: dict[str, Any], *, default_enabled: bool = False) -> boo
 
 
 def insecure_value(params: dict[str, Any]) -> tuple[bool, Any]:
-    """Return the first explicit top-level certificate-verification setting."""
     for key in INSECURE_ALIASES:
         if key in params:
             return True, params[key]
@@ -74,7 +68,6 @@ def certificate_verification_disabled(params: dict[str, Any]) -> bool:
     present, value = insecure_value(params)
     if present and parse_bool(value, "insecure"):
         return True
-
     native_tls = params.get("tls")
     if isinstance(native_tls, dict) and "insecure" in native_tls:
         return parse_bool(native_tls["insecure"], "tls.insecure")
@@ -134,6 +127,12 @@ def _canonical_headers(value: Any) -> Any:
     }
 
 
+def _canonical_string_list(value: Any, separator: str = ",") -> list[Any]:
+    if isinstance(value, list):
+        return [_canonical_value(item) for item in value]
+    return [item.strip() for item in str(value).split(separator)]
+
+
 def _canonical_tls(
     params: dict[str, Any],
     *,
@@ -162,14 +161,7 @@ def _canonical_tls(
 
     result: dict[str, Any] = {"mode": "reality" if is_reality else "tls"}
 
-    server_name = first_present(
-        params,
-        "sni",
-        "server_name",
-        "servername",
-        "server-name",
-        default=MISSING,
-    )
+    server_name = first_present(params, "sni", "server_name", "servername", "server-name", default=MISSING)
     if server_name is MISSING and "server_name" in native_tls:
         server_name = native_tls["server_name"]
     if server_name is not MISSING and server_name not in {None, ""}:
@@ -187,10 +179,26 @@ def _canonical_tls(
     if alpn is MISSING:
         alpn = native_tls.get("alpn", MISSING)
     if alpn is not MISSING:
-        if isinstance(alpn, list):
-            result["alpn"] = [_canonical_value(item) for item in alpn]
-        else:
-            result["alpn"] = [item.strip() for item in str(alpn).split(",")]
+        result["alpn"] = _canonical_string_list(alpn)
+
+    cipher_suites = first_present(params, "cs", "cipher_suites", "cipher-suites", default=MISSING)
+    if cipher_suites is MISSING:
+        cipher_suites = native_tls.get("cipher_suites", MISSING)
+    if cipher_suites is not MISSING:
+        result["cipher_suites"] = _canonical_string_list(cipher_suites, ":")
+
+    peer_certificate_sha256 = first_present(
+        params, "pcs", "pinnedPeerCertSha256", "peer_certificate_sha256", default=MISSING
+    )
+    if peer_certificate_sha256 is not MISSING:
+        result["peer_certificate_sha256"] = _canonical_value(peer_certificate_sha256)
+
+    ech = first_present(params, "ech", "echConfigList", default=MISSING)
+    native_ech = native_tls.get("ech", MISSING)
+    if ech is MISSING and native_ech is not MISSING:
+        ech = native_ech
+    if ech is not MISSING:
+        result["ech"] = _canonical_value(ech)
 
     fingerprint = first_present(params, "fp", "client-fingerprint", "fingerprint", default=MISSING)
     native_utls = native_tls.get("utls") if isinstance(native_tls.get("utls"), dict) else {}
@@ -212,11 +220,16 @@ def _canonical_tls(
         short_id = first_present(params, "sid", "short_id", default=MISSING)
         if short_id is MISSING:
             short_id = reality_opts.get("short-id", native_reality.get("short_id", MISSING))
+        spider_x = first_present(params, "spx", "spider_x", default=MISSING)
+        if spider_x is MISSING:
+            spider_x = native_reality.get("spider_x", MISSING)
         reality: dict[str, Any] = {}
         if public_key is not MISSING:
             reality["public_key"] = public_key
         if short_id is not MISSING:
             reality["short_id"] = short_id
+        if spider_x is not MISSING:
+            reality["spider_x"] = spider_x
         result["reality"] = reality
 
     return result
@@ -229,12 +242,7 @@ def _canonical_transport(params: dict[str, Any]) -> dict[str, Any]:
     else:
         network = str(first_present(params, "network", "net", "type", default="tcp") or "tcp").strip().lower()
 
-    aliases = {
-        "": "tcp",
-        "websocket": "ws",
-        "h2": "http",
-        "http-upgrade": "httpupgrade",
-    }
+    aliases = {"": "tcp", "websocket": "ws", "h2": "http", "http-upgrade": "httpupgrade"}
     network = aliases.get(network, network)
     result: dict[str, Any] = {"type": network}
 
@@ -263,6 +271,24 @@ def _canonical_transport(params: dict[str, Any]) -> dict[str, Any]:
             headers["Host"] = params["host"]
         if headers:
             result["headers"] = _canonical_headers(headers)
+        early_data = (
+            native.get("max_early_data", MISSING)
+            if native is not None
+            else first_present(params, "ed", "max_early_data", "max-early-data", default=MISSING)
+        )
+        if early_data is MISSING and "max-early-data" in opts:
+            early_data = opts["max-early-data"]
+        if early_data is not MISSING:
+            result["max_early_data"] = _canonical_integer(early_data)
+        early_header = (
+            native.get("early_data_header_name", MISSING)
+            if native is not None
+            else first_present(params, "eh", "early_data_header_name", "early-data-header-name", default=MISSING)
+        )
+        if early_header is MISSING and "early-data-header-name" in opts:
+            early_header = opts["early-data-header-name"]
+        if early_header is not MISSING:
+            result["early_data_header_name"] = _canonical_value(early_header)
         return result
 
     if network == "grpc":
@@ -310,25 +336,28 @@ def _canonical_transport(params: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _append_common_extensions(result: dict[str, Any], params: dict[str, Any]) -> None:
+    final_mask = first_present(params, "fm", "final_mask", default=MISSING)
+    if final_mask is not MISSING:
+        result["final_mask"] = _canonical_json_object(final_mask)
+
+
 def _canonical_vless(params: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     uuid = first_present(params, "uuid", "id", default=MISSING)
     if uuid is not MISSING:
         result["uuid"] = uuid
-
     flow = params.get("flow", MISSING)
     if flow is not MISSING and flow not in {None, ""}:
         result["flow"] = flow
-
-    packet_encoding = first_present(params, "packet_encoding", "packet-encoding", default=MISSING)
+    packet_encoding = first_present(params, "packet_encoding", "packet-encoding", "packetEncoding", default=MISSING)
     if packet_encoding is not MISSING and packet_encoding not in {None, ""}:
         result["packet_encoding"] = packet_encoding
-
     tls = _canonical_tls(params)
     if tls is not None:
         result["tls"] = tls
-
     result["transport"] = _canonical_transport(params)
+    _append_common_extensions(result, params)
     return result
 
 
@@ -337,19 +366,15 @@ def _canonical_vmess(params: dict[str, Any]) -> dict[str, Any]:
     uuid = first_present(params, "uuid", "id", default=MISSING)
     if uuid is not MISSING:
         result["uuid"] = uuid
-
     cipher = first_present(params, "security", "scy", "cipher", default=MISSING)
     if cipher is not MISSING:
         result["cipher"] = cipher
-
     alter_id = first_present(params, "alter_id", "alterId", "aid", default=MISSING)
     if alter_id is not MISSING:
         result["alter_id"] = _canonical_integer(alter_id)
-
-    packet_encoding = first_present(params, "packet_encoding", "packet-encoding", default=MISSING)
+    packet_encoding = first_present(params, "packet_encoding", "packet-encoding", "packetEncoding", default=MISSING)
     if packet_encoding is not MISSING and packet_encoding not in {None, ""}:
         result["packet_encoding"] = packet_encoding
-
     for target, aliases in {
         "global_padding": ("global_padding", "global-padding"),
         "authenticated_length": ("authenticated_length", "authenticated-length"),
@@ -357,12 +382,11 @@ def _canonical_vmess(params: dict[str, Any]) -> dict[str, Any]:
         value = first_present(params, *aliases, default=MISSING)
         if value is not MISSING:
             result[target] = _canonical_bool(value, target)
-
     tls = _canonical_tls(params, use_security_field=False)
     if tls is not None:
         result["tls"] = tls
-
     result["transport"] = _canonical_transport(params)
+    _append_common_extensions(result, params)
     return result
 
 
@@ -370,12 +394,11 @@ def _canonical_trojan(params: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     if "password" in params:
         result["password"] = params["password"]
-
     tls = _canonical_tls(params, default_enabled=True)
     if tls is not None:
         result["tls"] = tls
-
     result["transport"] = _canonical_transport(params)
+    _append_common_extensions(result, params)
     return result
 
 
@@ -386,21 +409,17 @@ def _canonical_shadowsocks(params: dict[str, Any]) -> dict[str, Any]:
         result["method"] = method
     if "password" in params:
         result["password"] = params["password"]
-
     plugin = params.get("plugin", MISSING)
     if plugin is not MISSING:
         result["plugin"] = plugin
     plugin_opts = first_present(params, "plugin_opts", "plugin-opts", default=MISSING)
     if plugin_opts is not MISSING:
         result["plugin_opts"] = plugin_opts
-
     if "network" in params:
         result["network"] = str(params["network"]).strip().lower()
-
     udp_over_tcp = first_present(params, "udp_over_tcp", "udp-over-tcp", default=MISSING)
     if udp_over_tcp is not MISSING:
         result["udp_over_tcp"] = _canonical_value(udp_over_tcp)
-
     if "multiplex" in params:
         result["multiplex"] = _canonical_value(params["multiplex"])
     if "smux" in params:
@@ -424,6 +443,5 @@ def canonical_identity_params(protocol: str, params: dict[str, Any]) -> dict[str
         return _canonical_trojan(params)
     if normalized_protocol in {"ss", "shadowsocks"}:
         return _canonical_shadowsocks(params)
-
     value = _canonical_value(params)
     return value if isinstance(value, dict) else {"value": value}
