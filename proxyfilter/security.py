@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .model import ProxyConfig
+from .semantics import INSECURE_ALIASES, tls_enabled
 
 
 def check_static_security(proxy: ProxyConfig, reject_allow_insecure: bool = True) -> tuple[bool, list[str]]:
@@ -16,7 +17,7 @@ def check_static_security(proxy: ProxyConfig, reject_allow_insecure: bool = True
         return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
     if reject_allow_insecure:
-        for key in ("allowInsecure", "allow_insecure", "skip-cert-verify", "skip_cert_verify"):
+        for key in INSECURE_ALIASES:
             if truthy(params.get(key)):
                 reasons.append("certificate_verification_disabled")
                 break
@@ -41,9 +42,11 @@ def check_static_security(proxy: ProxyConfig, reject_allow_insecure: bool = True
         reasons.append("missing_shadowsocks_credentials")
 
     if p == "vless":
-        security = str(params.get("security") or "").lower()
-        has_tls = bool(params.get("tls")) or bool(params.get("servername")) or bool(params.get("server_name"))
-        if security not in {"tls", "reality"} and not has_tls:
+        try:
+            enabled = tls_enabled(params)
+        except ValueError:
+            enabled = False
+        if not enabled:
             reasons.append("vless_without_tls_or_reality")
 
     ok = not reasons
