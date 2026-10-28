@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
+import json
 import re
 from typing import Any
 
@@ -58,16 +59,10 @@ def _bandwidth_mbps(value: Any) -> Any:
             amount = Decimal(match.group(1))
             unit = match.group(2)
             factors = {
-                "bps": Decimal(1) / Decimal(1_000_000),
-                "Bps": Decimal(8) / Decimal(1_000_000),
-                "Kbps": Decimal(1) / Decimal(1_000),
-                "KBps": Decimal(8) / Decimal(1_000),
-                "Mbps": Decimal(1),
-                "MBps": Decimal(8),
-                "Gbps": Decimal(1000),
-                "GBps": Decimal(8000),
-                "Tbps": Decimal(1_000_000),
-                "TBps": Decimal(8_000_000),
+                "bps": Decimal(1) / Decimal(1_000_000), "Bps": Decimal(8) / Decimal(1_000_000),
+                "Kbps": Decimal(1) / Decimal(1_000), "KBps": Decimal(8) / Decimal(1_000),
+                "Mbps": Decimal(1), "MBps": Decimal(8), "Gbps": Decimal(1000),
+                "GBps": Decimal(8000), "Tbps": Decimal(1_000_000), "TBps": Decimal(8_000_000),
             }
             amount *= factors[unit]
     return format(amount.normalize(), "f")
@@ -78,16 +73,28 @@ def _server_ports(value: Any) -> list[str]:
     result: list[str] = []
     for raw in items:
         text = str(raw).strip()
-        match = re.fullmatch(r"(\d+)\s*-\s*(\d+)", text)
+        match = re.fullmatch(r"(\d+)\s*[-:]\s*(\d+)", text)
         if match:
             text = f"{match.group(1)}:{match.group(2)}"
         result.append(text)
     return result
 
 
+def _canonical_jsonish(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return value
+        return _canonical_value(decoded)
+    return _canonical_value(value)
+
+
 def _tls_without_certificate_pin(params: dict[str, Any]) -> dict[str, Any] | None:
     tls_params = dict(params)
     tls_params.pop("fingerprint", None)
+    tls_params.pop("pinSHA256", None)
+    tls_params.pop("pin_sha256", None)
     return _canonical_tls(tls_params, default_enabled=True)
 
 
@@ -98,7 +105,7 @@ def _canonical_hysteria2(params: dict[str, Any]) -> dict[str, Any]:
     if password is not MISSING:
         result["password"] = password
 
-    ports = first_present(params, "server_ports", "ports", default=MISSING)
+    ports = first_present(params, "server_ports", "ports", "mport", default=MISSING)
     if ports is not MISSING:
         result["server_ports"] = _server_ports(ports)
 
@@ -111,8 +118,8 @@ def _canonical_hysteria2(params: dict[str, Any]) -> dict[str, Any]:
             result[target] = _duration_ms(value, "s")
 
     for target, aliases in {
-        "up_mbps": ("up_mbps", "up-mbps", "up"),
-        "down_mbps": ("down_mbps", "down-mbps", "down"),
+        "up_mbps": ("up_mbps", "up-mbps", "up", "upmbps"),
+        "down_mbps": ("down_mbps", "down-mbps", "down", "downmbps"),
     }.items():
         value = first_present(params, *aliases, default=MISSING)
         if value is not MISSING:
@@ -147,6 +154,7 @@ def _canonical_hysteria2(params: dict[str, Any]) -> dict[str, Any]:
     for target, aliases in {
         "brutal_debug": ("brutal_debug", "brutal-debug"),
         "disable_chrome_parrot": ("disable_chrome_parrot", "disable-chrome-parrot"),
+        "fastopen": ("fastopen",),
     }.items():
         value = first_present(params, *aliases, default=MISSING)
         if value is not MISSING:
@@ -163,60 +171,52 @@ def _canonical_hysteria2(params: dict[str, Any]) -> dict[str, Any]:
 
     if "fingerprint" in params:
         result["certificate_fingerprint"] = params["fingerprint"]
+    pin = first_present(params, "pinSHA256", "pin_sha256", default=MISSING)
+    if pin is not MISSING:
+        result["certificate_sha256"] = _canonical_value(pin)
+
+    final_mask = first_present(params, "fm", "final_mask", default=MISSING)
+    if final_mask is not MISSING:
+        result["final_mask"] = _canonical_jsonish(final_mask)
 
     return result
 
 
 def _canonical_tuic(params: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
-
     for key in ("uuid", "password", "token"):
         if key in params:
             result[key] = params[key]
-
     congestion = first_present(params, "congestion_control", "congestion-controller", default=MISSING)
     if congestion is not MISSING:
         result["congestion_control"] = congestion
-
     relay = first_present(params, "udp_relay_mode", "udp-relay-mode", default=MISSING)
     if relay is not MISSING:
         result["udp_relay_mode"] = relay
-
     udp_stream = first_present(params, "udp_over_stream", "udp-over-stream", default=MISSING)
     if udp_stream is not MISSING:
         result["udp_over_stream"] = _canonical_bool(udp_stream, "udp_over_stream")
-
     zero_rtt = first_present(
-        params,
-        "zero_rtt_handshake",
-        "zero-rtt-handshake",
-        "reduce-rtt",
-        default=MISSING,
+        params, "zero_rtt_handshake", "zero-rtt-handshake", "reduce-rtt", default=MISSING,
     )
     if zero_rtt is not MISSING:
         result["zero_rtt_handshake"] = _canonical_bool(zero_rtt, "zero_rtt_handshake")
-
     if "heartbeat" in params:
         result["heartbeat"] = _duration_ms(params["heartbeat"], "s")
     else:
         heartbeat = first_present(params, "heartbeat-interval", "heartbeat_interval", default=MISSING)
         if heartbeat is not MISSING:
             result["heartbeat"] = _duration_ms(heartbeat, "ms")
-
     if "network" in params:
         result["network"] = str(params["network"]).strip().lower()
-
     tls = _tls_without_certificate_pin(params)
     if tls is not None:
         result["tls"] = tls
-
     disable_sni = first_present(params, "disable_sni", "disable-sni", default=MISSING)
     if disable_sni is not MISSING:
         result["disable_sni"] = _canonical_bool(disable_sni, "disable_sni")
-
     if "fingerprint" in params:
         result["certificate_fingerprint"] = params["fingerprint"]
-
     return result
 
 
