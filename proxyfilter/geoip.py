@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+import ipaddress
 import json
 import subprocess
 from urllib.parse import quote
@@ -34,6 +35,48 @@ def _flag_from_code(country_code: str | None) -> str | None:
     return "".join(chr(0x1F1E6 + ord(char) - ord("A")) for char in code)
 
 
+def _same_ip(left: str, right: str) -> bool:
+    try:
+        return ipaddress.ip_address(left) == ipaddress.ip_address(right)
+    except ValueError:
+        return left.strip() == right.strip()
+
+
+def _validate_geo_result(result: GeoIPResult, expected_ip: str) -> GeoIPResult:
+    """Validate provider identity and the minimum useful GeoIP payload.
+
+    Providers are allowed to omit the echoed IP, but when they return one it must
+    identify the IP we asked for. A successful GeoIP result must also contain a
+    valid two-letter country code. ASN and organization metadata are useful but
+    optional and therefore do not control fallback eligibility.
+    """
+    if not result.ok:
+        return result
+
+    if result.ip:
+        if not _same_ip(result.ip, expected_ip):
+            result.ok = False
+            result.error = f"GeoIP response IP {result.ip} does not match requested IP {expected_ip}"
+            result.reason = "ip_mismatch"
+            return result
+    else:
+        result.ip = expected_ip
+
+    country_code = (result.country_code or "").strip().upper()
+    if len(country_code) != 2 or not country_code.isalpha():
+        result.ok = False
+        result.country_code = None
+        result.flag = None
+        result.error = "GeoIP response is missing a valid country_code"
+        result.reason = "incomplete_response"
+        return result
+
+    result.country_code = country_code
+    if not result.flag:
+        result.flag = _flag_from_code(country_code)
+    return result
+
+
 def _parse_ipwhois(payload: str, expected_ip: str) -> GeoIPResult:
     try:
         data = json.loads(payload)
@@ -64,15 +107,18 @@ def _parse_ipwhois(payload: str, expected_ip: str) -> GeoIPResult:
     except (TypeError, ValueError):
         asn = None
 
-    return GeoIPResult(
-        True,
-        ip=str(data.get("ip") or expected_ip),
-        country_code=country_code,
-        country=country,
-        flag=flag or _flag_from_code(country_code),
-        asn=asn,
-        org=str(connection.get("org") or "") or None,
-        isp=str(connection.get("isp") or "") or None,
+    return _validate_geo_result(
+        GeoIPResult(
+            True,
+            ip=str(data.get("ip") or "") or None,
+            country_code=country_code,
+            country=country,
+            flag=flag or _flag_from_code(country_code),
+            asn=asn,
+            org=str(connection.get("org") or "") or None,
+            isp=str(connection.get("isp") or "") or None,
+        ),
+        expected_ip,
     )
 
 
@@ -101,15 +147,18 @@ def _parse_ipapi(payload: str, expected_ip: str) -> GeoIPResult:
     except ValueError:
         asn = None
 
-    return GeoIPResult(
-        True,
-        ip=str(data.get("ip") or expected_ip),
-        country_code=country_code,
-        country=str(data.get("country_name") or "") or None,
-        flag=_flag_from_code(country_code),
-        asn=asn,
-        org=str(data.get("org") or "") or None,
-        isp=str(data.get("org") or "") or None,
+    return _validate_geo_result(
+        GeoIPResult(
+            True,
+            ip=str(data.get("ip") or "") or None,
+            country_code=country_code,
+            country=str(data.get("country_name") or "") or None,
+            flag=_flag_from_code(country_code),
+            asn=asn,
+            org=str(data.get("org") or "") or None,
+            isp=str(data.get("org") or "") or None,
+        ),
+        expected_ip,
     )
 
 
@@ -243,23 +292,29 @@ def enrich_geo_many(
     checked = 0
 
     def lookup(ip: str) -> tuple[GeoIPResult, list[dict], bool]:
-        primary = _lookup_provider(
+        primary = _validate_geo_result(
+            _lookup_provider(
+                ip,
+                provider=provider_name,
+                url_template=url_template,
+                timeout=timeout,
+                curl_command=curl_command,
+            ),
             ip,
-            provider=provider_name,
-            url_template=url_template,
-            timeout=timeout,
-            curl_command=curl_command,
         )
         attempts = [_attempt_dict(primary)]
         if primary.ok or not fallback_name or not fallback_url_template:
             return primary, attempts, False
 
-        fallback = _lookup_provider(
+        fallback = _validate_geo_result(
+            _lookup_provider(
+                ip,
+                provider=fallback_name,
+                url_template=fallback_url_template,
+                timeout=timeout,
+                curl_command=curl_command,
+            ),
             ip,
-            provider=fallback_name,
-            url_template=fallback_url_template,
-            timeout=timeout,
-            curl_command=curl_command,
         )
         attempts.append(_attempt_dict(fallback))
         return fallback, attempts, True
