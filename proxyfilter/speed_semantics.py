@@ -3,6 +3,7 @@ from __future__ import annotations
 from .engine import EngineBackend
 from .model import ProxyConfig
 from . import speed_staged
+from .payload_semantics import normalize_payload_valid
 
 
 _MEASUREMENT_HTTP_CODES = {None, 0, 200, 201, 202, 204, 206}
@@ -80,4 +81,11 @@ def check_upload_many(
         else -1,
         reverse=True,
     )
+
+    # Keep acceptance policy independent from diagnostic tri-state cleanup.
+    # True now means byte completeness was explicitly confirmed; unknown
+    # transport outcomes become None rather than a misleading True.
+    for proxy in [*passed, *still_rejected]:
+        normalize_payload_valid(proxy.tests.upload)
+
     return passed, still_rejected
