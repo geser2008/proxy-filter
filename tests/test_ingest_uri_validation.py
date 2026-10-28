@@ -42,6 +42,24 @@ class URIValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate URI query parameter.*plugin"):
             parse_uri(uri, self.source)
 
+    def test_normalizes_lowercase_allowinsecure_alias(self) -> None:
+        uri = (
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443"
+            "?encryption=none&security=tls&type=tcp&allowinsecure=1"
+        )
+        proxy = parse_uri(uri, self.source)
+        self.assertNotIn("allowinsecure", proxy.params)
+        self.assertEqual(proxy.params["allowInsecure"], "1")
+        self.assertTrue(proxy.identity_payload()["params"]["tls"]["insecure"])
+
+    def test_rejects_duplicate_semantic_allowinsecure_alias(self) -> None:
+        uri = (
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443"
+            "?encryption=none&security=tls&type=tcp&allowinsecure=1&allowInsecure=0"
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate semantic URI query parameter"):
+            parse_uri(uri, self.source)
+
     def test_accepts_plain_sip002_shadowsocks_userinfo(self) -> None:
         uri = (
             "ss://chacha20-ietf-poly1305:oZIoA69Q8yhcQV8ka3Pa3A@"
