@@ -23,14 +23,41 @@ class SpeedThresholdSemanticsTests(unittest.TestCase):
         return proxy
 
     @patch("proxyfilter.speed._run_many")
-    def test_download_measured_speed_has_priority_over_transfer_error(self, run_many) -> None:
+    def test_download_timeout_measurement_is_compared_with_threshold(self, run_many) -> None:
         slow = self._proxy("1")
         fast = self._proxy("2")
         unknown = self._proxy("3")
         run_many.return_value = [
-            (slow, SpeedResult(False, mbps=27.0, error="curl: (28) timeout")),
-            (fast, SpeedResult(False, mbps=80.0, error="curl: (28) timeout")),
-            (unknown, SpeedResult(False, mbps=None, error="curl: (28) timeout")),
+            (
+                slow,
+                SpeedResult(
+                    False,
+                    mbps=27.0,
+                    error="curl: (28) timeout",
+                    failure_reason="timeout",
+                    curl_exit_code=28,
+                ),
+            ),
+            (
+                fast,
+                SpeedResult(
+                    False,
+                    mbps=80.0,
+                    error="curl: (28) timeout",
+                    failure_reason="timeout",
+                    curl_exit_code=28,
+                ),
+            ),
+            (
+                unknown,
+                SpeedResult(
+                    False,
+                    mbps=None,
+                    error="curl: (28) timeout",
+                    failure_reason="timeout",
+                    curl_exit_code=28,
+                ),
+            ),
         ]
 
         passed, rejected = check_download_many(
@@ -50,14 +77,41 @@ class SpeedThresholdSemanticsTests(unittest.TestCase):
         self.assertEqual(unknown.tests.status, "rejected_download_error")
 
     @patch("proxyfilter.speed._run_many")
-    def test_upload_measured_speed_has_priority_over_transfer_error(self, run_many) -> None:
+    def test_upload_timeout_measurement_is_compared_with_threshold(self, run_many) -> None:
         slow = self._proxy("4")
         fast = self._proxy("5")
         unknown = self._proxy("6")
         run_many.return_value = [
-            (slow, SpeedResult(False, mbps=9.0, error="curl: (28) timeout")),
-            (fast, SpeedResult(False, mbps=40.0, error="curl: (28) timeout")),
-            (unknown, SpeedResult(False, mbps=None, error="curl: (28) timeout")),
+            (
+                slow,
+                SpeedResult(
+                    False,
+                    mbps=9.0,
+                    error="curl: (28) timeout",
+                    failure_reason="timeout",
+                    curl_exit_code=28,
+                ),
+            ),
+            (
+                fast,
+                SpeedResult(
+                    False,
+                    mbps=40.0,
+                    error="curl: (28) timeout",
+                    failure_reason="timeout",
+                    curl_exit_code=28,
+                ),
+            ),
+            (
+                unknown,
+                SpeedResult(
+                    False,
+                    mbps=None,
+                    error="curl: (28) timeout",
+                    failure_reason="timeout",
+                    curl_exit_code=28,
+                ),
+            ),
         ]
 
         passed, rejected = check_upload_many(
