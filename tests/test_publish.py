@@ -62,7 +62,7 @@ class PublishTests(unittest.TestCase):
             text = (data_dir / "output" / "all.txt").read_text(encoding="utf-8")
             self.assertIn("%F0%9F%87%B3%F0%9F%87%B1%20NL%20%7C", text)
 
-    def test_publish_merged_writes_only_all_stable_and_unstable_txt(self):
+    def test_publish_merged_preserves_unmanaged_output_files(self):
         stable = self._proxy("vless://stable@example1.com:443#stable", suffix=1)
         unstable = self._proxy("vless://unstable@example2.com:443#unstable", suffix=2)
         stable.tests.reliability = {"status": "stable", "reason": None, "details": {}}
@@ -78,8 +78,8 @@ class PublishTests(unittest.TestCase):
             data_dir = Path(tmp)
             output_dir = data_dir / "output"
             output_dir.mkdir(parents=True)
-            (output_dir / "old-source.txt").write_text("stale\n", encoding="utf-8")
-            (output_dir / "all.jsonl").write_text("stale\n", encoding="utf-8")
+            (output_dir / "old-source.txt").write_text("keep me\n", encoding="utf-8")
+            (output_dir / "all.jsonl").write_text("keep me too\n", encoding="utf-8")
 
             all_path, legacy_jsonl = publish_merged(data_dir, [stable, unstable], {"enabled": False})
 
@@ -87,8 +87,10 @@ class PublishTests(unittest.TestCase):
             self.assertEqual(all_path, output_dir / "all.txt")
             self.assertEqual(
                 sorted(path.name for path in output_dir.iterdir()),
-                ["all.txt", "stable.txt", "unstable.txt"],
+                ["all.jsonl", "all.txt", "old-source.txt", "stable.txt", "unstable.txt"],
             )
+            self.assertEqual((output_dir / "old-source.txt").read_text(encoding="utf-8"), "keep me\n")
+            self.assertEqual((output_dir / "all.jsonl").read_text(encoding="utf-8"), "keep me too\n")
             self.assertEqual(len((output_dir / "all.txt").read_text().splitlines()), 2)
             self.assertEqual((output_dir / "stable.txt").read_text().splitlines(), [stable.tests.render["uri"]])
             self.assertEqual((output_dir / "unstable.txt").read_text().splitlines(), [unstable.tests.render["uri"]])
