@@ -958,7 +958,8 @@ def check_download_many(
     for proxy, result in _run_many(proxies, workers, probe, "download"):
         proxy.tests.download_mbps = result.mbps
         has_measurement = result.mbps is not None
-        threshold_ok = has_measurement and result.mbps >= min_mbps
+        successful_measurement = result.ok and has_measurement
+        threshold_ok = successful_measurement and result.mbps >= min_mbps
         single_stage = next(
             (
                 stage
@@ -991,7 +992,7 @@ def check_download_many(
             "stages": result.stages,
             "method": "curl-socks5h-staged-parallel",
         }
-        if not has_measurement:
+        if not result.ok or not has_measurement:
             proxy.tests.status = "rejected_download_error"
             rejected.append(proxy)
         elif not threshold_ok:
@@ -1059,7 +1060,8 @@ def check_upload_many(
     for proxy, result in measured:
         proxy.tests.upload_mbps = result.mbps
         has_measurement = result.mbps is not None
-        threshold_ok = has_measurement and result.mbps >= min_mbps
+        successful_measurement = result.ok and has_measurement
+        threshold_ok = successful_measurement and result.mbps >= min_mbps
         proxy.tests.upload = {
             "status": "pass" if threshold_ok else "fail",
             "mbps": result.mbps,
@@ -1074,7 +1076,7 @@ def check_upload_many(
             "attempts": result.attempts,
             "method": "curl-socks5h",
         }
-        if not has_measurement:
+        if not result.ok or not has_measurement:
             proxy.tests.status = "rejected_upload_error"
             rejected.append(proxy)
         elif not threshold_ok:
