@@ -264,7 +264,7 @@ proxies:
                 "tls": {"enabled": True, "server_name": "cdn.example.com"},
             },
         )
-        self.assertEqual(first.identity_payload(), second.identity_payload())
+        self.assertEqual(first.ensure_id(), second.ensure_id())
 
     def test_hysteria2_certificate_fingerprint_does_not_equal_utls_fingerprint(self) -> None:
         cert_pin = ProxyConfig(
@@ -320,6 +320,23 @@ proxies:
         first = ProxyConfig(SOURCE, "tuic", "example.com", 443, params={"uuid": UUID, "password": "one"})
         second = ProxyConfig(SOURCE, "tuic", "example.com", 443, params={"uuid": UUID, "password": "two"})
         self.assertNotEqual(first.ensure_id(), second.ensure_id())
+
+    def test_deserialization_recomputes_stale_identity(self) -> None:
+        proxy = ProxyConfig(
+            SOURCE,
+            "vless",
+            "example.com",
+            443,
+            params={"uuid": UUID, "security": "tls", "sni": "example.com"},
+        )
+        expected = proxy.ensure_id()
+        payload = proxy.to_dict()
+        payload["id"] = "stale-id-from-previous-identity-version"
+
+        restored = ProxyConfig.from_dict(payload)
+
+        self.assertEqual(restored.id, expected)
+        self.assertNotEqual(restored.id, payload["id"])
 
 
 if __name__ == "__main__":
