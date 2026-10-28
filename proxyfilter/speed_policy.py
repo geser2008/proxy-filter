@@ -130,6 +130,26 @@ def _run_download_backend(
     backend = base._download_backend(url)
 
     for streams in stream_stages:
+        # A generic backend has no protocol-specific way to split one fixed
+        # payload across concurrent requests. Running N streams would download
+        # the full object N times and make the aggregate result incomparable
+        # with Cloudflare/CacheFly fixed-total tests. Keep only the single-stream
+        # measurement unless a backend-specific splitter exists.
+        if backend == "generic" and streams != 1:
+            skipped = base.SpeedResult(
+                False,
+                error=(
+                    "stage skipped: generic download backend cannot enforce a "
+                    "fixed total payload across multiple streams"
+                ),
+                url=url,
+                expected_bytes=total_bytes,
+                backend=backend,
+                failure_reason="stage_skipped",
+            )
+            stage_records.append(_stage_record(streams, skipped, skipped=True))
+            continue
+
         if total_bytes is not None and total_bytes // streams < min_stream_bytes:
             skipped = base.SpeedResult(
                 False,
