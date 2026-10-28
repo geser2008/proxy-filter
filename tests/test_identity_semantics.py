@@ -232,6 +232,95 @@ proxies:
         )
         self.assertNotEqual(first.ensure_id(), second.ensure_id())
 
+    def test_equivalent_hysteria2_aliases_share_identity(self) -> None:
+        first = ProxyConfig(
+            SOURCE,
+            "hysteria2",
+            "example.com",
+            443,
+            params={
+                "auth": "secret",
+                "ports": "443,8443-8450",
+                "hop-interval": 30,
+                "up": "30 Mbps",
+                "down": "200 Mbps",
+                "obfs": "salamander",
+                "obfs-password": "obfs-secret",
+                "sni": "cdn.example.com",
+            },
+        )
+        second = ProxyConfig(
+            SOURCE,
+            "hy2",
+            "example.com",
+            443,
+            params={
+                "password": "secret",
+                "server_ports": ["443", "8443:8450"],
+                "hop_interval": "30s",
+                "up_mbps": 30,
+                "down_mbps": 200,
+                "obfs": {"type": "salamander", "password": "obfs-secret"},
+                "tls": {"enabled": True, "server_name": "cdn.example.com"},
+            },
+        )
+        self.assertEqual(first.identity_payload(), second.identity_payload())
+
+    def test_hysteria2_certificate_fingerprint_does_not_equal_utls_fingerprint(self) -> None:
+        cert_pin = ProxyConfig(
+            SOURCE,
+            "hysteria2",
+            "example.com",
+            443,
+            params={"password": "secret", "fingerprint": "deadbeef"},
+        )
+        utls = ProxyConfig(
+            SOURCE,
+            "hysteria2",
+            "example.com",
+            443,
+            params={"password": "secret", "fp": "deadbeef"},
+        )
+        self.assertNotEqual(cert_pin.ensure_id(), utls.ensure_id())
+
+    def test_equivalent_tuic_aliases_share_identity(self) -> None:
+        first = ProxyConfig(
+            SOURCE,
+            "tuic",
+            "example.com",
+            443,
+            params={
+                "uuid": UUID,
+                "password": "secret",
+                "congestion-controller": "bbr",
+                "udp-relay-mode": "native",
+                "reduce-rtt": True,
+                "heartbeat-interval": 10000,
+                "sni": "cdn.example.com",
+            },
+        )
+        second = ProxyConfig(
+            SOURCE,
+            "tuic",
+            "example.com",
+            443,
+            params={
+                "uuid": UUID,
+                "password": "secret",
+                "congestion_control": "bbr",
+                "udp_relay_mode": "native",
+                "zero_rtt_handshake": True,
+                "heartbeat": "10s",
+                "tls": {"enabled": True, "server_name": "cdn.example.com"},
+            },
+        )
+        self.assertEqual(first.ensure_id(), second.ensure_id())
+
+    def test_tuic_password_difference_changes_identity(self) -> None:
+        first = ProxyConfig(SOURCE, "tuic", "example.com", 443, params={"uuid": UUID, "password": "one"})
+        second = ProxyConfig(SOURCE, "tuic", "example.com", 443, params={"uuid": UUID, "password": "two"})
+        self.assertNotEqual(first.ensure_id(), second.ensure_id())
+
 
 if __name__ == "__main__":
     unittest.main()
