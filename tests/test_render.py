@@ -189,11 +189,84 @@ class RenderTests(unittest.TestCase):
             "hysteria2://secret@example.com:443?sni=example.com&insecure=0#old"
         )
 
+    def test_structured_hysteria2_clash_semantics_render_losslessly(self):
+        proxy = ProxyConfig(
+            SourceInfo("clash", "Clash", "clash"),
+            "hysteria2",
+            "203.0.113.60",
+            443,
+            "old",
+            {
+                "auth": "secret",
+                "sni": "example.com",
+                "skip-cert-verify": False,
+                "up": 50,
+                "down": "100 Mbps",
+                "obfs": "salamander",
+                "obfs-password": "obfs-secret",
+                "udp": True,
+            },
+            "clash",
+            "",
+        )
+        rendered = render_uri(proxy, "RENAMED")
+        validate_round_trip(proxy, rendered)
+        self.assertTrue(rendered.startswith("hysteria2://secret@"))
+        self.assertIn("obfs=salamander", rendered)
+
+    def test_hysteria2_certificate_and_utls_fingerprints_remain_distinct(self):
+        proxy = ProxyConfig(
+            SourceInfo("clash", "Clash", "clash"),
+            "hysteria2",
+            "203.0.113.61",
+            443,
+            "old",
+            {
+                "password": "secret",
+                "sni": "example.com",
+                "fingerprint": "sha256:certificate-pin",
+                "client-fingerprint": "chrome",
+            },
+            "clash",
+            "",
+        )
+        rendered = render_uri(proxy, "RENAMED")
+        validate_round_trip(proxy, rendered)
+        self.assertIn("fingerprint=sha256%3Acertificate-pin", rendered)
+        self.assertIn("fp=chrome", rendered)
+
     def test_tuic_round_trip(self):
         self._round_trip(
             "tuic://550e8400-e29b-41d4-a716-446655440000:secret@example.com:443"
             "?congestion_control=bbr&alpn=h3#old"
         )
+
+    def test_structured_tuic_clash_semantics_render_losslessly(self):
+        proxy = ProxyConfig(
+            SourceInfo("clash", "Clash", "clash"),
+            "tuic",
+            "203.0.113.62",
+            443,
+            "old",
+            {
+                "uuid": "550e8400-e29b-41d4-a716-446655440000",
+                "password": "secret",
+                "congestion-controller": "bbr",
+                "udp-relay-mode": "native",
+                "reduce-rtt": True,
+                "heartbeat-interval": 1000,
+                "sni": "example.com",
+                "skip-cert-verify": False,
+                "udp": True,
+            },
+            "clash",
+            "",
+        )
+        rendered = render_uri(proxy, "RENAMED")
+        validate_round_trip(proxy, rendered)
+        self.assertTrue(rendered.startswith("tuic://"))
+        self.assertIn("congestion_control=bbr", rendered)
+        self.assertIn("zero_rtt_handshake=true", rendered)
 
     def test_shadowsocks_round_trip(self):
         self._round_trip(
