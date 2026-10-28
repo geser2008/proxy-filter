@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from proxyfilter.ingest import detect_and_parse, parse_uri
+from proxyfilter.ingest import detect_and_parse_compat, parse_uri
 from proxyfilter.model import ProxyConfig, SourceInfo
 
 
@@ -34,7 +34,7 @@ proxies:
       headers:
         Host: cdn.example.com
 """
-        clash, errors, fmt = detect_and_parse(clash_text, "clash", "Clash")
+        clash, errors, fmt = detect_and_parse_compat(clash_text, "clash", "Clash")
         self.assertEqual(errors, [])
         self.assertEqual(fmt, "clash")
 
@@ -64,7 +64,7 @@ proxies:
                 }
             ]
         }
-        v2ray, errors, fmt = detect_and_parse(json.dumps(v2ray_obj), "v2ray", "V2Ray")
+        v2ray, errors, fmt = detect_and_parse_compat(json.dumps(v2ray_obj), "v2ray", "V2Ray")
         self.assertEqual(errors, [])
         self.assertEqual(fmt, "v2ray-json")
 
@@ -85,7 +85,7 @@ proxies:
                 }
             ]
         }
-        singbox, errors, fmt = detect_and_parse(json.dumps(singbox_obj), "singbox", "SingBox")
+        singbox, errors, fmt = detect_and_parse_compat(json.dumps(singbox_obj), "singbox", "SingBox")
         self.assertEqual(errors, [])
         self.assertEqual(fmt, "sing-box")
 
