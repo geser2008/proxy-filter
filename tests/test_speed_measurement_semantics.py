@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from proxyfilter import cli, speed_policy, speed_reliability, speed_semantics, speed_staged
 from proxyfilter.model import ProxyConfig, SourceInfo
+from proxyfilter.payload_semantics import normalize_payload_valid
 from proxyfilter.speed import SpeedResult
 
 
@@ -64,6 +65,44 @@ class SpeedMeasurementSemanticsTests(unittest.TestCase):
         self.assertEqual(result.expected_bytes, 2000)
         self.assertFalse(result.payload_valid)
         self.assertEqual(result.failure_reason, "invalid_payload")
+
+    def test_payload_valid_true_requires_confirmed_complete_byte_count(self):
+        record = {
+            "payload_valid": True,
+            "bytes": 20_000_000,
+            "expected_bytes": 20_000_000,
+        }
+        normalize_payload_valid(record)
+        self.assertIs(record["payload_valid"], True)
+
+    def test_payload_valid_false_remains_explicit_invalid_payload(self):
+        record = {
+            "payload_valid": False,
+            "bytes": 1_000,
+            "expected_bytes": 20_000_000,
+        }
+        normalize_payload_valid(record)
+        self.assertIs(record["payload_valid"], False)
+
+    def test_unconfirmed_payload_is_unknown_not_true(self):
+        record = {
+            "payload_valid": True,
+            "bytes": None,
+            "expected_bytes": 20_000_000,
+            "error": "curl: transport failure",
+        }
+        normalize_payload_valid(record)
+        self.assertIsNone(record["payload_valid"])
+
+    def test_partial_timeout_payload_is_unknown_not_invalid(self):
+        record = {
+            "payload_valid": True,
+            "bytes": 5_000_000,
+            "expected_bytes": 20_000_000,
+            "failure_reason": "timeout",
+        }
+        normalize_payload_valid(record)
+        self.assertIsNone(record["payload_valid"])
 
 
 if __name__ == "__main__":
