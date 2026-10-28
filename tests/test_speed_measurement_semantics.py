@@ -3,9 +3,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from proxyfilter import cli
+from proxyfilter import cli, speed_policy, speed_reliability, speed_semantics, speed_staged
 from proxyfilter.model import ProxyConfig, SourceInfo
-from proxyfilter import speed_staged
 from proxyfilter.speed import SpeedResult
 
 
@@ -13,9 +12,9 @@ class SpeedMeasurementSemanticsTests(unittest.TestCase):
     def setUp(self):
         self.proxy = ProxyConfig(SourceInfo("test", "test"), "vless", "127.0.0.1", 443)
 
-    def test_cli_uses_staged_speed_implementation(self):
-        self.assertIs(cli.check_download_many, speed_staged.check_download_many)
-        self.assertIs(cli.check_upload_many, speed_staged.check_upload_many)
+    def test_cli_uses_final_speed_policy_wrappers(self):
+        self.assertIs(cli.check_download_many, speed_reliability.check_download_many)
+        self.assertIs(cli.check_upload_many, speed_semantics.check_upload_many)
 
     def test_generic_download_backend_does_not_multiply_full_object_per_stream(self):
         one_stream = SpeedResult(
@@ -28,12 +27,11 @@ class SpeedMeasurementSemanticsTests(unittest.TestCase):
             backend="generic",
         )
         with patch("proxyfilter.speed._download_parallel_stage", return_value=one_stream) as probe:
-            result = speed_staged._download_staged(
+            result = speed_policy._download_staged(
                 self.proxy,
                 object(),
                 url="https://example.com/file.bin",
                 fallback_urls=[],
-                fallback_http_codes={429},
                 timeout=30,
                 curl_command="curl",
                 stream_stages=(1, 2, 4),
