@@ -4,7 +4,7 @@ import json
 import unittest
 
 from proxyfilter.ingest import detect_and_parse, parse_uri
-from proxyfilter.model import SourceInfo
+from proxyfilter.model import ProxyConfig, SourceInfo
 
 
 UUID = "00000000-0000-0000-0000-000000000001"
@@ -120,6 +120,116 @@ proxies:
             SOURCE,
         )
 
+        self.assertNotEqual(first.ensure_id(), second.ensure_id())
+
+    def test_equivalent_vmess_aliases_share_identity(self) -> None:
+        first = ProxyConfig(
+            SOURCE,
+            "vmess",
+            "example.com",
+            443,
+            params={
+                "id": UUID,
+                "scy": "auto",
+                "aid": "0",
+                "tls": "tls",
+                "sni": "cdn.example.com",
+                "net": "ws",
+                "path": "/ws",
+                "host": "cdn.example.com",
+                "packet-encoding": "packetaddr",
+                "global-padding": "true",
+                "authenticated-length": False,
+            },
+        )
+        second = ProxyConfig(
+            SOURCE,
+            "vmess",
+            "example.com",
+            443,
+            params={
+                "uuid": UUID,
+                "security": "auto",
+                "alter_id": 0,
+                "tls": {"enabled": True, "server_name": "cdn.example.com"},
+                "transport": {
+                    "type": "ws",
+                    "path": "/ws",
+                    "headers": {"Host": "cdn.example.com"},
+                },
+                "packet_encoding": "packetaddr",
+                "global_padding": True,
+                "authenticated_length": False,
+            },
+        )
+
+        self.assertEqual(first.ensure_id(), second.ensure_id())
+
+    def test_vmess_cipher_difference_changes_identity(self) -> None:
+        first = ProxyConfig(SOURCE, "vmess", "example.com", 443, params={"uuid": UUID, "security": "auto"})
+        second = ProxyConfig(SOURCE, "vmess", "example.com", 443, params={"uuid": UUID, "security": "aes-128-gcm"})
+        self.assertNotEqual(first.ensure_id(), second.ensure_id())
+
+    def test_equivalent_trojan_tls_forms_share_identity(self) -> None:
+        first = ProxyConfig(
+            SOURCE,
+            "trojan",
+            "example.com",
+            443,
+            params={"password": "secret", "sni": "cdn.example.com", "type": "tcp", "headerType": "none"},
+        )
+        second = ProxyConfig(
+            SOURCE,
+            "trojan",
+            "example.com",
+            443,
+            params={
+                "password": "secret",
+                "tls": {"enabled": True, "server_name": "cdn.example.com"},
+                "transport": {"type": "tcp"},
+            },
+        )
+
+        self.assertEqual(first.ensure_id(), second.ensure_id())
+
+    def test_trojan_password_difference_changes_identity(self) -> None:
+        first = ProxyConfig(SOURCE, "trojan", "example.com", 443, params={"password": "one"})
+        second = ProxyConfig(SOURCE, "trojan", "example.com", 443, params={"password": "two"})
+        self.assertNotEqual(first.ensure_id(), second.ensure_id())
+
+    def test_equivalent_shadowsocks_aliases_share_identity(self) -> None:
+        first = ProxyConfig(
+            SOURCE,
+            "ss",
+            "example.com",
+            8388,
+            params={"method": "aes-256-gcm", "password": "secret", "plugin-opts": "tls;host=cdn.example.com"},
+        )
+        second = ProxyConfig(
+            SOURCE,
+            "ss",
+            "example.com",
+            8388,
+            params={"cipher": "aes-256-gcm", "password": "secret", "plugin_opts": "tls;host=cdn.example.com"},
+        )
+
+        self.assertEqual(first.ensure_id(), second.ensure_id())
+
+    def test_shadowsocks_plugin_difference_changes_identity(self) -> None:
+        first = ProxyConfig(
+            SOURCE,
+            "ss",
+            "example.com",
+            8388,
+            params={"method": "aes-256-gcm", "password": "secret", "plugin": "v2ray-plugin", "plugin_opts": "tls"},
+        )
+        second = ProxyConfig(
+            SOURCE,
+            "ss",
+            "example.com",
+            8388,
+            params={"method": "aes-256-gcm", "password": "secret", "plugin": "obfs-local", "plugin_opts": "tls"},
+        )
         self.assertNotEqual(first.ensure_id(), second.ensure_id())
 
 
