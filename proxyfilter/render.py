@@ -8,6 +8,7 @@ from urllib.parse import quote, urlencode
 
 from .ingest import parse_uri
 from .model import ProxyConfig, SourceInfo
+from .semantics import canonical_identity_params
 
 
 class RenderError(ValueError):
@@ -51,17 +52,187 @@ def _query_items(params: dict[str, Any], excluded: set[str]) -> list[tuple[str, 
     return items
 
 
+def _canonical_transport_query(transport: dict[str, Any]) -> dict[str, str | list[str]]:
+    transport_type = str(transport.get("type") or "tcp")
+    query: dict[str, str | list[str]] = {"type": transport_type}
+
+    if transport_type == "tcp":
+        header = transport.get("header")
+        if header not in {None, "", "none"}:
+            query["headerType"] = str(header)
+        return query
+
+    if transport_type == "ws":
+        if "path" in transport:
+            query["path"] = str(transport["path"])
+        headers = transport.get("headers")
+        if headers is not None:
+            if not isinstance(headers, dict):
+                raise RenderError("WebSocket headers cannot be represented losslessly")
+            unknown = [key for key in headers if str(key).strip().lower() != "host"]
+            if unknown:
+                raise RenderError(
+                    "WebSocket URI cannot represent header(s) losslessly: "
+                    + ", ".join(sorted(map(str, unknown)))
+                )
+            for key, value in headers.items():
+                if str(key).strip().lower() == "host":
+                    query["host"] = str(value)
+        return query
+
+    if transport_type == "grpc":
+        if "service_name" in transport:
+            query["serviceName"] = str(transport["service_name"])
+        extra = set(transport) - {"type", "service_name"}
+        if extra:
+            raise RenderError(
+                "gRPC URI cannot represent transport field(s) losslessly: "
+                + ", ".join(sorted(extra))
+            )
+        return query
+
+    if transport_type == "http":
+        if "path" in transport:
+            query["path"] = str(transport["path"])
+        if "host" in transport:
+            host = transport["host"]
+            if isinstance(host, list):
+                if not all(isinstance(item, str) for item in host):
+                    raise RenderError("HTTP transport host list must contain strings")
+                query["host"] = host
+            else:
+                query["host"] = str(host)
+        extra = set(transport) - {"type", "path", "host"}
+        if extra:
+            raise RenderError(
+                "HTTP URI cannot represent transport field(s) losslessly: "
+                + ", ".join(sorted(extra))
+            )
+        return query
+
+    if transport_type == "httpupgrade":
+        for key in ("path", "host"):
+            if key in transport:
+                query[key] = str(transport[key])
+        extra = set(transport) - {"type", "path", "host"}
+        if extra:
+            raise RenderError(
+                "HTTPUpgrade URI cannot represent transport field(s) losslessly: "
+                + ", ".join(sorted(extra))
+            )
+        return query
+
+    raise RenderError(f"transport {transport_type!r} cannot be represented losslessly as URI")
+
+
+def _canonical_tls_query(tls: dict[str, Any]) -> dict[str, str | list[str]]:
+    query: dict[str, str | list[str]] = {}
+    mode = str(tls.get("mode") or "tls")
+    query["security"] = mode
+
+    if "server_name" in tls:
+        query["sni"] = str(tls["server_name"])
+    if tls.get("insecure") is True:
+        query["insecure"] = "1"
+    elif isinstance(tls.get("insecure"), dict):
+        raise RenderError("invalid insecure value cannot be represented losslessly")
+
+    if "alpn" in tls:
+        alpn = tls["alpn"]
+        if not isinstance(alpn, list) or not all(isinstance(item, str) for item in alpn):
+            raise RenderError("ALPN must be a list of strings")
+        query["alpn"] = ",".join(alpn)
+
+    if "utls_fingerprint" in tls:
+        query["fp"] = str(tls["utls_fingerprint"])
+    if "utls_enabled" in tls:
+        raise RenderError("invalid uTLS enabled value cannot be represented losslessly")
+
+    reality = tls.get("reality")
+    if reality is not None:
+        if not isinstance(reality, dict):
+            raise RenderError("Reality settings must be an object")
+        if "public_key" in reality:
+            query["pbk"] = str(reality["public_key"])
+        if "short_id" in reality:
+            query["sid"] = str(reality["short_id"])
+
+    allowed = {"mode", "server_name", "insecure", "alpn", "utls_fingerprint", "utls_enabled", "reality"}
+    extra = set(tls) - allowed
+    if extra:
+        raise RenderError(
+            "TLS URI cannot represent field(s) losslessly: " + ", ".join(sorted(extra))
+        )
+    return query
+
+
+def _semantic_generic_uri(proxy: ProxyConfig, name: str) -> str:
+    protocol = proxy.protocol.lower()
+    canonical = canonical_identity_params(protocol, proxy.params)
+
+    if protocol == "vless":
+        userinfo = quote(_require_text(canonical.get("uuid"), "vless uuid"), safe="")
+        allowed = {"uuid", "flow", "packet_encoding", "tls", "transport"}
+    elif protocol == "trojan":
+        userinfo = quote(_require_text(canonical.get("password"), "trojan password"), safe="")
+        allowed = {"password", "tls", "transport"}
+    else:
+        raise RenderError(f"unsupported semantic URI protocol: {protocol}")
+
+    extra = set(canonical) - allowed
+    if extra:
+        raise RenderError(
+            f"{protocol} URI cannot represent canonical field(s): " + ", ".join(sorted(extra))
+        )
+
+    query: dict[str, str | list[str]] = {}
+    if "flow" in canonical:
+        query["flow"] = str(canonical["flow"])
+    if "packet_encoding" in canonical:
+        query["packetEncoding"] = str(canonical["packet_encoding"])
+    if "tls" in canonical:
+        tls = canonical["tls"]
+        if not isinstance(tls, dict):
+            raise RenderError("canonical TLS settings must be an object")
+        query.update(_canonical_tls_query(tls))
+    elif protocol == "trojan":
+        # Trojan TLS is protocol-implied. Emit it explicitly so the generic URI
+        # reparses to the same canonical TLS semantics.
+        query["security"] = "tls"
+
+    transport = canonical.get("transport", {"type": "tcp"})
+    if not isinstance(transport, dict):
+        raise RenderError("canonical transport must be an object")
+    query.update(_canonical_transport_query(transport))
+
+    items: list[tuple[str, str]] = []
+    for key in sorted(query):
+        value = query[key]
+        if isinstance(value, list):
+            items.extend((key, item) for item in value)
+        else:
+            items.append((key, value))
+
+    uri = f"{protocol}://{userinfo}@{_host_for_uri(proxy.server)}:{int(proxy.port)}"
+    if items:
+        uri += "?" + urlencode(items, doseq=True)
+    if name:
+        uri += "#" + quote(name, safe="")
+    return uri
+
+
 def _generic_uri(proxy: ProxyConfig, name: str) -> str:
     protocol = proxy.protocol.lower()
     params = proxy.params
 
     if protocol == "vless":
-        userinfo = quote(_require_text(params.get("uuid"), "vless uuid"), safe="")
-        excluded = {"uuid"}
-    elif protocol in {"trojan", "hysteria2", "hy2"}:
+        return _semantic_generic_uri(proxy, name)
+    if protocol == "trojan":
+        return _semantic_generic_uri(proxy, name)
+    if protocol in {"hysteria2", "hy2"}:
         userinfo = quote(_require_text(params.get("password"), f"{protocol} password"), safe="")
         excluded = {"password"}
-        protocol = "hysteria2" if protocol == "hy2" else protocol
+        protocol = "hysteria2"
     elif protocol == "tuic":
         uuid = quote(_require_text(params.get("uuid"), "tuic uuid"), safe="")
         password = params.get("password")
