@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 
@@ -90,6 +91,19 @@ def _canonical_value(value: Any) -> Any:
     if isinstance(value, list):
         return [_canonical_value(item) for item in value]
     return value
+
+
+def _canonical_json_object(value: Any) -> Any:
+    if isinstance(value, dict):
+        return _canonical_value(value)
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return value
+        if isinstance(decoded, dict):
+            return _canonical_value(decoded)
+    return _canonical_value(value)
 
 
 def _canonical_bool(value: Any, field: str) -> bool | dict[str, Any]:
@@ -285,9 +299,11 @@ def _canonical_transport(params: dict[str, Any]) -> dict[str, Any]:
 
     if network == "xhttp":
         source = native or params
-        for key in ("host", "path", "mode", "extra"):
+        for key in ("host", "path", "mode"):
             if key in source:
                 result[key] = _canonical_value(source[key])
+        if "extra" in source:
+            result["extra"] = _canonical_json_object(source["extra"])
         return result
 
     result["raw"] = _canonical_value(native if native is not None else params)
