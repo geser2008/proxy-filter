@@ -9,6 +9,7 @@ from urllib.parse import urlsplit, parse_qs, unquote
 import yaml
 
 from .model import ProxyConfig, SourceInfo
+from .v2ray_ingest import is_v2ray_config, parse_v2ray_config
 
 SUPPORTED_SCHEMES = {"vless", "vmess", "trojan", "ss", "hysteria2", "hy2", "tuic"}
 URI_RE = re.compile(r"^(vless|vmess|trojan|ss|hysteria2|hy2|tuic)://", re.I)
@@ -30,6 +31,9 @@ def detect_and_parse(raw: bytes | str, source_id: str, source_name: str) -> tupl
 
     try:
         obj = json.loads(text)
+        if is_v2ray_config(obj):
+            proxies, errors = parse_v2ray_config(obj, source_id, source_name)
+            return proxies, errors, "v2ray-json"
         if isinstance(obj, dict) and isinstance(obj.get("outbounds"), list):
             return _parse_singbox(obj, source_id, source_name), [], "sing-box"
     except json.JSONDecodeError:
