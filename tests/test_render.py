@@ -107,6 +107,56 @@ class RenderTests(unittest.TestCase):
         validate_round_trip(proxy, rendered)
         self.assertTrue(rendered.startswith("vmess://"))
 
+    def test_structured_vmess_clash_semantics_render_losslessly(self):
+        proxy = ProxyConfig(
+            SourceInfo("clash", "Clash", "clash"),
+            "vmess",
+            "203.0.113.22",
+            443,
+            "old",
+            {
+                "uuid": "1281acca-f21d-475c-bf04-eccbee7f8df2",
+                "alterId": 0,
+                "cipher": "auto",
+                "tls": True,
+                "servername": "cdn.example.com",
+                "network": "ws",
+                "ws-opts": {
+                    "path": "/vmess-ws",
+                    "headers": {"Host": "cdn.example.com"},
+                },
+                "udp": True,
+            },
+            "clash",
+            "",
+        )
+        rendered = render_uri(proxy, "RENAMED")
+        validate_round_trip(proxy, rendered)
+        self.assertTrue(rendered.startswith("vmess://"))
+
+    def test_structured_vmess_false_tls_is_not_serialized_as_enabled(self):
+        proxy = ProxyConfig(
+            SourceInfo("clash", "Clash", "clash"),
+            "vmess",
+            "203.0.113.23",
+            80,
+            "old",
+            {
+                "uuid": "1281acca-f21d-475c-bf04-eccbee7f8df2",
+                "alterId": 0,
+                "cipher": "auto",
+                "tls": False,
+                "network": "tcp",
+                "servername": "ignored.example.com",
+                "udp": True,
+            },
+            "clash",
+            "",
+        )
+        rendered = render_uri(proxy, "RENAMED")
+        validate_round_trip(proxy, rendered)
+        self.assertTrue(rendered.startswith("vmess://"))
+
     def test_trojan_round_trip(self):
         self._round_trip(
             "trojan://secret@example.com:443?security=tls&sni=example.com&type=ws&path=%2Fws#old"
@@ -150,6 +200,45 @@ class RenderTests(unittest.TestCase):
             "ss://YWVzLTI1Ni1nY206c2VjcmV0@203.0.113.30:8388"
             "?plugin=v2ray-plugin%3Btls%3Bhost%3Dexample.com#old"
         )
+
+    def test_structured_shadowsocks_clash_semantics_render_losslessly(self):
+        proxy = ProxyConfig(
+            SourceInfo("clash", "Clash", "clash"),
+            "ss",
+            "203.0.113.31",
+            8388,
+            "old",
+            {
+                "cipher": "aes-256-gcm",
+                "password": "secret",
+                "udp": True,
+            },
+            "clash",
+            "",
+        )
+        rendered = render_uri(proxy, "RENAMED")
+        validate_round_trip(proxy, rendered)
+        self.assertTrue(rendered.startswith("ss://"))
+
+    def test_structured_shadowsocks_plugin_aliases_render_losslessly(self):
+        proxy = ProxyConfig(
+            SourceInfo("clash", "Clash", "clash"),
+            "ss",
+            "203.0.113.32",
+            8388,
+            "old",
+            {
+                "cipher": "aes-256-gcm",
+                "password": "secret",
+                "plugin": "v2ray-plugin",
+                "plugin-opts": "tls;host=cdn.example.com",
+            },
+            "clash",
+            "",
+        )
+        rendered = render_uri(proxy, "RENAMED")
+        validate_round_trip(proxy, rendered)
+        self.assertIn("plugin=", rendered)
 
     def test_explicit_false_security_flag_can_be_normalized_away(self):
         proxy = ProxyConfig(
