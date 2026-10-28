@@ -36,9 +36,13 @@ def _is_threshold_eligible_upload(proxy: ProxyConfig) -> bool:
     if not error:
         return True
 
+    # Structured failure_reason is authoritative for new probe results.
     # Only a normal max-time timeout may use a partial speed measurement.
-    # Low-speed aborts (stalls) and all other curl/transport failures remain
-    # technical errors even if curl reported bytes/time and therefore Mbps.
+    reason = upload.get("failure_reason")
+    if reason is not None:
+        return reason == "timeout"
+
+    # Backward compatibility for old snapshots/results without failure_reason.
     return _is_plain_timeout(str(error))
 
 
