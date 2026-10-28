@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from proxyfilter.ingest import detect_and_parse
+from proxyfilter.ingest import detect_and_parse_compat
 from proxyfilter.model import ProxyConfig, SourceInfo
 from proxyfilter.security import check_static_security
 from proxyfilter.singbox_backend import SingBoxBackend
@@ -77,7 +77,7 @@ proxies:
     tls: false
     servername: example.com
 """
-        proxies, errors, detected = detect_and_parse(raw, "clash-test", "Clash Test")
+        proxies, errors, detected = detect_and_parse_compat(raw, "clash-test", "Clash Test")
 
         self.assertEqual(errors, [])
         self.assertEqual(detected, "clash")
