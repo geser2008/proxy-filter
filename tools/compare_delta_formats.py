@@ -4,7 +4,15 @@ from __future__ import annotations
 import argparse
 from collections import Counter, defaultdict
 import json
+from pathlib import Path
+import sys
 from typing import Any
+
+# Allow direct execution as `python3 tools/compare_delta_formats.py` without
+# requiring PYTHONPATH=. or installing proxy-filter as a package.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from proxyfilter.ingest import detect_and_parse_compat
 from proxyfilter.io import fetch_url
