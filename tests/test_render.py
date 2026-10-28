@@ -24,6 +24,64 @@ class RenderTests(unittest.TestCase):
         )
         self.assertTrue(rendered.startswith("vless://"))
 
+    def test_structured_vless_clash_semantics_render_losslessly(self):
+        proxy = ProxyConfig(
+            SourceInfo("clash", "Clash", "clash"),
+            "vless",
+            "203.0.113.11",
+            443,
+            "old",
+            {
+                "uuid": "4054fdc2-ee80-4419-8a8e-d937df4719e2",
+                "tls": True,
+                "servername": "cdn.example.com",
+                "client-fingerprint": "chrome",
+                "network": "ws",
+                "ws-opts": {
+                    "path": "/ws",
+                    "headers": {"Host": "cdn.example.com"},
+                },
+            },
+            "clash",
+            "",
+        )
+        rendered = render_uri(proxy, "RENAMED")
+        validate_round_trip(proxy, rendered)
+        self.assertIn("security=tls", rendered)
+        self.assertIn("type=ws", rendered)
+        self.assertIn("path=%2Fws", rendered)
+
+    def test_structured_vless_reality_semantics_render_losslessly(self):
+        proxy = ProxyConfig(
+            SourceInfo("singbox", "Sing-box", "sing-box"),
+            "vless",
+            "203.0.113.12",
+            443,
+            "old",
+            {
+                "uuid": "4054fdc2-ee80-4419-8a8e-d937df4719e2",
+                "flow": "xtls-rprx-vision",
+                "tls": {
+                    "enabled": True,
+                    "server_name": "example.com",
+                    "utls": {"enabled": True, "fingerprint": "chrome"},
+                    "reality": {
+                        "enabled": True,
+                        "public_key": "public-key",
+                        "short_id": "01",
+                    },
+                },
+                "transport": {"type": "tcp"},
+            },
+            "sing-box",
+            "",
+        )
+        rendered = render_uri(proxy, "RENAMED")
+        validate_round_trip(proxy, rendered)
+        self.assertIn("security=reality", rendered)
+        self.assertIn("pbk=public-key", rendered)
+        self.assertIn("sid=01", rendered)
+
     def test_vmess_round_trip(self):
         proxy = ProxyConfig(
             SOURCE,
@@ -53,6 +111,28 @@ class RenderTests(unittest.TestCase):
         self._round_trip(
             "trojan://secret@example.com:443?security=tls&sni=example.com&type=ws&path=%2Fws#old"
         )
+
+    def test_structured_trojan_tls_semantics_render_losslessly(self):
+        proxy = ProxyConfig(
+            SourceInfo("clash", "Clash", "clash"),
+            "trojan",
+            "203.0.113.21",
+            443,
+            "old",
+            {
+                "password": "secret",
+                "sni": "example.com",
+                "network": "ws",
+                "ws-opts": {"path": "/trojan", "headers": {"Host": "example.com"}},
+                "udp": True,
+            },
+            "clash",
+            "",
+        )
+        rendered = render_uri(proxy, "RENAMED")
+        validate_round_trip(proxy, rendered)
+        self.assertIn("security=tls", rendered)
+        self.assertIn("type=ws", rendered)
 
     def test_hysteria2_round_trip(self):
         self._round_trip(
