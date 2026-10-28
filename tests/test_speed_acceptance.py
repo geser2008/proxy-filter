@@ -2,12 +2,32 @@ import unittest
 from unittest.mock import patch
 
 from proxyfilter.model import ProxyConfig, SourceInfo
-from proxyfilter.speed import SpeedResult, check_download_many, check_upload_many
+from proxyfilter.speed import (
+    SpeedResult,
+    _curl_failure_reason,
+    check_download_many,
+    check_upload_many,
+)
 
 
 class SpeedAcceptanceTests(unittest.TestCase):
     def setUp(self):
         self.proxy = ProxyConfig(SourceInfo("test", "test"), "vless", "127.0.0.1", 443)
+
+    def test_curl_28_max_time_is_timeout(self):
+        self.assertEqual(
+            _curl_failure_reason(28, "curl: (28) Operation timed out after 30001 milliseconds"),
+            "timeout",
+        )
+
+    def test_curl_28_low_speed_abort_is_stalled_transfer(self):
+        self.assertEqual(
+            _curl_failure_reason(
+                28,
+                "curl: (28) Operation too slow. Less than 1 bytes/sec transferred the last 10 seconds",
+            ),
+            "stalled_transfer",
+        )
 
     def test_download_timeout_with_partial_high_mbps_passes_threshold(self):
         result = SpeedResult(
