@@ -5,6 +5,8 @@ from typing import Any
 import hashlib
 import json
 
+from .semantics import canonical_identity_params
+
 
 @dataclass(slots=True)
 class SourceInfo:
@@ -106,7 +108,7 @@ class ProxyConfig:
             "protocol": self.protocol.lower(),
             "server": self.server.strip().lower(),
             "port": int(self.port),
-            "params": self._canonical_params(self.params),
+            "params": canonical_identity_params(self.protocol, self.params),
         }
 
     @staticmethod
