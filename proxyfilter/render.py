@@ -6,9 +6,10 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, urlencode
 
+from .identity_semantics import canonical_identity_params
 from .ingest import parse_uri
 from .model import ProxyConfig, SourceInfo
-from .semantics import canonical_identity_params
+from .quic_render import render_quic_uri
 
 
 class RenderError(ValueError):
@@ -440,34 +441,11 @@ def _semantic_generic_uri(proxy: ProxyConfig, name: str) -> str:
 
 def _generic_uri(proxy: ProxyConfig, name: str) -> str:
     protocol = proxy.protocol.lower()
-    params = proxy.params
-
-    if protocol == "vless":
+    if protocol in {"vless", "trojan"}:
         return _semantic_generic_uri(proxy, name)
-    if protocol == "trojan":
-        return _semantic_generic_uri(proxy, name)
-    if protocol in {"hysteria2", "hy2"}:
-        userinfo = quote(_require_text(params.get("password"), f"{protocol} password"), safe="")
-        excluded = {"password"}
-        protocol = "hysteria2"
-    elif protocol == "tuic":
-        uuid = quote(_require_text(params.get("uuid"), "tuic uuid"), safe="")
-        password = params.get("password")
-        if password is None:
-            userinfo = uuid
-        else:
-            userinfo = f"{uuid}:{quote(_require_text(password, 'tuic password'), safe='')}"
-        excluded = {"uuid", "password"}
-    else:
-        raise RenderError(f"unsupported generic URI protocol: {protocol}")
-
-    query = urlencode(_query_items(params, excluded), doseq=True)
-    uri = f"{protocol}://{userinfo}@{_host_for_uri(proxy.server)}:{int(proxy.port)}"
-    if query:
-        uri += "?" + query
-    if name:
-        uri += "#" + quote(name, safe="")
-    return uri
+    if protocol in {"hysteria2", "hy2", "tuic"}:
+        return render_quic_uri(proxy, name)
+    raise RenderError(f"unsupported generic URI protocol: {protocol}")
 
 
 def _vmess_uri(proxy: ProxyConfig, name: str) -> str:
