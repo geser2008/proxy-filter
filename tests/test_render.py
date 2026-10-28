@@ -151,7 +151,7 @@ class RenderTests(unittest.TestCase):
             "?plugin=v2ray-plugin%3Btls%3Bhost%3Dexample.com#old"
         )
 
-    def test_typed_query_value_is_rejected_instead_of_guessed(self):
+    def test_explicit_false_security_flag_can_be_normalized_away(self):
         proxy = ProxyConfig(
             SOURCE,
             "vless",
@@ -161,8 +161,20 @@ class RenderTests(unittest.TestCase):
             {"uuid": "550e8400-e29b-41d4-a716-446655440000", "allowInsecure": False},
         )
         result = render_proxy(proxy, rename_template="{flag} {country_code}")
+        self.assertTrue(result.ok, result.error)
+
+    def test_unknown_typed_field_is_rejected_instead_of_silently_dropped(self):
+        proxy = ProxyConfig(
+            SOURCE,
+            "vless",
+            "203.0.113.41",
+            443,
+            "old",
+            {"uuid": "550e8400-e29b-41d4-a716-446655440000", "future-option": True},
+        )
+        result = render_proxy(proxy, rename_template="{flag} {country_code}")
         self.assertFalse(result.ok)
-        self.assertIn("cannot be represented losslessly", result.error or "")
+        self.assertIn("unsupported source field", result.error or "")
 
     def test_output_name_uses_geo_and_metrics(self):
         proxy = ProxyConfig(SOURCE, "ss", "203.0.113.50", 8388, "old", {"method": "aes-256-gcm", "password": "secret"})
