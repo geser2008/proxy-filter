@@ -80,7 +80,7 @@ class XHTTPTransportTests(unittest.TestCase):
             + quote(json.dumps(extra, separators=(",", ":")), safe=""),
             self.source,
         )
-        self.assertIsInstance(proxy.identity_payload()["params"]["transport"]["extra"], dict)
+        self.assertIsInstance(proxy.semantic_payload()["params"]["transport"]["extra"], dict)
         rendered = render_uri(proxy, "roundtrip")
         self.assertIn("type=xhttp", rendered)
         self.assertIn("extra=", rendered)
