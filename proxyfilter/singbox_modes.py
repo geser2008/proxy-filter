@@ -111,6 +111,28 @@ class SingBoxBackend(_MappedSingBoxBackend):
         }
         out = super()._render_outbound(mapped_proxy)
 
+        # Do not repair Reality share links by enabling uTLS when the source URI
+        # did not request a fingerprint.  The generated standard JSON must keep
+        # the source semantics and let ``sing-box check`` reject an incomplete
+        # Reality configuration. Explicit fp/client-fingerprint/fingerprint
+        # values are still mapped by the underlying mapper.
+        security = str(original_params.get("security") or "").strip().lower()
+        tls_value = original_params.get("tls")
+        tls_text = "" if tls_value is None or isinstance(tls_value, dict) else str(tls_value).strip().lower()
+        reality_opts = original_params.get("reality-opts")
+        is_reality = (
+            security == "reality"
+            or tls_text == "reality"
+            or (isinstance(reality_opts, dict) and bool(reality_opts))
+        )
+        has_explicit_fingerprint = any(
+            key in original_params for key in ("fp", "client-fingerprint", "fingerprint")
+        )
+        if is_reality and not has_explicit_fingerprint:
+            tls = out.get("tls")
+            if isinstance(tls, dict):
+                tls.pop("utls", None)
+
         for key, value in original_params.items():
             if key in _CONSUMED_URI_FIELDS:
                 continue
