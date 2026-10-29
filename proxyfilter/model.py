@@ -5,7 +5,11 @@ from typing import Any
 import hashlib
 import json
 
-from .identity_semantics import canonical_identity_params, canonical_identity_protocol
+from .identity_semantics import (
+    canonical_identity_params,
+    canonical_identity_protocol,
+    canonical_uri_identity_params,
+)
 
 
 @dataclass(slots=True)
@@ -104,11 +108,15 @@ class ProxyConfig:
         self.sources = self._merge_source_lists(self.provenance_sources(), other.provenance_sources())
 
     def identity_payload(self) -> dict[str, Any]:
+        if self.original_format.endswith("-uri"):
+            params = canonical_uri_identity_params(self.protocol, self.params)
+        else:
+            params = canonical_identity_params(self.protocol, self.params)
         return {
             "protocol": canonical_identity_protocol(self.protocol),
             "server": self.server.strip().lower(),
             "port": int(self.port),
-            "params": canonical_identity_params(self.protocol, self.params),
+            "params": params,
         }
 
     @staticmethod
