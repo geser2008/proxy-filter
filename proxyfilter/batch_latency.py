@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import socket
@@ -20,11 +21,15 @@ from .model import ProxyConfig
 from .singbox_backend import SingBoxBackend
 
 
+_OUTBOUND_INDEX_RE = re.compile(r"\boutbounds?\[(\d+)\]")
+
+
 @dataclass(slots=True)
 class BatchLatencyResult:
     ok: bool
     latency_ms: float | None = None
     error: str | None = None
+    category: str | None = None
 
 
 def _free_port(host: str) -> int:
@@ -54,16 +59,20 @@ def _api_delay(host: str, port: int, tag: str, url: str, timeout: float) -> Batc
             payload = json.loads(response.read().decode("utf-8"))
         delay = payload.get("delay")
         if delay is None:
-            return BatchLatencyResult(False, error=f"missing delay in Clash API response: {payload!r}")
+            return BatchLatencyResult(False, error=f"missing delay in Clash API response: {payload!r}", category="runtime")
         return BatchLatencyResult(True, latency_ms=float(delay))
     except HTTPError as exc:
         try:
             detail = exc.read().decode("utf-8", errors="replace").strip()
         except Exception:
             detail = ""
-        return BatchLatencyResult(False, error=f"clash_api_http_{exc.code}: {detail or exc.reason}")
+        return BatchLatencyResult(
+            False,
+            error=f"clash_api_http_{exc.code}: {detail or exc.reason}",
+            category="runtime",
+        )
     except (URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as exc:
-        return BatchLatencyResult(False, error=str(exc))
+        return BatchLatencyResult(False, error=str(exc), category="runtime")
 
 
 def _render_batch_config(
@@ -103,6 +112,16 @@ def _render_batch_config(
     return config, tag_map
 
 
+def _failed_outbound_index(error: str) -> int | None:
+    match = _OUTBOUND_INDEX_RE.search(error or "")
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
 def _run_batch(
     proxies: list[ProxyConfig],
     engine: SingBoxBackend,
@@ -111,21 +130,73 @@ def _run_batch(
     timeout: float,
     workers: int,
 ) -> dict[str, BatchLatencyResult]:
+    """Validate and run one latency batch.
+
+    Mapper/render failures and sing-box check failures are attributed to the
+    individual proxy and removed from the batch. The remaining valid outbounds
+    are then started together and tested through the Clash delay API.
+    """
     engine.runtime_dir.mkdir(parents=True, exist_ok=True)
     runtime = Path(tempfile.mkdtemp(prefix="latency-batch-", dir=engine.runtime_dir))
     config_path = runtime / "config.json"
     log_path = runtime / "sing-box.log"
     api_port = _free_port(engine.listen_host)
     process: subprocess.Popen[str] | None = None
+    config_failures: dict[str, BatchLatencyResult] = {}
+    remaining: list[ProxyConfig] = []
 
     try:
-        config, tag_map = _render_batch_config(engine, proxies, api_port, url)
-        config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        # Mapper errors already identify the offending proxy, so isolate them
+        # before building the shared sing-box config.
+        for proxy in proxies:
+            try:
+                engine._render_outbound(proxy)
+            except Exception as exc:
+                config_failures[proxy.ensure_id()] = BatchLatencyResult(
+                    False,
+                    error=str(exc),
+                    category="config",
+                )
+            else:
+                remaining.append(proxy)
 
-        check = subprocess.run([engine.command, "check", "-c", str(config_path)], text=True, capture_output=True, timeout=30)
-        if check.returncode != 0:
-            detail = (check.stderr or check.stdout).strip()
-            raise RuntimeError(detail or "sing-box batch config check failed")
+        if not remaining:
+            return config_failures
+
+        # sing-box check reports the failing outbound index. Remove only that
+        # proxy and repeat until the shared batch config is valid.
+        while remaining:
+            config, tag_map = _render_batch_config(engine, remaining, api_port, url)
+            config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+            check = subprocess.run(
+                [engine.command, "check", "-c", str(config_path)],
+                text=True,
+                capture_output=True,
+                timeout=30,
+            )
+            if check.returncode == 0:
+                break
+
+            detail = (check.stderr or check.stdout).strip() or "sing-box batch config check failed"
+            failed_index = _failed_outbound_index(detail)
+            if failed_index is None or failed_index >= len(remaining):
+                raise RuntimeError(detail)
+
+            failed_proxy = remaining.pop(failed_index)
+            config_failures[failed_proxy.ensure_id()] = BatchLatencyResult(
+                False,
+                error=detail,
+                category="config",
+            )
+
+        if not remaining:
+            return config_failures
+
+        # Rebuild once after the last removal so tag_map exactly matches the
+        # config that is about to run.
+        config, tag_map = _render_batch_config(engine, remaining, api_port, url)
+        config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
         with log_path.open("w", encoding="utf-8") as log_fh:
             process = subprocess.Popen(
@@ -149,9 +220,10 @@ def _run_batch(
                 try:
                     results[tag] = future.result()
                 except Exception as exc:
-                    results[tag] = BatchLatencyResult(False, error=str(exc))
+                    results[tag] = BatchLatencyResult(False, error=str(exc), category="runtime")
 
-        return {tag_map[tag].ensure_id(): result for tag, result in results.items()}
+        config_failures.update({tag_map[tag].ensure_id(): result for tag, result in results.items()})
+        return config_failures
     finally:
         if process is not None and process.poll() is None:
             try:
@@ -181,7 +253,7 @@ def _http_code(result: BatchLatencyResult) -> int | None:
 
 
 def _is_retryable_transient(result: BatchLatencyResult) -> bool:
-    if result.ok or not result.error:
+    if result.ok or not result.error or result.category == "config":
         return False
     if _http_code(result) in {503, 504}:
         return True
@@ -211,21 +283,21 @@ def check_latency_batched(
     retry_503_batch_size: int = 16,
     fallback_url: str | None = None,
 ) -> tuple[list[ProxyConfig], list[ProxyConfig]]:
-    """Run sing-box URL tests in batches.
+    """Run sing-box validation and URL tests in batches.
+
+    ``latency`` is the production compatibility/reachability gate: mapper and
+    ``sing-box check`` failures are rejected as ``category=config``; valid
+    configs are started and exercised by a real URL test. A broken config does
+    not reject the rest of its batch.
 
     ``max_ms < 0`` disables latency-threshold rejection while keeping a
     successful URL test mandatory.
 
-    When ``fallback_url`` is configured, every failed primary URL test gets one
-    attempt against that alternate URL and the primary URL is not retried. This
-    is the normal pipeline mode: latency is an auxiliary reachability/ordering
-    signal, so an alternate provider avoids rejecting a proxy merely because the
-    primary test endpoint is unavailable through it.
+    When ``fallback_url`` is configured, failed runtime URL tests get one
+    attempt against that alternate URL. Config failures are never retried.
 
-    When no fallback URL is configured, the legacy behavior is retained for
-    direct callers: transient 503/504/timeout/network failures get one retry
-    against the same URL. ``retry_503_batch_size`` remains the retry/fallback
-    batch size for backward compatibility.
+    When no fallback URL is configured, transient 503/504/timeout/network
+    failures get one retry against the same URL.
     """
     passed: list[ProxyConfig] = []
     rejected: list[ProxyConfig] = []
@@ -246,13 +318,14 @@ def check_latency_batched(
         )
 
     if fallback_url:
-        retry_candidates = [
-            proxy
-            for proxy in proxies
-            if not first_results.get(
-                proxy.ensure_id(), BatchLatencyResult(False, error="missing batch result")
-            ).ok
-        ]
+        retry_candidates = []
+        for proxy in proxies:
+            result = first_results.get(
+                proxy.ensure_id(),
+                BatchLatencyResult(False, error="missing batch result", category="runtime"),
+            )
+            if not result.ok and result.category != "config":
+                retry_candidates.append(proxy)
         second_url = fallback_url
         second_label = "fallback"
     else:
@@ -261,7 +334,7 @@ def check_latency_batched(
             for proxy in proxies
             if _is_retryable_transient(
                 first_results.get(
-                    proxy.ensure_id(), BatchLatencyResult(False, error="missing batch result")
+                    proxy.ensure_id(), BatchLatencyResult(False, error="missing batch result", category="runtime")
                 )
             )
         ]
@@ -296,7 +369,10 @@ def check_latency_batched(
 
     for proxy in proxies:
         proxy_id = proxy.ensure_id()
-        first = first_results.get(proxy_id, BatchLatencyResult(False, error="missing batch result"))
+        first = first_results.get(
+            proxy_id,
+            BatchLatencyResult(False, error="missing batch result", category="runtime"),
+        )
         result = final_results.get(proxy_id, first)
         proxy.tests.latency_ms = result.latency_ms
         threshold_enabled = max_ms >= 0
@@ -311,6 +387,7 @@ def check_latency_batched(
             "latency_ms": first.latency_ms,
             "http_code": _http_code(first),
             "error": first.error,
+            "category": first.category,
         }]
         if proxy_id in second_attempted:
             attempts.append({
@@ -319,19 +396,21 @@ def check_latency_batched(
                 "latency_ms": result.latency_ms,
                 "http_code": _http_code(result),
                 "error": result.error,
+                "category": result.category,
             })
         proxy.tests.latency = {
             "status": "pass" if passed_threshold else "fail",
             "latency_ms": result.latency_ms,
             "http_code": _http_code(result),
             "error": result.error,
+            "category": result.category,
             "url": second_url if proxy_id in second_attempted else url,
             "fallback_used": bool(fallback_url and proxy_id in second_attempted),
             "method": "sing-box-clash-api",
             "attempts": attempts,
         }
         if not result.ok:
-            proxy.tests.status = "rejected_latency_error"
+            proxy.tests.status = "rejected_latency_config" if result.category == "config" else "rejected_latency_error"
             rejected.append(proxy)
         elif not passed_threshold:
             proxy.tests.status = "rejected_latency_threshold"
