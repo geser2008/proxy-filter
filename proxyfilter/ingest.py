@@ -25,29 +25,24 @@ def _contains_proxy_uri(text: str) -> bool:
     return any(URI_RE.match(line.strip()) for line in text.splitlines())
 
 
-def _is_uri_subscription_format(fmt: str) -> bool:
-    """Return True only for plain URI lists, optionally wrapped in Base64 layers."""
-    parts = fmt.split("/")
-    return bool(parts) and parts[-1] == "plain" and all(part == "base64" for part in parts[:-1])
-
-
 def detect_and_parse(raw: bytes | str, source_id: str, source_name: str) -> tuple[list[ProxyConfig], list[dict], str]:
-    """Production ingest entry point.
+    """Parse the production URI-only input formats: plain TXT and Base64(TXT)."""
+    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+    text = text.lstrip("\ufeff").strip()
 
-    The current service version is intentionally URI-only. Plain URI lists and
-    Base64-wrapped URI lists are accepted. Structured Clash/Mihomo, Xray/V2Ray,
-    and sing-box inputs remain implemented through ``detect_and_parse_compat``
-    for tests and the future multi-format refactor, but are disabled here.
-    """
-    proxies, errors, detected_format = detect_and_parse_compat(raw, source_id, source_name)
-    if detected_format == "unknown" or _is_uri_subscription_format(detected_format):
+    if _contains_proxy_uri(text):
+        proxies, errors = _parse_plain(text, source_id, source_name, "plain")
+        return proxies, errors, "plain"
+
+    decoded = _try_base64_text(text)
+    if decoded is not None:
+        proxies, errors, nested = detect_and_parse(decoded, source_id, source_name)
+        detected_format = f"base64/{nested}"
+        for proxy in proxies:
+            proxy.source.format = detected_format
         return proxies, errors, detected_format
-    return [], [
-        {
-            "reason": "unsupported_input_format_uri_only",
-            "format": detected_format,
-        }
-    ], detected_format
+
+    return [], [{"reason": "unsupported_subscription_format"}], "unknown"
 
 
 def detect_and_parse_compat(raw: bytes | str, source_id: str, source_name: str) -> tuple[list[ProxyConfig], list[dict], str]:
