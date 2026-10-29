@@ -282,6 +282,7 @@ def check_latency_batched(
     batch_size: int = 128,
     retry_503_batch_size: int = 16,
     fallback_url: str | None = None,
+    recovery_enabled: bool = False,
 ) -> tuple[list[ProxyConfig], list[ProxyConfig]]:
     """Run sing-box validation and URL tests in batches.
 
@@ -293,11 +294,11 @@ def check_latency_batched(
     ``max_ms < 0`` disables latency-threshold rejection while keeping a
     successful URL test mandatory.
 
-    When ``fallback_url`` is configured, failed runtime URL tests get one
-    attempt against that alternate URL. Config failures are never retried.
-
-    When no fallback URL is configured, transient 503/504/timeout/network
-    failures get one retry against the same URL.
+    Recovery is opt-in. When ``recovery_enabled`` is false, every proxy gets
+    exactly one primary URL test. When enabled with ``fallback_url`` configured,
+    failed runtime URL tests get one attempt against that alternate URL. Config
+    failures are never retried. When enabled without a fallback URL, transient
+    503/504/timeout/network failures get one retry against the same URL.
     """
     passed: list[ProxyConfig] = []
     rejected: list[ProxyConfig] = []
@@ -317,7 +318,11 @@ def check_latency_batched(
             f"checked={min(offset + len(batch), len(proxies))}/{len(proxies)}"
         )
 
-    if fallback_url:
+    if not recovery_enabled:
+        retry_candidates: list[ProxyConfig] = []
+        second_url = url
+        second_label = "retry"
+    elif fallback_url:
         retry_candidates = []
         for proxy in proxies:
             result = first_results.get(

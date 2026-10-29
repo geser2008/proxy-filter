@@ -290,6 +290,7 @@ def process_proxies(
                 **common_latency_args,
                 batch_size=int(latency_cfg.get("batch_size", 128)),
                 fallback_url=fallback_url,
+                recovery_enabled=bool(latency_cfg.get("recovery_enabled", False)),
             )
         elif latency_mode == "curl":
             latency_ok, latency_rejected = check_latency_many(

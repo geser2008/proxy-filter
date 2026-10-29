@@ -23,7 +23,36 @@ class BatchLatencyRetryTests(unittest.TestCase):
         return proxy
 
     @patch("proxyfilter.batch_latency._run_batch")
-    def test_retries_503_504_and_timeout_once(self, run_batch) -> None:
+    def test_recovery_disabled_by_default(self, run_batch) -> None:
+        broken = self._proxy("p0")
+        run_batch.return_value = {
+            broken.id: BatchLatencyResult(
+                False,
+                error='clash_api_http_504: {"message":"Timeout"}',
+                category="runtime",
+            ),
+        }
+
+        passed, rejected = check_latency_batched(
+            [broken],
+            object(),
+            url="https://example.com/generate_204",
+            timeout=8,
+            max_ms=800,
+            workers=1,
+            batch_size=128,
+            fallback_url="https://example.net/trace",
+        )
+
+        self.assertEqual(passed, [])
+        self.assertEqual([p.id for p in rejected], [broken.id])
+        self.assertEqual(run_batch.call_count, 1)
+        self.assertEqual(len(broken.tests.latency["attempts"]), 1)
+        self.assertFalse(broken.tests.latency["fallback_used"])
+        self.assertEqual(broken.tests.latency["url"], "https://example.com/generate_204")
+
+    @patch("proxyfilter.batch_latency._run_batch")
+    def test_retries_503_504_and_timeout_once_when_recovery_enabled(self, run_batch) -> None:
         p503 = self._proxy("p1")
         p504 = self._proxy("p2")
         ptimeout = self._proxy("p3")
@@ -52,6 +81,7 @@ class BatchLatencyRetryTests(unittest.TestCase):
             workers=32,
             batch_size=128,
             retry_503_batch_size=16,
+            recovery_enabled=True,
         )
 
         self.assertEqual({p.id for p in passed}, {p503.id, p504.id, pok.id})
