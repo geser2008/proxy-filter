@@ -117,30 +117,19 @@ class ProxyConfig:
         }
 
     def identity_payload(self) -> dict[str, Any]:
-        """Stable identity used for IDs and production deduplication.
+        """Conservative identity used for IDs and production deduplication.
 
-        URI inputs keep every parameter so unknown/future semantics cannot be
-        collapsed accidentally. Structured compatibility inputs retain the
-        historical semantic identity until that compatibility layer is removed.
+        Every parsed parameter participates in identity. Unknown, empty and future
+        parameters are preserved so deduplication cannot collapse configurations
+        whose semantics proxy-filter does not understand yet. Documented URI
+        equivalences are applied during ingest before this payload is built.
         """
-        if self.original_format.endswith("-uri"):
-            params = canonical_uri_identity_params(self.protocol, self.params)
-        else:
-            params = canonical_identity_params(self.protocol, self.params)
         return {
             "protocol": canonical_identity_protocol(self.protocol),
             "server": self.server.strip().lower(),
             "port": int(self.port),
-            "params": params,
+            "params": canonical_uri_identity_params(self.protocol, self.params),
         }
-
-    @staticmethod
-    def _canonical_params(value: Any) -> Any:
-        if isinstance(value, dict):
-            return {k: ProxyConfig._canonical_params(value[k]) for k in sorted(value) if k not in {"name", "tag", "ps"}}
-        if isinstance(value, list):
-            return [ProxyConfig._canonical_params(v) for v in value]
-        return value
 
     def ensure_id(self) -> str:
         payload = json.dumps(self.identity_payload(), ensure_ascii=False, separators=(",", ":"), sort_keys=True)
