@@ -10,8 +10,8 @@ _speed.check_download_many = _speed_reliability.check_download_many
 _speed.check_upload_many = _speed_semantics.check_upload_many
 
 # Keep the existing import surface used by cli.py while routing the concrete
-# backend class through the dual standard/extended mode adapter.
+# backend class through automatic sing-box executable/mode discovery.
 from . import singbox_backend as _singbox_backend
-from .singbox_modes import SingBoxBackend as _ModeSingBoxBackend
+from .singbox_auto import SingBoxBackend as _AutoSingBoxBackend
 
-_singbox_backend.SingBoxBackend = _ModeSingBoxBackend
+_singbox_backend.SingBoxBackend = _AutoSingBoxBackend
