@@ -552,8 +552,8 @@ def render_uri(proxy: ProxyConfig, name: str | None = None) -> str:
 
 def validate_round_trip(proxy: ProxyConfig, uri: str) -> None:
     reparsed = parse_uri(uri, SourceInfo("render-check", "render-check", "plain"))
-    if reparsed.identity_payload() != proxy.identity_payload():
-        raise RenderError("rendered URI does not round-trip to the same connection identity")
+    if reparsed.semantic_payload() != proxy.semantic_payload():
+        raise RenderError("rendered URI does not round-trip to the same connection semantics")
 
 
 def _source_label(source_ids: list[str]) -> str:
