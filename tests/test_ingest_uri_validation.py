@@ -42,23 +42,23 @@ class URIValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate URI query parameter.*plugin"):
             parse_uri(uri, self.source)
 
-    def test_normalizes_lowercase_allowinsecure_alias(self) -> None:
+    def test_preserves_undocumented_lowercase_allowinsecure_key(self) -> None:
         uri = (
             "vless://00000000-0000-0000-0000-000000000001@example.com:443"
             "?encryption=none&security=tls&type=tcp&allowinsecure=1"
         )
         proxy = parse_uri(uri, self.source)
-        self.assertNotIn("allowinsecure", proxy.params)
-        self.assertEqual(proxy.params["allowInsecure"], "1")
-        self.assertTrue(proxy.identity_payload()["params"]["tls"]["insecure"])
+        self.assertEqual(proxy.params["allowinsecure"], "1")
+        self.assertNotIn("allowInsecure", proxy.params)
 
-    def test_rejects_duplicate_semantic_allowinsecure_alias(self) -> None:
+    def test_distinct_opaque_keys_are_not_treated_as_duplicate_semantics(self) -> None:
         uri = (
             "vless://00000000-0000-0000-0000-000000000001@example.com:443"
             "?encryption=none&security=tls&type=tcp&allowinsecure=1&allowInsecure=0"
         )
-        with self.assertRaisesRegex(ValueError, "duplicate semantic URI query parameter"):
-            parse_uri(uri, self.source)
+        proxy = parse_uri(uri, self.source)
+        self.assertEqual(proxy.params["allowinsecure"], "1")
+        self.assertEqual(proxy.params["allowInsecure"], "0")
 
     def test_accepts_plain_sip002_shadowsocks_userinfo(self) -> None:
         uri = (
