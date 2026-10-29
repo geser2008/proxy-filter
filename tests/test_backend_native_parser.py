@@ -56,6 +56,26 @@ class BackendModeTests(unittest.TestCase):
         self.assertEqual(out["type"], "vless")
         self.assertNotIn("link", out)
 
+    def test_standard_reality_without_fingerprint_does_not_inject_utls(self) -> None:
+        backend = SingBoxBackend(backend_mode="standard")
+        raw = (
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443"
+            "?security=reality&sni=example.com&pbk=key"
+        )
+        proxy = self._uri_proxy(
+            "vless",
+            raw,
+            {
+                "uuid": "00000000-0000-0000-0000-000000000001",
+                "security": "reality",
+                "sni": "example.com",
+                "pbk": "key",
+            },
+        )
+        out = backend._render_outbound(proxy)
+        self.assertTrue(out["tls"]["reality"]["enabled"])
+        self.assertNotIn("utls", out["tls"])
+
     def test_standard_mode_forwards_unmapped_uri_parameter_to_json(self) -> None:
         backend = SingBoxBackend(backend_mode="standard")
         raw = (
