@@ -75,7 +75,7 @@ def detect_and_parse_compat(raw: bytes | str, source_id: str, source_name: str) 
         proxies, errors = _parse_plain(text, source_id, source_name, "plain")
         return proxies, errors, "plain"
 
-    decoded = _try_base64_text(text)
+    decoded = _try_base64_text(text, allow_structured=True)
     if decoded is not None:
         proxies, errors, nested = detect_and_parse_compat(decoded, source_id, source_name)
         for proxy in proxies:
@@ -85,7 +85,7 @@ def detect_and_parse_compat(raw: bytes | str, source_id: str, source_name: str) 
     return [], [{"reason": "unsupported_subscription_format"}], "unknown"
 
 
-def _try_base64_text(text: str) -> str | None:
+def _try_base64_text(text: str, *, allow_structured: bool = False) -> str | None:
     compact = "".join(text.split())
     if len(compact) < 16 or re.search(r"[^A-Za-z0-9+/=_-]", compact):
         return None
@@ -94,7 +94,9 @@ def _try_base64_text(text: str) -> str | None:
         try:
             blob = base64.b64decode(padded, altchars=altchars, validate=False)
             decoded = blob.decode("utf-8")
-            if _contains_proxy_uri(decoded) or "proxies:" in decoded or '"outbounds"' in decoded:
+            if _contains_proxy_uri(decoded):
+                return decoded
+            if allow_structured and ("proxies:" in decoded or '"outbounds"' in decoded):
                 return decoded
         except (binascii.Error, UnicodeDecodeError, ValueError):
             continue
