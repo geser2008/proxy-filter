@@ -60,7 +60,7 @@ def _bandwidth_mbps(value: Any) -> Any:
             unit = match.group(2)
             factors = {
                 "bps": Decimal(1) / Decimal(1_000_000), "Bps": Decimal(8) / Decimal(1_000_000),
-                "Kbps": Decimal(1) / Decimal(1_000), "KBps": Decimal(8) / Decimal(1_000_000),
+                "Kbps": Decimal(1) / Decimal(1_000), "KBps": Decimal(8) / Decimal(1_000),
                 "Mbps": Decimal(1), "MBps": Decimal(8), "Gbps": Decimal(1000),
                 "GBps": Decimal(8000), "Tbps": Decimal(1_000_000), "TBps": Decimal(8_000_000),
             }
