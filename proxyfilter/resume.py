@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
 
 from .model import ProxyConfig
 
@@ -38,7 +39,6 @@ STAGE_FILES = {
 }
 
 _DIAGNOSTIC_STAGES = {"tcp", "core"}
-_ACTIVE_UNTIL: str | None = None
 
 
 def stage_index(stage: str) -> int:
@@ -48,19 +48,27 @@ def stage_index(stage: str) -> int:
         raise ValueError(f"unknown pipeline stage: {stage}") from exc
 
 
+def _cli_until() -> str | None:
+    args = sys.argv[1:]
+    for index, item in enumerate(args):
+        if item == "--until" and index + 1 < len(args):
+            return args[index + 1]
+        if item.startswith("--until="):
+            return item.split("=", 1)[1]
+    return None
+
+
 def stage_should_run(stage: str, resume_from: str | None) -> bool:
     # tcp/core are retained as explicit diagnostics, but are no longer part of
-    # the normal production path. validate_resume_range() records the CLI target
-    # before process_proxies() starts. Direct library callers that do not set a
-    # target keep the historical stage-order behavior for compatibility.
-    if _ACTIVE_UNTIL is not None and stage in _DIAGNOSTIC_STAGES and _ACTIVE_UNTIL != stage:
+    # the normal CLI production path. Direct library callers without --until
+    # keep historical stage-order behavior for compatibility.
+    until = _cli_until()
+    if until is not None and stage in _DIAGNOSTIC_STAGES and until != stage:
         return False
     return resume_from is None or stage_index(stage) > stage_index(resume_from)
 
 
 def validate_resume_range(resume_from: str | None, until: str) -> None:
-    global _ACTIVE_UNTIL
-    _ACTIVE_UNTIL = until
     if resume_from is None:
         return
     if stage_index(until) < stage_index(resume_from):
