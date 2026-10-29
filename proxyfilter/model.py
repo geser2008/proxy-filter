@@ -107,7 +107,22 @@ class ProxyConfig:
     def merge_sources_from(self, other: "ProxyConfig") -> None:
         self.sources = self._merge_source_lists(self.provenance_sources(), other.provenance_sources())
 
+    def semantic_payload(self) -> dict[str, Any]:
+        """Canonical semantic view used by compatibility/render validation."""
+        return {
+            "protocol": canonical_identity_protocol(self.protocol),
+            "server": self.server.strip().lower(),
+            "port": int(self.port),
+            "params": canonical_identity_params(self.protocol, self.params),
+        }
+
     def identity_payload(self) -> dict[str, Any]:
+        """Stable identity used for IDs and production deduplication.
+
+        URI inputs keep every parameter so unknown/future semantics cannot be
+        collapsed accidentally. Structured compatibility inputs retain the
+        historical semantic identity until that compatibility layer is removed.
+        """
         if self.original_format.endswith("-uri"):
             params = canonical_uri_identity_params(self.protocol, self.params)
         else:
