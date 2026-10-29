@@ -29,7 +29,7 @@ class URIExtensionTests(unittest.TestCase):
 
     def test_camel_case_packet_encoding_maps_and_round_trips(self) -> None:
         proxy = self._vless("encryption=none&packetEncoding=xudp&type=tcp")
-        self.assertEqual(proxy.identity_payload()["params"]["packet_encoding"], "xudp")
+        self.assertEqual(proxy.semantic_payload()["params"]["packet_encoding"], "xudp")
         out = self.backend._render_outbound(proxy)
         self.assertEqual(out["packet_encoding"], "xudp")
         rendered = self._round_trip(proxy)
@@ -40,7 +40,7 @@ class URIExtensionTests(unittest.TestCase):
             "encryption=none&security=tls&type=ws&path=%2Fws&host=cdn.example.com"
             "&ed=2048&eh=Sec-WebSocket-Protocol"
         )
-        transport = proxy.identity_payload()["params"]["transport"]
+        transport = proxy.semantic_payload()["params"]["transport"]
         self.assertEqual(transport["max_early_data"], 2048)
         self.assertEqual(transport["early_data_header_name"], "Sec-WebSocket-Protocol")
         out = self.backend._render_outbound(proxy)
@@ -56,7 +56,7 @@ class URIExtensionTests(unittest.TestCase):
             "&cs=TLS_AES_128_GCM_SHA256%3ATLS_AES_256_GCM_SHA384"
         )
         self.assertEqual(
-            proxy.identity_payload()["params"]["tls"]["cipher_suites"],
+            proxy.semantic_payload()["params"]["tls"]["cipher_suites"],
             ["TLS_AES_128_GCM_SHA256", "TLS_AES_256_GCM_SHA384"],
         )
         out = self.backend._render_outbound(proxy)
@@ -72,7 +72,7 @@ class URIExtensionTests(unittest.TestCase):
             "encryption=none&security=reality&type=tcp&pbk=public-key&sid=01"
             "&sni=example.com&spx=%2Fcrawler%3Fx%3D1"
         )
-        reality = proxy.identity_payload()["params"]["tls"]["reality"]
+        reality = proxy.semantic_payload()["params"]["tls"]["reality"]
         self.assertEqual(reality["spider_x"], "/crawler?x=1")
         rendered = self._round_trip(proxy)
         self.assertIn("spx=%2Fcrawler%3Fx%3D1", rendered)
@@ -84,7 +84,7 @@ class URIExtensionTests(unittest.TestCase):
             "encryption=none&security=tls&type=tcp&pcs=abcdef0123456789"
         )
         self.assertEqual(
-            proxy.identity_payload()["params"]["tls"]["peer_certificate_sha256"],
+            proxy.semantic_payload()["params"]["tls"]["peer_certificate_sha256"],
             "abcdef0123456789",
         )
         rendered = self._round_trip(proxy)
@@ -97,7 +97,7 @@ class URIExtensionTests(unittest.TestCase):
         proxy = self._vless(
             "encryption=none&security=tls&type=tcp&ech=" + quote(ech, safe="")
         )
-        self.assertEqual(proxy.identity_payload()["params"]["tls"]["ech"], ech)
+        self.assertEqual(proxy.semantic_payload()["params"]["tls"]["ech"], ech)
         rendered = self._round_trip(proxy)
         self.assertIn("ech=", rendered)
         with self.assertRaisesRegex(EngineError, "ECH"):
@@ -109,7 +109,7 @@ class URIExtensionTests(unittest.TestCase):
             "encryption=none&security=tls&type=tcp&fm="
             + quote(json.dumps(fm, separators=(",", ":")), safe="")
         )
-        self.assertEqual(proxy.identity_payload()["params"]["final_mask"], fm)
+        self.assertEqual(proxy.semantic_payload()["params"]["final_mask"], fm)
         rendered = self._round_trip(proxy)
         self.assertIn("fm=", rendered)
         with self.assertRaisesRegex(EngineError, "FinalMask"):
@@ -134,7 +134,7 @@ class URIExtensionTests(unittest.TestCase):
             "&upmbps=30&downmbps=200&sni=example.com",
             SOURCE,
         )
-        identity = proxy.identity_payload()["params"]
+        identity = proxy.semantic_payload()["params"]
         self.assertEqual(identity["server_ports"], ["20000:30000"])
         self.assertEqual(identity["up_mbps"], "30")
         self.assertEqual(identity["down_mbps"], "200")
