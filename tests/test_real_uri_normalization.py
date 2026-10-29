@@ -5,12 +5,12 @@ import json
 import unittest
 
 from proxyfilter.ingest import parse_uri
-from proxyfilter.model import SourceInfo
+from proxyfilter.model import ProxyConfig, SourceInfo
 from proxyfilter.render import render_uri, validate_round_trip
-from proxyfilter.uri_normalize import normalize_uri
 
 
 SOURCE = SourceInfo("test", "test", "plain")
+UUID = "00000000-0000-0000-0000-000000000001"
 
 
 class RealURINormalizationTests(unittest.TestCase):
@@ -25,6 +25,17 @@ class RealURINormalizationTests(unittest.TestCase):
         rendered = render_uri(proxy, "test")
         self.assertIn("type=tcp", rendered)
         validate_round_trip(proxy, rendered)
+
+    def test_vless_raw_and_tcp_have_same_identity(self) -> None:
+        raw = parse_uri(
+            f"vless://{UUID}@example.com:443?security=tls&type=raw&future_param=one",
+            SOURCE,
+        )
+        tcp = parse_uri(
+            f"vless://{UUID}@example.com:443?security=tls&type=tcp&future_param=one",
+            SOURCE,
+        )
+        self.assertEqual(raw.ensure_id(), tcp.ensure_id())
 
     def test_vmess_raw_transport_normalizes_to_tcp_and_round_trips(self) -> None:
         data = {
@@ -45,9 +56,29 @@ class RealURINormalizationTests(unittest.TestCase):
         rendered = render_uri(proxy, "test")
         validate_round_trip(proxy, rendered)
 
+    def test_vmess_raw_and_tcp_have_same_identity(self) -> None:
+        def build(net: str) -> str:
+            data = {
+                "v": "2",
+                "ps": "test",
+                "add": "203.0.113.10",
+                "port": "443",
+                "id": "1281acca-f21d-475c-bf04-eccbee7f8df2",
+                "net": net,
+                "future_param": "one",
+            }
+            return "vmess://" + base64.b64encode(
+                json.dumps(data, separators=(",", ":")).encode()
+            ).decode().rstrip("=")
+
+        self.assertEqual(
+            parse_uri(build("raw"), SOURCE).ensure_id(),
+            parse_uri(build("tcp"), SOURCE).ensure_id(),
+        )
+
     def test_unknown_query_fields_are_preserved(self) -> None:
         uri = (
-            "vless://00000000-0000-0000-0000-000000000001@example.com:443"
+            f"vless://{UUID}@example.com:443"
             "?security=tls&type=ws&path=%2Fws&note=%40FreeOnlineVPN&Telegram=%40channel"
         )
         proxy = parse_uri(uri, SOURCE)
@@ -96,76 +127,44 @@ class RealURINormalizationTests(unittest.TestCase):
 
     def test_unknown_query_fields_participate_in_uri_identity(self) -> None:
         first = parse_uri(
-            "vless://00000000-0000-0000-0000-000000000001@example.com:443"
-            "?security=tls&type=ws&path=%2Fws&future_param=one",
+            f"vless://{UUID}@example.com:443?security=tls&type=ws&path=%2Fws&future_param=one",
             SOURCE,
         )
         second = parse_uri(
-            "vless://00000000-0000-0000-0000-000000000001@example.com:443"
-            "?security=tls&type=ws&path=%2Fws&future_param=two",
+            f"vless://{UUID}@example.com:443?security=tls&type=ws&path=%2Fws&future_param=two",
             SOURCE,
         )
         self.assertNotEqual(first.ensure_id(), second.ensure_id())
 
     def test_query_order_does_not_change_uri_identity(self) -> None:
         first = parse_uri(
-            "vless://00000000-0000-0000-0000-000000000001@example.com:443"
-            "?security=tls&type=ws&path=%2Fws&future_param=one",
+            f"vless://{UUID}@example.com:443?security=tls&type=ws&path=%2Fws&future_param=one",
             SOURCE,
         )
         second = parse_uri(
-            "vless://00000000-0000-0000-0000-000000000001@example.com:443"
-            "?future_param=one&path=%2Fws&type=ws&security=tls",
+            f"vless://{UUID}@example.com:443?future_param=one&path=%2Fws&type=ws&security=tls",
             SOURCE,
         )
         self.assertEqual(first.ensure_id(), second.ensure_id())
 
-    def test_normalized_generic_uri_preserves_opaque_and_empty_fields(self) -> None:
-        uri = (
-            "vless://00000000-0000-0000-0000-000000000001@Example.COM:443"
-            "?z=&type=raw&future_param=one&security=tls#Name"
+    def test_identity_is_conservative_independent_of_original_format(self) -> None:
+        first = ProxyConfig(
+            SOURCE,
+            "vless",
+            "example.com",
+            443,
+            params={"uuid": UUID, "security": "tls", "future_param": "one"},
+            original_format="clash",
         )
-        normalized = normalize_uri(uri, SOURCE)
-        self.assertEqual(
-            normalized,
-            "vless://00000000-0000-0000-0000-000000000001@example.com:443"
-            "?future_param=one&security=tls&type=tcp&z=#Name",
+        second = ProxyConfig(
+            SOURCE,
+            "vless",
+            "example.com",
+            443,
+            params={"uuid": UUID, "security": "tls", "future_param": "two"},
+            original_format="clash",
         )
-        self.assertEqual(normalize_uri(normalized, SOURCE), normalized)
-
-    def test_normalized_vmess_preserves_unknown_fields_and_is_idempotent(self) -> None:
-        data = {
-            "v": "2",
-            "ps": "Name",
-            "add": "Example.COM",
-            "port": "443",
-            "id": "1281acca-f21d-475c-bf04-eccbee7f8df2",
-            "net": "raw",
-            "future_param": "opaque",
-            "empty": "",
-        }
-        token = base64.b64encode(json.dumps(data, separators=(",", ":")).encode()).decode().rstrip("=")
-        normalized = normalize_uri("vmess://" + token, SOURCE)
-        reparsed = parse_uri(normalized, SOURCE)
-        self.assertEqual(reparsed.server, "example.com")
-        self.assertEqual(reparsed.params["net"], "tcp")
-        self.assertEqual(reparsed.params["future_param"], "opaque")
-        self.assertEqual(reparsed.params["empty"], "")
-        self.assertEqual(normalize_uri(normalized, SOURCE), normalized)
-
-    def test_normalized_shadowsocks_preserves_opaque_query_fields(self) -> None:
-        uri = (
-            "ss://YWVzLTI1Ni1nY206c2VjcmV0@Example.COM:8388"
-            "?future=x&empty=&plugin=v2ray-plugin%3Btls%3Bhost%3Dcdn.example.com#Name"
-        )
-        normalized = normalize_uri(uri, SOURCE)
-        reparsed = parse_uri(normalized, SOURCE)
-        self.assertEqual(reparsed.server, "example.com")
-        self.assertEqual(reparsed.params["future"], "x")
-        self.assertEqual(reparsed.params["empty"], "")
-        self.assertEqual(reparsed.params["plugin"], "v2ray-plugin")
-        self.assertEqual(reparsed.params["plugin_opts"], "tls;host=cdn.example.com")
-        self.assertEqual(normalize_uri(normalized, SOURCE), normalized)
+        self.assertNotEqual(first.ensure_id(), second.ensure_id())
 
 
 if __name__ == "__main__":
