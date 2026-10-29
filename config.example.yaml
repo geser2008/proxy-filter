@@ -151,7 +151,13 @@ diversity:
 
 engine:
   backend: sing-box
-  command: sing-box
+
+  # By default proxy-filter finds sing-box in PATH and derives standard vs
+  # extended mode from `sing-box version`. Any version string containing
+  # "extended" (including extended-light/lite variants) is treated as extended.
+  # Uncomment to override the executable path explicitly.
+  # command: /usr/local/bin/sing-box
+
   startup_timeout_seconds: 5
   shutdown_timeout_seconds: 3
   listen_host: 127.0.0.1
