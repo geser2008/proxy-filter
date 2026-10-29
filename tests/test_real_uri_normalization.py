@@ -4,7 +4,7 @@ import base64
 import json
 import unittest
 
-from proxyfilter.ingest import parse_uri
+from proxyfilter.ingest import normalize_uri, parse_uri
 from proxyfilter.model import SourceInfo
 from proxyfilter.render import render_uri, validate_round_trip
 
@@ -118,6 +118,53 @@ class RealURINormalizationTests(unittest.TestCase):
             SOURCE,
         )
         self.assertEqual(first.ensure_id(), second.ensure_id())
+
+    def test_normalized_generic_uri_preserves_opaque_and_empty_fields(self) -> None:
+        uri = (
+            "vless://00000000-0000-0000-0000-000000000001@Example.COM:443"
+            "?z=&type=raw&future_param=one&security=tls#Name"
+        )
+        normalized = normalize_uri(uri, SOURCE)
+        self.assertEqual(
+            normalized,
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443"
+            "?future_param=one&security=tls&type=tcp&z=#Name",
+        )
+        self.assertEqual(normalize_uri(normalized, SOURCE), normalized)
+
+    def test_normalized_vmess_preserves_unknown_fields_and_is_idempotent(self) -> None:
+        data = {
+            "v": "2",
+            "ps": "Name",
+            "add": "Example.COM",
+            "port": "443",
+            "id": "1281acca-f21d-475c-bf04-eccbee7f8df2",
+            "net": "raw",
+            "future_param": "opaque",
+            "empty": "",
+        }
+        token = base64.b64encode(json.dumps(data, separators=(",", ":")).encode()).decode().rstrip("=")
+        normalized = normalize_uri("vmess://" + token, SOURCE)
+        reparsed = parse_uri(normalized, SOURCE)
+        self.assertEqual(reparsed.server, "example.com")
+        self.assertEqual(reparsed.params["net"], "tcp")
+        self.assertEqual(reparsed.params["future_param"], "opaque")
+        self.assertEqual(reparsed.params["empty"], "")
+        self.assertEqual(normalize_uri(normalized, SOURCE), normalized)
+
+    def test_normalized_shadowsocks_preserves_opaque_query_fields(self) -> None:
+        uri = (
+            "ss://YWVzLTI1Ni1nY206c2VjcmV0@Example.COM:8388"
+            "?future=x&empty=&plugin=v2ray-plugin%3Btls%3Bhost%3Dcdn.example.com#Name"
+        )
+        normalized = normalize_uri(uri, SOURCE)
+        reparsed = parse_uri(normalized, SOURCE)
+        self.assertEqual(reparsed.server, "example.com")
+        self.assertEqual(reparsed.params["future"], "x")
+        self.assertEqual(reparsed.params["empty"], "")
+        self.assertEqual(reparsed.params["plugin"], "v2ray-plugin")
+        self.assertEqual(reparsed.params["plugin_opts"], "tls;host=cdn.example.com")
+        self.assertEqual(normalize_uri(normalized, SOURCE), normalized)
 
 
 if __name__ == "__main__":
