@@ -14,18 +14,6 @@ from .v2ray_ingest import is_v2ray_config, parse_v2ray_config
 SUPPORTED_SCHEMES = {"vless", "vmess", "trojan", "ss", "hysteria2", "hy2", "tuic"}
 URI_RE = re.compile(r"^(vless|vmess|trojan|ss|hysteria2|hy2|tuic)://", re.I)
 _INVALID_PERCENT_ESCAPE_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
-_URI_QUERY_ALIASES = {"allowinsecure": "allowInsecure"}
-_URI_METADATA_FIELDS = {"note", "Telegram", "test_name"}
-_EMPTY_OPTIONAL_FIELDS = {
-    "insecure",
-    "allowInsecure",
-    "pcs",
-    "pinnedPeerCertSha256",
-    "peer_certificate_sha256",
-    "ech",
-    "echConfigList",
-}
-_TRANSPORT_SELECTOR_FIELDS = {"type", "network", "net"}
 
 
 def _contains_proxy_uri(text: str) -> bool:
@@ -141,45 +129,38 @@ def _validate_percent_escapes(uri: str) -> None:
         raise ValueError(f"invalid URI percent escape at offset {match.start()}")
 
 
-def _normalize_uri_params(params: dict[str, object]) -> dict[str, object]:
-    """Normalize only semantics proven equivalent by current URI/core behavior.
+def _normalize_uri_params(protocol: str, params: dict[str, object]) -> dict[str, object]:
+    """Apply only documented equivalences for URI inputs.
 
-    Metadata is removed from connection parameters, Xray's ``raw`` transport is
-    canonicalized to ``tcp``, and empty optional TLS controls are treated as
-    absent instead of as invalid connection values. No non-empty value is
-    repaired or guessed.
+    Unknown keys, empty values and vendor extensions are preserved verbatim. Xray
+    RAW is the renamed TCP transport; VLESS share links canonicalize it as
+    ``type=tcp``. Legacy VMess JSON uses ``net`` for the same Xray transport.
     """
     normalized = dict(params)
-    for key in _URI_METADATA_FIELDS:
-        normalized.pop(key, None)
+    protocol = protocol.strip().lower()
 
-    for key in _EMPTY_OPTIONAL_FIELDS:
-        if normalized.get(key) in {"", None}:
-            normalized.pop(key, None)
-
-    for key in _TRANSPORT_SELECTOR_FIELDS:
-        value = normalized.get(key)
+    if protocol == "vless":
+        value = normalized.get("type")
         if isinstance(value, str) and value.strip().lower() == "raw":
-            normalized[key] = "tcp"
+            normalized["type"] = "tcp"
+    elif protocol == "vmess":
+        value = normalized.get("net")
+        if isinstance(value, str) and value.strip().lower() == "raw":
+            normalized["net"] = "tcp"
 
     return normalized
 
 
-def _parse_unique_query(query: str) -> dict[str, str]:
+def _parse_unique_query(query: str, protocol: str) -> dict[str, str]:
     parsed = parse_qs(query, keep_blank_values=True)
     duplicates = sorted(key for key, values in parsed.items() if len(values) != 1)
     if duplicates:
         raise ValueError("duplicate URI query parameter(s): " + ", ".join(duplicates))
     params = {key: values[0] for key, values in parsed.items()}
-    for source_key, target_key in _URI_QUERY_ALIASES.items():
-        if source_key not in params:
-            continue
-        if target_key in params:
-            raise ValueError(
-                f"duplicate semantic URI query parameter: {source_key}/{target_key}"
-            )
-        params[target_key] = params.pop(source_key)
-    return {str(key): str(value) for key, value in _normalize_uri_params(params).items()}
+    return {
+        str(key): str(value)
+        for key, value in _normalize_uri_params(protocol, params).items()
+    }
 
 
 def parse_uri(uri: str, source: SourceInfo) -> ProxyConfig:
@@ -195,7 +176,7 @@ def parse_uri(uri: str, source: SourceInfo) -> ProxyConfig:
     parts = urlsplit(uri)
     if not parts.hostname or parts.port is None:
         raise ValueError("missing server or port")
-    params = _parse_unique_query(parts.query)
+    params = _parse_unique_query(parts.query, scheme)
     if parts.username:
         key = "uuid" if scheme in {"vless", "tuic"} else "password"
         params[key] = unquote(parts.username)
@@ -217,7 +198,7 @@ def _parse_vmess_uri(uri: str, source: SourceInfo) -> ProxyConfig:
         raise ValueError("vmess missing add/port")
     name = str(data.get("ps") or "")
     params = {k: v for k, v in data.items() if k not in {"add", "port", "ps"}}
-    params = _normalize_uri_params(params)
+    params = _normalize_uri_params("vmess", params)
     proxy = ProxyConfig(source, "vmess", str(server), port, name, params, "vmess-uri", uri)
     proxy.ensure_id()
     return proxy
@@ -225,7 +206,7 @@ def _parse_vmess_uri(uri: str, source: SourceInfo) -> ProxyConfig:
 
 def _normalize_ss_query(query: str) -> dict[str, str]:
     """Parse SIP002 query parameters with exactly one URI-decoding pass."""
-    params = _parse_unique_query(query)
+    params = _parse_unique_query(query, "ss")
     plugin = params.get("plugin")
     if plugin and ";" in plugin:
         name, opts = plugin.split(";", 1)
