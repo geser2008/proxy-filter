@@ -44,18 +44,16 @@ class RealURINormalizationTests(unittest.TestCase):
         rendered = render_uri(proxy, "test")
         validate_round_trip(proxy, rendered)
 
-    def test_known_metadata_query_fields_are_not_connection_semantics(self) -> None:
+    def test_unknown_query_fields_are_preserved(self) -> None:
         uri = (
             "vless://00000000-0000-0000-0000-000000000001@example.com:443"
             "?security=tls&type=ws&path=%2Fws&note=%40FreeOnlineVPN&Telegram=%40channel"
         )
         proxy = parse_uri(uri, SOURCE)
-        self.assertNotIn("note", proxy.params)
-        self.assertNotIn("Telegram", proxy.params)
-        rendered = render_uri(proxy, "test")
-        validate_round_trip(proxy, rendered)
+        self.assertEqual(proxy.params["note"], "@FreeOnlineVPN")
+        self.assertEqual(proxy.params["Telegram"], "@channel")
 
-    def test_vmess_test_name_is_metadata(self) -> None:
+    def test_vmess_unknown_fields_are_preserved(self) -> None:
         data = {
             "v": "2",
             "ps": "test",
@@ -71,11 +69,9 @@ class RealURINormalizationTests(unittest.TestCase):
         }
         token = base64.b64encode(json.dumps(data, separators=(",", ":")).encode()).decode().rstrip("=")
         proxy = parse_uri("vmess://" + token, SOURCE)
-        self.assertNotIn("test_name", proxy.params)
-        rendered = render_uri(proxy, "test")
-        validate_round_trip(proxy, rendered)
+        self.assertEqual(proxy.params["test_name"], "probe-label")
 
-    def test_empty_optional_tls_fields_are_ignored(self) -> None:
+    def test_empty_optional_fields_are_preserved(self) -> None:
         data = {
             "v": "2",
             "ps": "test",
@@ -93,11 +89,35 @@ class RealURINormalizationTests(unittest.TestCase):
         }
         token = base64.b64encode(json.dumps(data, separators=(",", ":")).encode()).decode().rstrip("=")
         proxy = parse_uri("vmess://" + token, SOURCE)
-        self.assertNotIn("insecure", proxy.params)
-        self.assertNotIn("pcs", proxy.params)
-        self.assertNotIn("ech", proxy.params)
-        rendered = render_uri(proxy, "test")
-        validate_round_trip(proxy, rendered)
+        self.assertEqual(proxy.params["insecure"], "")
+        self.assertEqual(proxy.params["pcs"], "")
+        self.assertEqual(proxy.params["ech"], "")
+
+    def test_unknown_query_fields_participate_in_uri_identity(self) -> None:
+        first = parse_uri(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443"
+            "?security=tls&type=ws&path=%2Fws&future_param=one",
+            SOURCE,
+        )
+        second = parse_uri(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443"
+            "?security=tls&type=ws&path=%2Fws&future_param=two",
+            SOURCE,
+        )
+        self.assertNotEqual(first.ensure_id(), second.ensure_id())
+
+    def test_query_order_does_not_change_uri_identity(self) -> None:
+        first = parse_uri(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443"
+            "?security=tls&type=ws&path=%2Fws&future_param=one",
+            SOURCE,
+        )
+        second = parse_uri(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443"
+            "?future_param=one&path=%2Fws&type=ws&security=tls",
+            SOURCE,
+        )
+        self.assertEqual(first.ensure_id(), second.ensure_id())
 
 
 if __name__ == "__main__":
