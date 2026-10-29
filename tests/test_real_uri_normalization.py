@@ -4,9 +4,10 @@ import base64
 import json
 import unittest
 
-from proxyfilter.ingest import normalize_uri, parse_uri
+from proxyfilter.ingest import parse_uri
 from proxyfilter.model import SourceInfo
 from proxyfilter.render import render_uri, validate_round_trip
+from proxyfilter.uri_normalize import normalize_uri
 
 
 SOURCE = SourceInfo("test", "test", "plain")
