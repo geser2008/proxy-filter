@@ -60,7 +60,7 @@ def _bandwidth_mbps(value: Any) -> Any:
             unit = match.group(2)
             factors = {
                 "bps": Decimal(1) / Decimal(1_000_000), "Bps": Decimal(8) / Decimal(1_000_000),
-                "Kbps": Decimal(1) / Decimal(1_000), "KBps": Decimal(8) / Decimal(1_000),
+                "Kbps": Decimal(1) / Decimal(1_000), "KBps": Decimal(8) / Decimal(1_000_000),
                 "Mbps": Decimal(1), "MBps": Decimal(8), "Gbps": Decimal(1000),
                 "GBps": Decimal(8000), "Tbps": Decimal(1_000_000), "TBps": Decimal(8_000_000),
             }
@@ -218,6 +218,28 @@ def _canonical_tuic(params: dict[str, Any]) -> dict[str, Any]:
     if "fingerprint" in params:
         result["certificate_fingerprint"] = params["fingerprint"]
     return result
+
+
+def _canonical_uri_value(value: Any) -> Any:
+    """Canonicalize container ordering without interpreting opaque URI semantics."""
+    if isinstance(value, dict):
+        return {
+            str(key): _canonical_uri_value(value[key])
+            for key in sorted(value, key=lambda item: str(item))
+        }
+    if isinstance(value, list):
+        return [_canonical_uri_value(item) for item in value]
+    return value
+
+
+def canonical_uri_identity_params(protocol: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Identity for production URI inputs.
+
+    Preserve every URI parameter, including unknown and empty values. Only
+    documented URI/core equivalences may be normalized before hashing. Current
+    ingest already canonicalizes Xray RAW to TCP for VLESS and legacy VMess.
+    """
+    return _canonical_uri_value(params)
 
 
 def canonical_identity_params(protocol: str, params: dict[str, Any]) -> dict[str, Any]:
