@@ -12,7 +12,7 @@ SOURCE = SourceInfo("uri", "URI", "plain")
 
 
 class IdentitySemanticTests(unittest.TestCase):
-    def test_equivalent_vless_ws_tls_formats_share_identity(self) -> None:
+    def test_equivalent_vless_ws_tls_formats_share_semantics(self) -> None:
         uri = parse_uri(
             f"vless://{UUID}@example.com:443?security=tls&type=ws"
             "&sni=cdn.example.com&host=cdn.example.com&path=%2Fws&headerType=none#URI",
@@ -89,15 +89,15 @@ proxies:
         self.assertEqual(errors, [])
         self.assertEqual(fmt, "sing-box")
 
-        ids = {
-            uri.ensure_id(),
-            clash[0].ensure_id(),
-            v2ray[0].ensure_id(),
-            singbox[0].ensure_id(),
-        }
-        self.assertEqual(len(ids), 1)
+        payloads = [
+            uri.semantic_payload(),
+            clash[0].semantic_payload(),
+            v2ray[0].semantic_payload(),
+            singbox[0].semantic_payload(),
+        ]
+        self.assertTrue(all(payload == payloads[0] for payload in payloads[1:]))
 
-    def test_default_tcp_and_explicit_tcp_none_header_share_identity(self) -> None:
+    def test_default_tcp_and_explicit_tcp_none_header_share_semantics(self) -> None:
         implicit = parse_uri(
             f"vless://{UUID}@example.com:443?security=tls&sni=example.com",
             SOURCE,
@@ -108,9 +108,9 @@ proxies:
             SOURCE,
         )
 
-        self.assertEqual(implicit.ensure_id(), explicit.ensure_id())
+        self.assertEqual(implicit.semantic_payload(), explicit.semantic_payload())
 
-    def test_connection_relevant_vless_difference_changes_identity(self) -> None:
+    def test_connection_relevant_vless_difference_changes_semantics(self) -> None:
         first = parse_uri(
             f"vless://{UUID}@example.com:443?security=tls&type=ws&sni=example.com&path=%2Fa",
             SOURCE,
@@ -120,9 +120,9 @@ proxies:
             SOURCE,
         )
 
-        self.assertNotEqual(first.ensure_id(), second.ensure_id())
+        self.assertNotEqual(first.semantic_payload(), second.semantic_payload())
 
-    def test_equivalent_vmess_aliases_share_identity(self) -> None:
+    def test_equivalent_vmess_aliases_share_semantics(self) -> None:
         first = ProxyConfig(
             SOURCE,
             "vmess",
@@ -163,14 +163,14 @@ proxies:
             },
         )
 
-        self.assertEqual(first.ensure_id(), second.ensure_id())
+        self.assertEqual(first.semantic_payload(), second.semantic_payload())
 
-    def test_vmess_cipher_difference_changes_identity(self) -> None:
+    def test_vmess_cipher_difference_changes_semantics(self) -> None:
         first = ProxyConfig(SOURCE, "vmess", "example.com", 443, params={"uuid": UUID, "security": "auto"})
         second = ProxyConfig(SOURCE, "vmess", "example.com", 443, params={"uuid": UUID, "security": "aes-128-gcm"})
-        self.assertNotEqual(first.ensure_id(), second.ensure_id())
+        self.assertNotEqual(first.semantic_payload(), second.semantic_payload())
 
-    def test_equivalent_trojan_tls_forms_share_identity(self) -> None:
+    def test_equivalent_trojan_tls_forms_share_semantics(self) -> None:
         first = ProxyConfig(
             SOURCE,
             "trojan",
@@ -190,14 +190,14 @@ proxies:
             },
         )
 
-        self.assertEqual(first.ensure_id(), second.ensure_id())
+        self.assertEqual(first.semantic_payload(), second.semantic_payload())
 
-    def test_trojan_password_difference_changes_identity(self) -> None:
+    def test_trojan_password_difference_changes_semantics(self) -> None:
         first = ProxyConfig(SOURCE, "trojan", "example.com", 443, params={"password": "one"})
         second = ProxyConfig(SOURCE, "trojan", "example.com", 443, params={"password": "two"})
-        self.assertNotEqual(first.ensure_id(), second.ensure_id())
+        self.assertNotEqual(first.semantic_payload(), second.semantic_payload())
 
-    def test_equivalent_shadowsocks_aliases_share_identity(self) -> None:
+    def test_equivalent_shadowsocks_aliases_share_semantics(self) -> None:
         first = ProxyConfig(
             SOURCE,
             "ss",
@@ -213,9 +213,9 @@ proxies:
             params={"cipher": "aes-256-gcm", "password": "secret", "plugin_opts": "tls;host=cdn.example.com"},
         )
 
-        self.assertEqual(first.ensure_id(), second.ensure_id())
+        self.assertEqual(first.semantic_payload(), second.semantic_payload())
 
-    def test_shadowsocks_plugin_difference_changes_identity(self) -> None:
+    def test_shadowsocks_plugin_difference_changes_semantics(self) -> None:
         first = ProxyConfig(
             SOURCE,
             "ss",
@@ -230,9 +230,9 @@ proxies:
             8388,
             params={"method": "aes-256-gcm", "password": "secret", "plugin": "obfs-local", "plugin_opts": "tls"},
         )
-        self.assertNotEqual(first.ensure_id(), second.ensure_id())
+        self.assertNotEqual(first.semantic_payload(), second.semantic_payload())
 
-    def test_equivalent_hysteria2_aliases_share_identity(self) -> None:
+    def test_equivalent_hysteria2_aliases_share_semantics(self) -> None:
         first = ProxyConfig(
             SOURCE,
             "hysteria2",
@@ -264,7 +264,7 @@ proxies:
                 "tls": {"enabled": True, "server_name": "cdn.example.com"},
             },
         )
-        self.assertEqual(first.ensure_id(), second.ensure_id())
+        self.assertEqual(first.semantic_payload(), second.semantic_payload())
 
     def test_hysteria2_certificate_fingerprint_does_not_equal_utls_fingerprint(self) -> None:
         cert_pin = ProxyConfig(
@@ -281,9 +281,9 @@ proxies:
             443,
             params={"password": "secret", "fp": "deadbeef"},
         )
-        self.assertNotEqual(cert_pin.ensure_id(), utls.ensure_id())
+        self.assertNotEqual(cert_pin.semantic_payload(), utls.semantic_payload())
 
-    def test_equivalent_tuic_aliases_share_identity(self) -> None:
+    def test_equivalent_tuic_aliases_share_semantics(self) -> None:
         first = ProxyConfig(
             SOURCE,
             "tuic",
@@ -314,12 +314,12 @@ proxies:
                 "tls": {"enabled": True, "server_name": "cdn.example.com"},
             },
         )
-        self.assertEqual(first.ensure_id(), second.ensure_id())
+        self.assertEqual(first.semantic_payload(), second.semantic_payload())
 
-    def test_tuic_password_difference_changes_identity(self) -> None:
+    def test_tuic_password_difference_changes_semantics(self) -> None:
         first = ProxyConfig(SOURCE, "tuic", "example.com", 443, params={"uuid": UUID, "password": "one"})
         second = ProxyConfig(SOURCE, "tuic", "example.com", 443, params={"uuid": UUID, "password": "two"})
-        self.assertNotEqual(first.ensure_id(), second.ensure_id())
+        self.assertNotEqual(first.semantic_payload(), second.semantic_payload())
 
     def test_deserialization_recomputes_stale_identity(self) -> None:
         proxy = ProxyConfig(
