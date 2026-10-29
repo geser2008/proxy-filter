@@ -4,7 +4,6 @@ import json
 import unittest
 from urllib.parse import quote
 
-from proxyfilter.engine import EngineError
 from proxyfilter.ingest import parse_uri
 from proxyfilter.model import SourceInfo
 from proxyfilter.render import render_uri, validate_round_trip
@@ -67,7 +66,7 @@ class URIExtensionTests(unittest.TestCase):
         rendered = self._round_trip(proxy)
         self.assertIn("cs=TLS_AES_128_GCM_SHA256%3ATLS_AES_256_GCM_SHA384", rendered)
 
-    def test_reality_spider_x_is_preserved_but_backend_rejects(self) -> None:
+    def test_reality_spider_x_is_preserved_for_singbox_check(self) -> None:
         proxy = self._vless(
             "encryption=none&security=reality&type=tcp&pbk=public-key&sid=01"
             "&sni=example.com&spx=%2Fcrawler%3Fx%3D1"
@@ -76,10 +75,10 @@ class URIExtensionTests(unittest.TestCase):
         self.assertEqual(reality["spider_x"], "/crawler?x=1")
         rendered = self._round_trip(proxy)
         self.assertIn("spx=%2Fcrawler%3Fx%3D1", rendered)
-        with self.assertRaisesRegex(EngineError, "spiderX"):
-            self.backend._render_outbound(proxy)
+        out = self.backend._render_outbound(proxy)
+        self.assertEqual(out["spx"], proxy.params["spx"])
 
-    def test_peer_certificate_pin_is_preserved_but_backend_rejects(self) -> None:
+    def test_peer_certificate_pin_is_preserved_for_singbox_check(self) -> None:
         proxy = self._vless(
             "encryption=none&security=tls&type=tcp&pcs=abcdef0123456789"
         )
@@ -89,10 +88,10 @@ class URIExtensionTests(unittest.TestCase):
         )
         rendered = self._round_trip(proxy)
         self.assertIn("pcs=abcdef0123456789", rendered)
-        with self.assertRaisesRegex(EngineError, "certificate SHA256"):
-            self.backend._render_outbound(proxy)
+        out = self.backend._render_outbound(proxy)
+        self.assertEqual(out["pcs"], proxy.params["pcs"])
 
-    def test_xray_ech_is_preserved_but_backend_rejects(self) -> None:
+    def test_xray_ech_is_preserved_for_singbox_check(self) -> None:
         ech = "cloudflare-ech.com+udp://1.1.1.1"
         proxy = self._vless(
             "encryption=none&security=tls&type=tcp&ech=" + quote(ech, safe="")
@@ -100,10 +99,10 @@ class URIExtensionTests(unittest.TestCase):
         self.assertEqual(proxy.semantic_payload()["params"]["tls"]["ech"], ech)
         rendered = self._round_trip(proxy)
         self.assertIn("ech=", rendered)
-        with self.assertRaisesRegex(EngineError, "ECH"):
-            self.backend._render_outbound(proxy)
+        out = self.backend._render_outbound(proxy)
+        self.assertEqual(out["ech"], proxy.params["ech"])
 
-    def test_final_mask_is_preserved_but_backend_rejects(self) -> None:
+    def test_final_mask_is_preserved_for_singbox_check(self) -> None:
         fm = {"tcp": [{"type": "fragment", "settings": {"packets": "tlshello"}}]}
         proxy = self._vless(
             "encryption=none&security=tls&type=tcp&fm="
@@ -112,8 +111,8 @@ class URIExtensionTests(unittest.TestCase):
         self.assertEqual(proxy.semantic_payload()["params"]["final_mask"], fm)
         rendered = self._round_trip(proxy)
         self.assertIn("fm=", rendered)
-        with self.assertRaisesRegex(EngineError, "FinalMask"):
-            self.backend._render_outbound(proxy)
+        out = self.backend._render_outbound(proxy)
+        self.assertEqual(out["fm"], proxy.params["fm"])
 
     def test_shadowsocks_sip002_plugin_stays_lossless(self) -> None:
         proxy = parse_uri(
@@ -145,21 +144,22 @@ class URIExtensionTests(unittest.TestCase):
         rendered = self._round_trip(proxy)
         self.assertIn("ports=20000%3A30000", rendered)
 
-    def test_hysteria2_pin_fastopen_and_fm_are_preserved_and_rejected_explicitly(self) -> None:
+    def test_hysteria2_extensions_are_preserved_for_singbox_check(self) -> None:
         cases = [
-            ("pinSHA256=abcdef", "certificate SHA256"),
+            ("pinSHA256=abcdef", "pinSHA256"),
             ("fastopen=true", "fastopen"),
-            ("fm=%7B%22tcp%22%3A%5B%5D%7D", "FinalMask"),
+            ("fm=%7B%22tcp%22%3A%5B%5D%7D", "fm"),
         ]
-        for extra, error in cases:
+        for extra, key in cases:
             with self.subTest(extra=extra):
                 proxy = parse_uri(
                     f"hysteria2://secret@example.com:443?sni=example.com&{extra}",
                     SOURCE,
                 )
                 self._round_trip(proxy)
-                with self.assertRaisesRegex(EngineError, error):
-                    self.backend._render_outbound(proxy)
+                out = self.backend._render_outbound(proxy)
+                self.assertIn(key, out)
+                self.assertEqual(out[key], proxy.params[key])
 
 
 if __name__ == "__main__":
