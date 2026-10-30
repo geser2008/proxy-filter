@@ -42,12 +42,12 @@ filters:
   speed:
     # Cloudflare is the primary download backend. The configured stream stages
     # are measurements, not retries: each number is one aggregate test using
-    # that many parallel streams. [8] therefore means one eight-stream test;
-    # [1, 4, 8] means three measurements. A complete successful measurement is
-    # preferred; when all usable measurements end only by max-time timeout, the
-    # fastest partial timeout measurement is used for the speed threshold.
+    # that many parallel streams. [1, 8] means one single-stream measurement
+    # followed by one eight-stream measurement. A complete successful measurement
+    # is preferred; when all usable measurements end only by max-time timeout,
+    # the fastest partial timeout measurement is used for the speed threshold.
     download_url: https://speed.cloudflare.com/__down?bytes=80000000
-    download_streams: [8]
+    download_streams: [1, 8]
 
     # One recovery pass is allowed only after a technical download failure
     # (for example a transient TLS/SOCKS/zero-byte timeout/stall failure).
@@ -64,12 +64,12 @@ filters:
     # download_streams once; it is not retried and there is no further fallback.
     download_fallback_url: https://cachefly.cachefly.net/100mb.test
 
-    # Upload uses the same configurable stage model. [8] is one eight-stream
-    # measurement; any non-empty list of positive unique integers is allowed.
+    # Upload uses the same configurable stage model. [1, 8] means one
+    # single-stream measurement followed by one eight-stream measurement.
     # Upload keeps its existing HTTP-specific retry/fallback behavior.
     upload_url: https://speed.cloudflare.com/__up
     upload_bytes: 20000000
-    upload_streams: [8]
+    upload_streams: [1, 8]
     upload_min_stream_bytes: 1000000
     upload_fallback_urls: []
     upload_fallback_http_codes:
