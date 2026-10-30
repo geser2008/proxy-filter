@@ -271,6 +271,7 @@ def enrich_geo_many(
     *,
     provider: str = "ipwhois",
     url_template: str = "https://ipwho.is/{ip}",
+    fallback_enabled: bool = True,
     fallback_provider: str | None = "ipapi",
     fallback_url_template: str | None = "https://ipapi.co/{ip}/json/",
     timeout: float = 8,
@@ -279,11 +280,16 @@ def enrich_geo_many(
 ) -> list[ProxyConfig]:
     provider_name = provider.strip().lower()
     _provider_parser(provider_name)
-    fallback_name = (fallback_provider or "").strip().lower() or None
-    if fallback_name:
-        _provider_parser(fallback_name)
-    if fallback_name == provider_name:
-        fallback_name = None
+
+    fallback_name = None
+    if fallback_enabled:
+        fallback_name = (fallback_provider or "").strip().lower() or None
+        if fallback_name:
+            _provider_parser(fallback_name)
+        if fallback_name == provider_name:
+            fallback_name = None
+            fallback_url_template = None
+    else:
         fallback_url_template = None
 
     unique_ips = sorted({proxy.tests.exit_ip for proxy in proxies if proxy.tests.exit_ip})
