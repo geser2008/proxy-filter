@@ -49,6 +49,12 @@ filters:
     download_url: https://speed.cloudflare.com/__down?bytes=80000000
     download_streams: [8]
 
+    # One recovery pass is allowed only after a technical download failure
+    # (for example a transient TLS/SOCKS/zero-byte timeout/stall failure).
+    # A valid measurement below min_download_mbps is not retried. Explicit
+    # provider failures continue to use download_fallback_url instead.
+    recovery_enabled: true
+
     # Skip a configured stage when its share of the fixed payload would be too
     # small for a meaningful measurement.
     download_min_stream_bytes: 5000000
