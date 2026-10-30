@@ -94,13 +94,18 @@ filters:
 
   exit_ip:
     url: https://api.ipify.org
+
+    # Enabled by default. If the primary service fails or returns no valid IP,
+    # exactly one request is made to this independent fallback service. The same
+    # setting is used both for automatic direct-WAN discovery and for exit-IP
+    # measurement through every tested proxy. A valid primary IP is final even
+    # when it later matches a direct WAN address.
+    fallback_enabled: true
+    fallback_url: https://checkip.amazonaws.com
+
     timeout_seconds: 8
     workers: 4
     command: curl
-
-    # If the primary service fails or returns no valid IP, exactly one retry is
-    # made through an independent service: https://checkip.amazonaws.com . A
-    # valid primary response never triggers fallback, even if it matches WAN IP.
 
     # Reject confirmed direct-WAN leaks.
     reject_direct_wan_ip: true
@@ -110,7 +115,7 @@ filters:
     reject_unknown_exit_ip: false
 
     # Discover the server's current direct public IP using the same primary +
-    # independent fallback lookup. For multi-WAN systems, list any additional
+    # configured fallback lookup. For multi-WAN systems, list any additional
     # public WAN addresses in direct_ips so a leak through either ISP is rejected.
     auto_discover_direct_ip: true
     direct_ips: []
