@@ -121,6 +121,14 @@ filters:
   geo:
     provider: ipwhois
     url_template: https://ipwho.is/{ip}
+
+    # Enabled by default. If the primary provider fails, returns metadata for a
+    # different IP, or omits a valid country_code, try exactly one independent
+    # fallback provider. Set false to disable GeoIP fallback completely.
+    fallback_enabled: true
+    fallback_provider: ipapi
+    fallback_url_template: https://ipapi.co/{ip}/json/
+
     timeout_seconds: 8
     workers: 4
     command: curl
