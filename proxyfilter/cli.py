@@ -337,6 +337,7 @@ def process_proxies(
             fallback_urls=download_fallback_urls,
             stream_stages=speed_cfg.get("download_streams"),
             min_stream_bytes=int(speed_cfg.get("download_min_stream_bytes", 5_000_000)),
+            recovery_enabled=bool(speed_cfg.get("recovery_enabled", False)),
         )
         write_jsonl(work / "07-download-ok.jsonl", download_ok)
         write_jsonl(work / "07-rejected-download.jsonl", download_rejected)
