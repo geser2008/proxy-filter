@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from .engine import EngineBackend
 from .model import ProxyConfig
+from .payload_semantics import normalize_payload_valid
 from . import speed as base
 
 
@@ -14,6 +15,7 @@ FALLBACK_HTTP_CODES = {403, 429}
 class _BackendOutcome:
     result: base.SpeedResult
     best_success: base.SpeedResult | None
+    best_partial: base.SpeedResult | None
     terminal_failure: base.SpeedResult | None
     stages: list[dict]
 
@@ -97,6 +99,12 @@ def _fallback_allowed(result: base.SpeedResult) -> bool:
 def _stage_record(streams: int, result: base.SpeedResult, *, skipped: bool = False) -> dict:
     record = base._stage_record(streams, result, skipped=skipped)
     record["classification"] = "skipped" if skipped else _stage_classification(result)
+    # base._download_parallel_stage historically treated unknown stream
+    # completeness as aggregate True when no stream was explicitly False.
+    # Keep stage diagnostics tri-state: True only when the expected aggregate
+    # byte count was actually reached, False only for an explicit invalid
+    # payload, and None for partial/unknown transfers.
+    normalize_payload_valid(record)
     return record
 
 
@@ -124,7 +132,8 @@ def _run_download_backend(
     connect_timeout: float | None,
 ) -> _BackendOutcome:
     stage_records: list[dict] = []
-    best: base.SpeedResult | None = None
+    best_success: base.SpeedResult | None = None
+    best_partial: base.SpeedResult | None = None
     last: base.SpeedResult | None = None
     terminal: base.SpeedResult | None = None
     backend = base._download_backend(url)
@@ -179,18 +188,27 @@ def _run_download_backend(
         stage_records.append(_stage_record(streams, result))
 
         if result.ok:
-            best = _pick_faster(best, result)
+            best_success = _pick_faster(best_success, result)
             continue
 
         if classification == "performance_timeout":
+            if result.mbps is not None:
+                best_partial = _pick_faster(best_partial, result)
             continue
 
         terminal = result
         break
 
-    if best is not None:
-        best.stages = list(stage_records)
-        chosen = best
+    # A complete successful measurement is stronger than a partial timeout and
+    # always wins when one exists. If no stage completed, a partial max-time
+    # measurement is still threshold-eligible by policy; choose the fastest one
+    # rather than whichever configured stage happened to run last.
+    if best_success is not None:
+        best_success.stages = list(stage_records)
+        chosen = best_success
+    elif best_partial is not None:
+        best_partial.stages = list(stage_records)
+        chosen = best_partial
     elif last is not None:
         last.stages = list(stage_records)
         chosen = last
@@ -204,7 +222,7 @@ def _run_download_backend(
             stages=list(stage_records),
         )
 
-    return _BackendOutcome(chosen, best, terminal, stage_records)
+    return _BackendOutcome(chosen, best_success, best_partial, terminal, stage_records)
 
 
 def _download_staged(
@@ -238,7 +256,8 @@ def _download_staged(
     )
 
     all_stages = list(primary.stages)
-    best_overall = primary.best_success
+    best_success_overall = primary.best_success
+    best_partial_overall = primary.best_partial
 
     if primary.terminal_failure is None:
         primary.result.stages = all_stages
@@ -275,11 +294,12 @@ def _download_staged(
             connect_timeout=connect_timeout,
         )
         all_stages.extend(fallback.stages)
-        best_overall = _pick_faster(best_overall, fallback.best_success)
+        best_success_overall = _pick_faster(best_success_overall, fallback.best_success)
+        best_partial_overall = _pick_faster(best_partial_overall, fallback.best_partial)
         last_result = fallback.result
 
         if fallback.terminal_failure is None:
-            chosen = best_overall or fallback.result
+            chosen = best_success_overall or best_partial_overall or fallback.result
             chosen.stages = list(all_stages)
             return chosen
 
@@ -295,7 +315,7 @@ def _download_staged(
             else "provider_failure"
         )
 
-    chosen = best_overall or last_result
+    chosen = best_success_overall or best_partial_overall or last_result
     chosen.stages = list(all_stages)
     return chosen
 
@@ -324,6 +344,30 @@ def _best_partial(stages: list[dict]) -> tuple[float | None, int | None, str | N
         return None, None, None
     best = max(candidates, key=lambda stage: float(stage["mbps"]))
     return float(best["mbps"]), int(best["streams"]), best.get("backend")
+
+
+def _selected_stage(stages: list[dict], result: base.SpeedResult) -> dict | None:
+    candidates = [
+        stage
+        for stage in stages
+        if not stage.get("skipped")
+        and stage.get("backend") == result.backend
+        and stage.get("mbps") is not None
+    ]
+    if result.ok:
+        candidates = [stage for stage in candidates if stage.get("ok")]
+    else:
+        candidates = [
+            stage
+            for stage in candidates
+            if stage.get("classification") == "performance_timeout"
+        ]
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key=lambda stage: abs(float(stage["mbps"]) - float(result.mbps or 0.0)),
+    )
 
 
 def check_download_many(
@@ -379,11 +423,13 @@ def check_download_many(
             ),
             None,
         )
+        selected_stage = _selected_stage(result.stages, result)
         partial_mbps, partial_streams, partial_backend = _best_partial(result.stages)
         proxy.tests.download = {
             "status": "pass" if threshold_ok else "fail",
             "backend": result.backend,
             "mbps": result.mbps,
+            "selected_streams": selected_stage.get("streams") if selected_stage else None,
             "single_mbps": single_stage.get("mbps") if single_stage else None,
             "aggregate_mbps": result.mbps,
             "best_partial_mbps": partial_mbps,
