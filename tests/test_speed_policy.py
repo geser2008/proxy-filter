@@ -219,6 +219,81 @@ class DownloadPolicyTests(unittest.TestCase):
         self.assertEqual(result.stages[0]["classification"], "performance_timeout")
         self.assertEqual(result.stages[1]["classification"], "success")
 
+    def test_fastest_partial_timeout_stage_wins_threshold(self):
+        responses = [
+            SpeedResult(
+                False,
+                mbps=95.0,
+                bytes_transferred=60_000_000,
+                expected_bytes=80_000_000,
+                time_seconds=5.05,
+                http_code=200,
+                error="curl: (28) Operation timed out",
+                backend="cloudflare",
+                failure_reason="timeout",
+                curl_exit_code=28,
+            ),
+            SpeedResult(
+                False,
+                mbps=55.0,
+                bytes_transferred=45_000_000,
+                expected_bytes=80_000_000,
+                time_seconds=6.54,
+                http_code=200,
+                error="curl: (28) Operation timed out",
+                backend="cloudflare",
+                failure_reason="timeout",
+                curl_exit_code=28,
+            ),
+        ]
+        with patch(
+            "proxyfilter.speed_policy.base._download_parallel_stage",
+            side_effect=responses,
+        ):
+            passed, rejected = check_download_many(
+                [self.proxy],
+                object(),
+                url=self.primary,
+                timeout=30,
+                min_mbps=80,
+                fallback_urls=[self.fallback],
+                stream_stages=(1, 8),
+            )
+
+        self.assertEqual(passed, [self.proxy])
+        self.assertEqual(rejected, [])
+        self.assertEqual(self.proxy.tests.download_mbps, 95.0)
+        self.assertEqual(self.proxy.tests.download["best_partial_mbps"], 95.0)
+        self.assertEqual(self.proxy.tests.download["best_partial_streams"], 1)
+        self.assertEqual(self.proxy.tests.download["selected_streams"], 1)
+
+    def test_partial_timeout_stage_payload_is_not_marked_complete(self):
+        partial = SpeedResult(
+            False,
+            mbps=95.0,
+            bytes_transferred=60_000_000,
+            expected_bytes=80_000_000,
+            payload_valid=True,
+            time_seconds=5.05,
+            http_code=200,
+            error="curl: (28) Operation timed out",
+            backend="cloudflare",
+            failure_reason="timeout",
+            curl_exit_code=28,
+        )
+        with patch("proxyfilter.speed_policy.base._download_parallel_stage", return_value=partial):
+            result = _download_staged(
+                self.proxy,
+                object(),
+                url=self.primary,
+                fallback_urls=[],
+                timeout=30,
+                curl_command="curl",
+                stream_stages=(8,),
+            )
+
+        self.assertIsNone(result.stages[0]["payload_valid"])
+
     def test_all_performance_timeouts_are_rejected_by_threshold(self):
         timeout_result = SpeedResult(
             False,
