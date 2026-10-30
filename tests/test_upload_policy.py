@@ -135,8 +135,44 @@ class UploadPolicyTests(unittest.TestCase):
         self.assertEqual(passed, [self.proxy])
         self.assertEqual(rejected, [])
         self.assertEqual(self.proxy.tests.upload_mbps, 55.0)
+        self.assertEqual(self.proxy.tests.upload["selected_streams"], 1)
         self.assertTrue(self.proxy.tests.upload["payload_valid"])
         self.assertIsNone(self.proxy.tests.upload["stages"][1]["payload_valid"])
+
+    def test_fastest_completed_stage_records_selected_streams(self):
+        self.proxy.tests.upload_mbps = 80.0
+        self.proxy.tests.upload = {
+            "status": "pass",
+            "mbps": 80.0,
+            "aggregate_mbps": 80.0,
+            "payload_valid": True,
+            "bytes": 20_000_000,
+            "expected_bytes": 20_000_000,
+            "http_code": 200,
+            "error": None,
+            "failure_reason": None,
+            "stages": [
+                {"streams": 1, "skipped": False, "ok": True, "mbps": 55.0},
+                {"streams": 8, "skipped": False, "ok": True, "mbps": 80.0},
+            ],
+        }
+        self.proxy.tests.status = "upload_pass"
+
+        with patch(
+            "proxyfilter.speed_semantics.speed_staged.check_upload_many",
+            return_value=([self.proxy], []),
+        ):
+            speed_semantics.check_upload_many(
+                [self.proxy],
+                object(),
+                url="https://speed.cloudflare.com/__up",
+                upload_bytes=20_000_000,
+                timeout=30,
+                min_mbps=20,
+                stream_stages=(1, 8),
+            )
+
+        self.assertEqual(self.proxy.tests.upload["selected_streams"], 8)
 
 
 if __name__ == "__main__":
