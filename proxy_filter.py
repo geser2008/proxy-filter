@@ -16,20 +16,7 @@ import yaml
 from proxyfilter import cli
 from proxyfilter.history import new_run_id, record_failed_run, record_source_run, utc_now
 from proxyfilter.history_global import record_global_source_run
-from proxyfilter.known_working import (
-    load_known_working,
-    load_rejected_candidates,
-    load_seen_ids,
-    update_known_working,
-)
-from proxyfilter.output_policy import render_proxies as render_proxies_with_reliability
 from proxyfilter.source_config import merged_config
-from proxyfilter.source_status import (
-    apply_warning_summary,
-    build_source_status_rows,
-    warning_source_ids,
-    write_source_status,
-)
 
 # Backward-compatible public import used by existing tests and callers.
 # The implementation now lives in proxyfilter.cli, but the old import path
@@ -214,8 +201,6 @@ def _record_history(
         source_result = (summary.get("sources") or {}).get(source_id) or {}
         try:
             if requested_until == "history" and resume_from:
-                # A history-only stage consumes the existing complete global work
-                # snapshot and uses a deterministic id so rerunning is idempotent.
                 _validate_snapshot(work_dir)
                 run_id = _snapshot_run_id(source_id, work_dir)
                 history_started = _mtime_iso(work_dir / "01-parsed.jsonl", started_at)
@@ -263,14 +248,10 @@ def _record_history(
         except sqlite3.IntegrityError:
             print(f"[history] source={source_id} already_recorded")
         except Exception as exc:
-            # History is analytical persistence, not part of filtering
-            # correctness. Database problems must not suppress publication.
             print(f"[history] source={source_id} ERROR: {exc}", file=sys.stderr)
 
 
 def main() -> int:
-    # Launcher-owned options have independent defaults. Supplying one option
-    # never changes the interpretation or default of another option.
     pre_parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     pre_parser.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     pre_parser.add_argument("--sources", default=DEFAULT_SOURCES_PATH)
@@ -288,7 +269,6 @@ def main() -> int:
         except ValueError as exc:
             pre_parser.error(str(exc))
 
-    tmp_path: str | None = None
     started_at = utc_now()
     selected = set(_option_values(remaining, "--source"))
     configured_ids = {str(source.get("id")) for source in cfg.get("sources", [])}
@@ -301,67 +281,7 @@ def main() -> int:
     if history_stage and resume_from and resume_from[-1] != "publish":
         pre_parser.error("--until history may resume only from --resume-from publish")
 
-    original_render = cli._render_proxies
-    original_load_previous = cli._load_previous_working
-    original_ingest_sources = cli._ingest_sources
-    original_publish_merged = cli.publish_merged
-    state_context: dict[str, object] = {}
-
-    def ingest_sources_allow_partial_publish(sources, data_dir: Path, summary: dict):
-        parsed, all_sources_ok = original_ingest_sources(sources, data_dir, summary)
-        rows = build_source_status_rows(sources, summary)
-        apply_warning_summary(summary, rows)
-        write_source_status(data_dir / "work" / "00-source-status.jsonl", rows)
-        warning_ids = warning_source_ids(rows)
-        state_context["all_sources_ok"] = bool(all_sources_ok)
-        state_context["source_status_rows"] = rows
-        state_context["warning_sources"] = warning_ids
-        if warning_ids:
-            print(
-                "[all] WARNING source_unavailable="
-                + ",".join(sorted(warning_ids))
-                + " publish_policy=successful_sources_plus_retained"
-            )
-        # Fetch health and publication are independent: a source outage is a
-        # warning, not a reason to abort the global pipeline.
-        return parsed, True
-
-    def load_previous_with_retention(data_dir: Path, selected_sources: set[str]):
-        proxies, path = load_known_working(data_dir, selected_sources)
-        state_context["previous"] = list(proxies)
-        state_context["path"] = path
-        return proxies, path
-
-    def publish_merged_with_retention(data_dir: Path, proxies, diversity_cfg=None):
-        # Capture the complete qualified set before publish_merged mutates the
-        # list down to the diversity-selected publication set.
-        qualified = list(proxies)
-        result = original_publish_merged(data_dir, proxies, diversity_cfg)
-
-        # Retained state follows actual proxy test outcomes even when a source
-        # fetch warned. last_seen is updated only for ids in current 01-parsed;
-        # retained proxies from an unavailable source therefore keep their prior
-        # last_seen while last_tested/last_working/failures still advance.
-        if not resume_from and "previous" in state_context:
-            previous = list(state_context["previous"])
-            retention_days = int((cfg.get("state", {}) or {}).get("working_retention_days", 30))
-            counts = update_known_working(
-                data_dir,
-                previous,
-                qualified,
-                load_rejected_candidates(data_dir),
-                seen_ids=load_seen_ids(data_dir),
-                retention_days=retention_days,
-            )
-            print(
-                "[state] known_working="
-                f"{counts['retained']} working_now={counts['working_now']} "
-                f"failing_retained={counts['failing_retained']} "
-                f"new={counts['new_working']} recovered={counts['recovered']} "
-                f"expired={counts['expired']} retention_days={retention_days}"
-            )
-        return result
-
+    tmp_path: str | None = None
     try:
         with tempfile.NamedTemporaryFile(
             mode="w",
@@ -373,15 +293,6 @@ def main() -> int:
             yaml.safe_dump(cfg, fh, allow_unicode=True, sort_keys=False)
             tmp_path = fh.name
 
-        # Keep cli.py as the pipeline implementation while applying policy and
-        # retained-state integration here, where merged config is available.
-        cli._render_proxies = render_proxies_with_reliability
-        cli._load_previous_working = load_previous_with_retention
-        cli._ingest_sources = ingest_sources_allow_partial_publish
-        cli.publish_merged = publish_merged_with_retention
-
-        # history is a launcher-owned non-filtering stage after publish. The
-        # package CLI still executes through publish; then the snapshot is stored.
         cli_args = list(remaining)
         if history_stage:
             cli_args = _replace_option(cli_args, "--until", "publish")
@@ -391,19 +302,6 @@ def main() -> int:
         sys.argv = [sys.argv[0], "--config", tmp_path, *cli_args]
         result = cli.main()
 
-        # cli.py writes its final pipeline summary after ingest, so re-apply the
-        # source warning after it has populated the terminal pipeline fields.
-        rows = list(state_context.get("source_status_rows") or [])
-        if rows:
-            data_dir = Path(cfg.get("paths", {}).get("data_dir", "/srv/proxy-filter/data"))
-            summary_path = data_dir / "reports" / "summary.json"
-            if summary_path.exists():
-                with summary_path.open("r", encoding="utf-8") as fh:
-                    summary = json.load(fh)
-                cli.write_json(summary_path, apply_warning_summary(summary, rows))
-
-        # Use the original requested arguments so explicit history remains
-        # distinguishable from a normal publish with automatic history enabled.
         _record_history(
             cfg,
             remaining if _has_option(remaining, "--until") else [*remaining, "--until", "publish"],
@@ -411,19 +309,8 @@ def main() -> int:
             run_ids,
             force=history_stage,
         )
-
-        warning_ids = set(state_context.get("warning_sources") or set())
-        if result == 0 and warning_ids:
-            print(
-                "[all] WARNING completed_with_source_warnings="
-                + ",".join(sorted(warning_ids))
-            )
         return result
     finally:
-        cli._render_proxies = original_render
-        cli._load_previous_working = original_load_previous
-        cli._ingest_sources = original_ingest_sources
-        cli.publish_merged = original_publish_merged
         if tmp_path:
             try:
                 os.unlink(tmp_path)
