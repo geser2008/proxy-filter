@@ -384,12 +384,20 @@ def process_proxies(
         exit_timeout = float(exit_cfg.get("timeout_seconds", 8))
         exit_workers = int(exit_cfg.get("workers", 4))
         exit_curl = str(exit_cfg.get("command", "curl"))
+        fallback_enabled = bool(exit_cfg.get("fallback_enabled", True))
+        fallback_url = str(exit_cfg.get("fallback_url", "https://checkip.amazonaws.com")).strip()
+        exit_fallback_urls = [fallback_url] if fallback_enabled and fallback_url else []
         reject_direct = bool(exit_cfg.get("reject_direct_wan_ip", True))
         reject_unknown = bool(exit_cfg.get("reject_unknown_exit_ip", False))
         direct_ips = set(_as_string_list(exit_cfg.get("direct_ips", [])))
 
         if reject_direct and bool(exit_cfg.get("auto_discover_direct_ip", True)):
-            direct_ip = discover_direct_ip(url=exit_url, timeout=exit_timeout, curl_command=exit_curl)
+            direct_ip = discover_direct_ip(
+                url=exit_url,
+                timeout=exit_timeout,
+                curl_command=exit_curl,
+                fallback_urls=exit_fallback_urls,
+            )
             direct_ips.add(direct_ip)
             print(f"[all] direct_wan_ip={direct_ip}")
         elif reject_direct and not direct_ips:
@@ -405,6 +413,7 @@ def process_proxies(
             direct_ips=direct_ips,
             workers=exit_workers,
             curl_command=exit_curl,
+            fallback_urls=exit_fallback_urls,
         )
         write_jsonl(work / "09-exit-ip-ok.jsonl", exit_ok)
         write_jsonl(work / "09-rejected-exit-ip.jsonl", exit_rejected)
