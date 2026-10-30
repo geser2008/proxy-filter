@@ -617,7 +617,6 @@ def main() -> int:
             selected_for_publish = list(working)
             txt_path, jsonl_path = publish_merged(data_dir, selected_for_publish, diversity_cfg)
             write_jsonl(work / "12-published.jsonl", selected_for_publish)
-            write_jsonl(data_dir / "state" / "working.jsonl", working)
             current = selected_for_publish
             summary["working"] = len(working)
             summary["published"] = len(current)
