@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 import sys
 
@@ -12,15 +11,27 @@ from proxyfilter.batch_latency import check_latency_batched
 from proxyfilter.debug_latency import debug_latency_proxy, find_proxy_in_work
 from proxyfilter.exit_ip import check_exit_ip_many, discover_direct_ip
 from proxyfilter.geoip import enrich_geo_many
-from proxyfilter.singbox_backend import SingBoxBackend
 from proxyfilter.ingest import detect_and_parse
 from proxyfilter.io import fetch_url, write_json, write_jsonl
+from proxyfilter.known_working import (
+    load_known_working,
+    load_rejected_candidates,
+    load_seen_ids,
+    update_known_working,
+)
 from proxyfilter.model import ProxyConfig, TestState
+from proxyfilter.output_policy import render_proxies as render_proxies_with_reliability
 from proxyfilter.probes import check_latency_many
 from proxyfilter.publish import publish_merged, publish_source
-from proxyfilter.render import render_proxy
 from proxyfilter.resume import STAGE_ORDER, load_stage, stage_index, stage_should_run, validate_resume_range
 from proxyfilter.security import check_static_security
+from proxyfilter.singbox_backend import SingBoxBackend
+from proxyfilter.source_status import (
+    apply_warning_summary,
+    build_source_status_rows,
+    warning_source_ids,
+    write_source_status,
+)
 from proxyfilter.speed import check_download_many, check_upload_many
 from proxyfilter.tcpcheck import check_many
 
@@ -70,31 +81,7 @@ def _as_int_set(value, default):
 
 
 def _render_proxies(proxies, cfg):
-    output_cfg = cfg.get("output", {})
-    rename_template = str(output_cfg.get("rename_template", "{flag} [{source}] {name}"))
-    include_original_name = bool(output_cfg.get("include_original_name", True))
-    render_ok, render_rejected = [], []
-
-    for proxy in proxies:
-        result = render_proxy(
-            proxy,
-            rename_template=rename_template,
-            include_original_name=include_original_name,
-        )
-        proxy.tests.render = {
-            "status": "pass" if result.ok else "fail",
-            "name": result.name,
-            "uri": result.uri,
-            "error": result.error,
-        }
-        if result.ok:
-            proxy.tests.status = "render_pass"
-            render_ok.append(proxy)
-        else:
-            proxy.tests.status = "rejected_render"
-            render_rejected.append(proxy)
-
-    return render_ok, render_rejected
+    return render_proxies_with_reliability(proxies, cfg)
 
 
 def _proxy_source_ids(proxy: ProxyConfig) -> set[str]:
@@ -105,31 +92,8 @@ def _source_survivor_count(proxies: list[ProxyConfig], source_id: str) -> int:
     return sum(1 for proxy in proxies if source_id in _proxy_source_ids(proxy))
 
 
-def _read_proxy_jsonl(path: Path) -> list[ProxyConfig]:
-    if not path.is_file():
-        return []
-    proxies: list[ProxyConfig] = []
-    with path.open("r", encoding="utf-8") as fh:
-        for lineno, line in enumerate(fh, 1):
-            text = line.strip()
-            if not text:
-                continue
-            try:
-                data = json.loads(text)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"invalid JSON in {path}:{lineno}: {exc}") from exc
-            if not isinstance(data, dict):
-                raise ValueError(f"invalid record in {path}:{lineno}: expected JSON object")
-            proxies.append(ProxyConfig.from_dict(data))
-    return proxies
-
-
 def _load_previous_working(data_dir: Path, selected: set[str]) -> tuple[list[ProxyConfig], Path]:
-    path = data_dir / "state" / "working.jsonl"
-    proxies = _read_proxy_jsonl(path)
-    if selected:
-        proxies = [proxy for proxy in proxies if _proxy_source_ids(proxy) & selected]
-    return proxies, path
+    return load_known_working(data_dir, selected)
 
 
 def _reset_tests(proxies: list[ProxyConfig]) -> None:
@@ -148,8 +112,6 @@ def _ingest_sources(
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     parsed_all: list[ProxyConfig] = []
-    all_ok = True
-
     for source in sources:
         source_id = str(source["id"])
         source_name = str(source.get("name", source_id))
@@ -172,11 +134,23 @@ def _ingest_sources(
             }
             print(f"[{source_id}] parsed={len(proxies)} errors={len(parse_errors)} format={detected_format}")
         except Exception as exc:
-            all_ok = False
             summary["sources"][source_id] = {"status": "error", "error": str(exc)}
             print(f"[{source_id}] ERROR: {exc}", file=sys.stderr)
 
-    return parsed_all, all_ok
+    rows = build_source_status_rows(sources, summary)
+    apply_warning_summary(summary, rows)
+    write_source_status(data_dir / "work" / "00-source-status.jsonl", rows)
+    warnings = warning_source_ids(rows)
+    if warnings:
+        print(
+            "[all] WARNING source_unavailable="
+            + ",".join(sorted(warnings))
+            + " publish_policy=successful_sources_plus_retained"
+        )
+
+    # A fetch failure is a source warning, not a global filtering failure.
+    # Retained proxies from unavailable sources still participate in the run.
+    return parsed_all, True
 
 
 def _sort_for_stage(proxies: list[ProxyConfig], stage: str) -> None:
@@ -536,6 +510,8 @@ def main() -> int:
     sources = [source for source in configured_sources if not selected or str(source.get("id")) in selected]
     summary = {"sources": {}}
     all_sources_ok = True
+    warning_rows: list[dict] = []
+    previous: list[ProxyConfig] = []
     work = data_dir / "work"
     work.mkdir(parents=True, exist_ok=True)
 
@@ -566,9 +542,11 @@ def main() -> int:
             return 0
     else:
         parsed, all_sources_ok = _ingest_sources(sources, data_dir, summary)
+        warning_rows = build_source_status_rows(sources, summary)
         write_jsonl(work / "01-parsed.jsonl", parsed)
         summary["parsed"] = len(parsed)
         if args.until == "parse":
+            apply_warning_summary(summary, warning_rows)
             write_json(data_dir / "reports" / "summary.json", summary)
             return 0 if all_sources_ok else 1
 
@@ -589,6 +567,8 @@ def main() -> int:
         )
     except Exception as exc:
         summary["pipeline"] = {"status": "error", "error": str(exc)}
+        if warning_rows:
+            apply_warning_summary(summary, warning_rows)
         write_json(data_dir / "reports" / "summary.json", summary)
         print(f"[all] ERROR: {exc}", file=sys.stderr)
         return 1
@@ -617,6 +597,25 @@ def main() -> int:
             selected_for_publish = list(working)
             txt_path, jsonl_path = publish_merged(data_dir, selected_for_publish, diversity_cfg)
             write_jsonl(work / "12-published.jsonl", selected_for_publish)
+
+            if args.resume_from is None:
+                retention_days = int((cfg.get("state", {}) or {}).get("working_retention_days", 30))
+                counts = update_known_working(
+                    data_dir,
+                    previous,
+                    working,
+                    load_rejected_candidates(data_dir),
+                    seen_ids=load_seen_ids(data_dir),
+                    retention_days=retention_days,
+                )
+                print(
+                    "[state] known_working="
+                    f"{counts['retained']} working_now={counts['working_now']} "
+                    f"failing_retained={counts['failing_retained']} "
+                    f"new={counts['new_working']} recovered={counts['recovered']} "
+                    f"expired={counts['expired']} retention_days={retention_days}"
+                )
+
             current = selected_for_publish
             summary["working"] = len(working)
             summary["published"] = len(current)
@@ -643,8 +642,14 @@ def main() -> int:
         "survivors": len(current),
         "resume_from": args.resume_from,
     }
+    if warning_rows:
+        apply_warning_summary(summary, warning_rows)
     write_json(data_dir / "reports" / "summary.json", summary)
     print(f"[all] survivors={len(current)}")
+
+    warnings = warning_source_ids(warning_rows) if warning_rows else set()
+    if warnings:
+        print("[all] WARNING completed_with_source_warnings=" + ",".join(sorted(warnings)))
     return 0 if all_sources_ok else 1
 
 
