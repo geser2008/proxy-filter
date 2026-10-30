@@ -25,7 +25,7 @@ from proxyfilter.speed import check_download_many, check_upload_many
 from proxyfilter.tcpcheck import check_many
 
 
-ENGINE_STAGES = {"core", "latency", "download", "upload", "exit-ip", "geo"}
+ENGINE_STAGES = {"core", "latency", "download", "upload", "exit-ip"}
 
 
 def deduplicate(proxies):
@@ -428,7 +428,6 @@ def process_proxies(
         fallback_enabled = bool(geo_cfg.get("fallback_enabled", True))
         geo_ok = enrich_geo_many(
             current,
-            engine=engine,
             provider=str(geo_cfg.get("provider", "ipwhois")),
             url_template=str(geo_cfg.get("url_template", "https://ipwho.is/{ip}")),
             fallback_enabled=fallback_enabled,
