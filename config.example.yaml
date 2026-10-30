@@ -43,7 +43,9 @@ filters:
     # Cloudflare is the primary download backend. The configured stream stages
     # are measurements, not retries: each number is one aggregate test using
     # that many parallel streams. [8] therefore means one eight-stream test;
-    # [1, 4, 8] means three measurements. The best valid aggregate result wins.
+    # [1, 4, 8] means three measurements. A complete successful measurement is
+    # preferred; when all usable measurements end only by max-time timeout, the
+    # fastest partial timeout measurement is used for the speed threshold.
     download_url: https://speed.cloudflare.com/__down?bytes=80000000
     download_streams: [8]
 
@@ -74,9 +76,9 @@ filters:
     # Connection establishment and speed-transfer budgets are configured
     # separately. curl --max-time is their sum (10 + 30 = 40 seconds here),
     # so connection setup no longer consumes the configured transfer budget.
-    # If an interrupted transfer still yields a numeric speed, the speed value
-    # decides the threshold result. A transfer error rejects by error only when
-    # no usable speed measurement was obtained.
+    # Only a normal max-time timeout may use a partial numeric speed for the
+    # threshold. TLS/SOCKS/EOF/stall/provider/payload failures remain technical
+    # errors even when curl managed to transfer some bytes before failing.
     connect_timeout_seconds: 10
     transfer_timeout_seconds: 30
     min_download_mbps: 80
