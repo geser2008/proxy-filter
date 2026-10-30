@@ -9,6 +9,9 @@ on:
       - "proxyfilter/speed_staged.py"
       - "proxyfilter/payload_semantics.py"
       - "proxyfilter/__init__.py"
+      - "proxyfilter/cli.py"
+      - "config.example.yaml"
+      - "tests/test_download_recovery.py"
       - "tests/test_speed_acceptance.py"
       - "tests/test_speed_measurement_semantics.py"
       - "tests/test_speed_policy.py"
@@ -30,6 +33,7 @@ jobs:
       - name: Run speed policy unit tests
         run: |
           python -m unittest -v \
+            tests.test_download_recovery \
             tests.test_speed_acceptance \
             tests.test_speed_measurement_semantics \
             tests.test_speed_policy \
