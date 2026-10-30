@@ -321,8 +321,6 @@ def process_proxies(
         if configured_fallback:
             download_fallback_urls = [configured_fallback]
         else:
-            # Backward-compatible old config, but intentionally keep only one
-            # alternate provider so CacheFly is never followed by a retry chain.
             download_fallback_urls = _as_string_list(speed_cfg.get("download_fallback_urls", []))[:1]
 
         download_ok, download_rejected = check_download_many(
@@ -418,10 +416,22 @@ def process_proxies(
 
     if stage_should_run("geo", resume_from):
         geo_cfg = cfg.get("filters", {}).get("geo", {})
+        fallback_enabled = bool(geo_cfg.get("fallback_enabled", True))
         geo_ok = enrich_geo_many(
             current,
             provider=str(geo_cfg.get("provider", "ipwhois")),
             url_template=str(geo_cfg.get("url_template", "https://ipwho.is/{ip}")),
+            fallback_enabled=fallback_enabled,
+            fallback_provider=(
+                str(geo_cfg.get("fallback_provider", "ipapi"))
+                if fallback_enabled
+                else None
+            ),
+            fallback_url_template=(
+                str(geo_cfg.get("fallback_url_template", "https://ipapi.co/{ip}/json/"))
+                if fallback_enabled
+                else None
+            ),
             timeout=float(geo_cfg.get("timeout_seconds", 8)),
             workers=int(geo_cfg.get("workers", 4)),
             curl_command=str(geo_cfg.get("command", "curl")),
@@ -581,7 +591,6 @@ def main() -> int:
         for proxy in working:
             proxy.tests.status = "published"
 
-        # Preserve source-specific subscriptions without duplicating work-stage files.
         for source in sources:
             source_id = str(source["id"])
             source_summary = summary["sources"].get(source_id) or {}
