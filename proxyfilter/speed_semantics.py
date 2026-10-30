@@ -18,6 +18,59 @@ def _is_plain_timeout(error: str | None) -> bool:
     return "curl: (28)" in text or "timed out" in text or "timeout" in text
 
 
+def _stage_is_plain_timeout(stage: dict) -> bool:
+    reason = stage.get("failure_reason")
+    if reason is not None:
+        return reason == "timeout"
+    return _is_plain_timeout(stage.get("error"))
+
+
+def _best_partial_timeout_stage(upload: dict) -> dict | None:
+    candidates = [
+        stage
+        for stage in upload.get("stages") or []
+        if not stage.get("skipped")
+        and not stage.get("ok")
+        and stage.get("mbps") is not None
+        and _stage_is_plain_timeout(stage)
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda stage: float(stage["mbps"]))
+
+
+def _apply_best_partial_timeout(proxy: ProxyConfig) -> None:
+    """Use the fastest valid partial-timeout stage when no upload stage completed."""
+    upload = proxy.tests.upload or {}
+    if any(
+        stage.get("ok")
+        for stage in upload.get("stages") or []
+        if not stage.get("skipped")
+    ):
+        return
+
+    best = _best_partial_timeout_stage(upload)
+    if best is None:
+        return
+
+    mbps = float(best["mbps"])
+    proxy.tests.upload_mbps = mbps
+    upload["mbps"] = mbps
+    upload["aggregate_mbps"] = mbps
+    upload["best_partial_mbps"] = mbps
+    upload["best_partial_streams"] = best.get("streams")
+    upload["selected_streams"] = best.get("streams")
+    upload["bytes"] = best.get("bytes")
+    upload["expected_bytes"] = best.get("expected_bytes")
+    upload["payload_valid"] = best.get("payload_valid")
+    upload["time_seconds"] = best.get("time_seconds")
+    upload["http_code"] = best.get("http_code")
+    upload["error"] = best.get("error")
+    upload["failure_reason"] = best.get("failure_reason")
+    upload["curl_exit_code"] = best.get("curl_exit_code")
+    proxy.tests.upload = upload
+
+
 def _has_usable_upload_measurement(proxy: ProxyConfig) -> bool:
     upload = proxy.tests.upload or {}
     mbps = proxy.tests.upload_mbps
@@ -56,6 +109,13 @@ def check_upload_many(
     min_mbps = float(kwargs["min_mbps"])
     passed, rejected = speed_staged.check_upload_many(proxies, engine, **kwargs)
 
+    # speed_staged historically returned the last configured timeout stage when
+    # every stage timed out. With configurable stages such as [1, 8], the last
+    # stage is not necessarily the best measurement. Re-select the fastest
+    # threshold-eligible partial timeout before making the final decision.
+    for proxy in rejected:
+        _apply_best_partial_timeout(proxy)
+
     still_rejected: list[ProxyConfig] = []
     for proxy in rejected:
         if not _is_threshold_eligible_upload(proxy):
@@ -83,9 +143,12 @@ def check_upload_many(
     )
 
     # Keep acceptance policy independent from diagnostic tri-state cleanup.
-    # True now means byte completeness was explicitly confirmed; unknown
-    # transport outcomes become None rather than a misleading True.
+    # Normalize both the chosen aggregate and every stage so partial transfers
+    # never appear payload-complete merely because no stream explicitly proved
+    # an invalid payload.
     for proxy in [*passed, *still_rejected]:
         normalize_payload_valid(proxy.tests.upload)
+        for stage in (proxy.tests.upload or {}).get("stages") or []:
+            normalize_payload_valid(stage)
 
     return passed, still_rejected
