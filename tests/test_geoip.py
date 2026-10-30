@@ -1,7 +1,15 @@
 import unittest
 from unittest.mock import patch
 
-from proxyfilter.geoip import GeoIPResult, _parse_ipapi, _parse_ipwhois, enrich_geo_many
+from proxyfilter.geoip import (
+    GeoIPResult,
+    _parse_ipapi,
+    _parse_ipapi_com,
+    _parse_ipapi_is,
+    _parse_ipinfo,
+    _parse_ipwhois,
+    enrich_geo_many,
+)
 from proxyfilter.model import ProxyConfig, SourceInfo
 
 
@@ -29,6 +37,59 @@ class GeoIPTests(unittest.TestCase):
         self.assertEqual(result.country, "Netherlands")
         self.assertEqual(result.asn, 64500)
         self.assertEqual(result.flag, "🇳🇱")
+
+    def test_parse_ipapi_com_response(self):
+        result = _parse_ipapi_com(
+            '{"status":"success","country":"United States","countryCode":"US",'
+            '"isp":"GTHost","org":"GTHost","as":"AS63023 GTHost","query":"169.197.140.224"}',
+            "169.197.140.224",
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.country_code, "US")
+        self.assertEqual(result.country, "United States")
+        self.assertEqual(result.flag, "🇺🇸")
+        self.assertEqual(result.asn, 63023)
+        self.assertEqual(result.org, "GTHost")
+        self.assertEqual(result.isp, "GTHost")
+
+    def test_parse_ipinfo_response(self):
+        result = _parse_ipinfo(
+            '{"ip":"31.59.143.147","city":"Warsaw","region":"Mazovia","country":"PL",'
+            '"org":"AS197574 ExpressHost Ltd"}',
+            "31.59.143.147",
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.country_code, "PL")
+        self.assertEqual(result.flag, "🇵🇱")
+        self.assertEqual(result.asn, 197574)
+        self.assertEqual(result.org, "ExpressHost Ltd")
+
+    def test_parse_ipapi_is_full_response(self):
+        result = _parse_ipapi_is(
+            '{"ip":"31.59.143.147","is_bogon":false,'
+            '"company":{"name":"ExpressHost Ltd"},'
+            '"asn":{"asn":197574,"org":"ExpressHost Ltd"},'
+            '"location":{"country":"Poland","country_code":"PL"}}',
+            "31.59.143.147",
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.country_code, "PL")
+        self.assertEqual(result.country, "Poland")
+        self.assertEqual(result.flag, "🇵🇱")
+        self.assertEqual(result.asn, 197574)
+        self.assertEqual(result.org, "ExpressHost Ltd")
+
+    def test_parse_ipapi_is_anonymous_response_is_incomplete_without_country_code(self):
+        result = _parse_ipapi_is(
+            '{"ip":"31.59.143.147","is_bogon":false,"company":"ExpressHost Ltd",'
+            '"asn":"AS197574 ExpressHost Ltd","city":"Warsaw","region":"Mazovia",'
+            '"country":"Poland","timezone":"Europe/Warsaw"}',
+            "31.59.143.147",
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.reason, "incomplete_response")
+        self.assertEqual(result.country, "Poland")
+        self.assertEqual(result.asn, 197574)
 
     def test_failed_provider_response_is_not_success(self):
         result = _parse_ipwhois(
