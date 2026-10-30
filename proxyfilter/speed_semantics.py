@@ -39,6 +39,28 @@ def _best_partial_timeout_stage(upload: dict) -> dict | None:
     return max(candidates, key=lambda stage: float(stage["mbps"]))
 
 
+def _best_success_stage(upload: dict) -> dict | None:
+    candidates = [
+        stage
+        for stage in upload.get("stages") or []
+        if not stage.get("skipped")
+        and stage.get("ok")
+        and stage.get("mbps") is not None
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda stage: float(stage["mbps"]))
+
+
+def _set_selected_success_stage(proxy: ProxyConfig) -> None:
+    upload = proxy.tests.upload or {}
+    best = _best_success_stage(upload)
+    if best is None:
+        return
+    upload["selected_streams"] = best.get("streams")
+    proxy.tests.upload = upload
+
+
 def _apply_best_partial_timeout(proxy: ProxyConfig) -> None:
     """Use the fastest valid partial-timeout stage when no upload stage completed."""
     upload = proxy.tests.upload or {}
@@ -108,6 +130,11 @@ def check_upload_many(
     """Apply the agreed partial-timeout speed policy to staged upload results."""
     min_mbps = float(kwargs["min_mbps"])
     passed, rejected = speed_staged.check_upload_many(proxies, engine, **kwargs)
+
+    # Record which completed stage supplied the selected aggregate rate. This is
+    # diagnostic metadata only and does not change acceptance.
+    for proxy in [*passed, *rejected]:
+        _set_selected_success_stage(proxy)
 
     # speed_staged historically returned the last configured timeout stage when
     # every stage timed out. With configurable stages such as [1, 8], the last
