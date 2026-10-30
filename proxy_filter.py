@@ -14,6 +14,7 @@ import tempfile
 import yaml
 
 from proxyfilter import cli
+from proxyfilter.global_dedup import RunDeduplicator
 from proxyfilter.history import new_run_id, record_failed_run, record_source_run, utc_now
 from proxyfilter.output_policy import render_proxies as render_proxies_with_reliability
 from proxyfilter.source_config import merged_config
@@ -270,6 +271,9 @@ def main() -> int:
     if history_stage and resume_from and resume_from[-1] != "publish":
         pre_parser.error("--until history may resume only from --resume-from publish")
 
+    original_deduplicate = cli.deduplicate
+    run_deduplicator = RunDeduplicator(original_deduplicate)
+
     try:
         with tempfile.NamedTemporaryFile(
             mode="w",
@@ -281,9 +285,10 @@ def main() -> int:
             yaml.safe_dump(cfg, fh, allow_unicode=True, sort_keys=False)
             tmp_path = fh.name
 
-        # Keep cli.py as the pipeline implementation while applying the output
-        # policy here, where the merged config is already available.
+        # Keep cli.py as the pipeline implementation while applying run-scoped
+        # policy here, where the merged config and selected source set are known.
         cli._render_proxies = render_proxies_with_reliability
+        cli.deduplicate = run_deduplicator
 
         # history is a launcher-owned non-filtering stage after publish. The
         # package CLI still executes through publish; then the snapshot is stored.
@@ -307,6 +312,7 @@ def main() -> int:
         )
         return result
     finally:
+        cli.deduplicate = original_deduplicate
         if tmp_path:
             try:
                 os.unlink(tmp_path)
