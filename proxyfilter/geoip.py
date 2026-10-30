@@ -77,6 +77,29 @@ def _validate_geo_result(result: GeoIPResult, expected_ip: str) -> GeoIPResult:
     return result
 
 
+def _asn_from_text(value: object) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    token = text.split(None, 1)[0].upper()
+    if token.startswith("AS"):
+        token = token[2:]
+    try:
+        return int(token)
+    except ValueError:
+        return None
+
+
+def _org_from_as_text(value: object) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    parts = text.split(None, 1)
+    if len(parts) == 2 and parts[0].upper().startswith("AS") and _asn_from_text(parts[0]) is not None:
+        return parts[1].strip() or None
+    return text
+
+
 def _parse_ipwhois(payload: str, expected_ip: str) -> GeoIPResult:
     try:
         data = json.loads(payload)
@@ -162,12 +185,142 @@ def _parse_ipapi(payload: str, expected_ip: str) -> GeoIPResult:
     )
 
 
+def _parse_ipapi_com(payload: str, expected_ip: str) -> GeoIPResult:
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        return GeoIPResult(False, ip=expected_ip, error=f"invalid JSON: {exc}", reason="invalid_response")
+
+    if not isinstance(data, dict):
+        return GeoIPResult(False, ip=expected_ip, error="GeoIP response is not an object", reason="invalid_response")
+    if str(data.get("status") or "").lower() != "success":
+        return GeoIPResult(
+            False,
+            ip=expected_ip,
+            error=str(data.get("message") or "GeoIP lookup failed"),
+            reason="provider_error",
+        )
+
+    country_code = str(data.get("countryCode") or "").upper() or None
+    return _validate_geo_result(
+        GeoIPResult(
+            True,
+            ip=str(data.get("query") or "") or None,
+            country_code=country_code,
+            country=str(data.get("country") or "") or None,
+            flag=_flag_from_code(country_code),
+            asn=_asn_from_text(data.get("as")),
+            org=str(data.get("org") or "") or _org_from_as_text(data.get("as")),
+            isp=str(data.get("isp") or "") or None,
+        ),
+        expected_ip,
+    )
+
+
+def _parse_ipinfo(payload: str, expected_ip: str) -> GeoIPResult:
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        return GeoIPResult(False, ip=expected_ip, error=f"invalid JSON: {exc}", reason="invalid_response")
+
+    if not isinstance(data, dict):
+        return GeoIPResult(False, ip=expected_ip, error="GeoIP response is not an object", reason="invalid_response")
+    if data.get("bogon") is True or data.get("error"):
+        error = data.get("error")
+        if isinstance(error, dict):
+            error = error.get("message") or error.get("title")
+        return GeoIPResult(
+            False,
+            ip=expected_ip,
+            error=str(error or "GeoIP lookup failed"),
+            reason="provider_error",
+        )
+
+    country_code = str(data.get("country") or "").upper() or None
+    org_text = str(data.get("org") or "") or None
+    return _validate_geo_result(
+        GeoIPResult(
+            True,
+            ip=str(data.get("ip") or "") or None,
+            country_code=country_code,
+            country=str(data.get("country_name") or "") or None,
+            flag=_flag_from_code(country_code),
+            asn=_asn_from_text(data.get("asn") or org_text),
+            org=str(data.get("as_name") or "") or _org_from_as_text(org_text),
+            isp=str(data.get("as_name") or "") or _org_from_as_text(org_text),
+        ),
+        expected_ip,
+    )
+
+
+def _parse_ipapi_is(payload: str, expected_ip: str) -> GeoIPResult:
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        return GeoIPResult(False, ip=expected_ip, error=f"invalid JSON: {exc}", reason="invalid_response")
+
+    if not isinstance(data, dict):
+        return GeoIPResult(False, ip=expected_ip, error="GeoIP response is not an object", reason="invalid_response")
+    if data.get("is_bogon") is True or data.get("error"):
+        return GeoIPResult(
+            False,
+            ip=str(data.get("ip") or expected_ip),
+            error=str(data.get("message") or data.get("error") or "GeoIP lookup failed"),
+            reason="provider_error",
+        )
+
+    location = data.get("location") or {}
+    if not isinstance(location, dict):
+        location = {}
+    asn_data = data.get("asn")
+    if isinstance(asn_data, dict):
+        asn = _asn_from_text(asn_data.get("asn"))
+        as_org = str(asn_data.get("org") or "") or None
+    else:
+        asn = _asn_from_text(asn_data)
+        as_org = _org_from_as_text(asn_data)
+
+    company = data.get("company")
+    if isinstance(company, dict):
+        company_name = str(company.get("name") or company.get("org") or "") or None
+    else:
+        company_name = str(company or "") or None
+
+    country_code = str(
+        location.get("country_code")
+        or data.get("country_code")
+        or data.get("cc")
+        or ""
+    ).upper() or None
+    country = str(location.get("country") or data.get("country") or "") or None
+
+    return _validate_geo_result(
+        GeoIPResult(
+            True,
+            ip=str(data.get("ip") or "") or None,
+            country_code=country_code,
+            country=country,
+            flag=_flag_from_code(country_code),
+            asn=asn,
+            org=as_org or company_name,
+            isp=company_name or as_org,
+        ),
+        expected_ip,
+    )
+
+
 def _provider_parser(provider: str):
     name = provider.strip().lower()
     if name == "ipwhois":
         return _parse_ipwhois
     if name == "ipapi":
         return _parse_ipapi
+    if name in {"ip-api", "ipapi-com"}:
+        return _parse_ipapi_com
+    if name == "ipinfo":
+        return _parse_ipinfo
+    if name == "ipapi-is":
+        return _parse_ipapi_is
     raise ValueError(f"unsupported GeoIP provider: {provider}")
 
 
