@@ -11,7 +11,7 @@ from .model import ProxyConfig
 from .reliability import DEGRADED, STABLE
 
 
-FINAL_SUBSCRIPTION_NAMES = ("all.txt", "stable.txt", "unstable.txt")
+FINAL_SUBSCRIPTION_NAMES = ("all.txt", "stable.txt", "unstable.txt", "reliable.txt")
 
 
 def _rendered_uri(proxy: ProxyConfig) -> str:
@@ -43,7 +43,8 @@ def publish_source(
     """Compatibility no-op: per-source final subscriptions are disabled.
 
     Source provenance remains available in work/state/history JSONL records, but
-    final publication is intentionally global only: all/stable/unstable.
+    final publication is intentionally global only:
+    all/stable/unstable/reliable.
     """
     return None, None
 
@@ -52,22 +53,29 @@ def _reliability_status(proxy: ProxyConfig) -> str:
     return str((proxy.tests.reliability or {}).get("status") or "unknown")
 
 
-def _subscription_generation(proxies: list[ProxyConfig]) -> tuple[dict[str, str], dict[str, int]]:
+def _subscription_generation(
+    proxies: list[ProxyConfig],
+    reliable_ids: set[str] | None = None,
+) -> tuple[dict[str, str], dict[str, int], list[ProxyConfig]]:
     """Render the complete publication generation before touching live files."""
+    reliable_ids = reliable_ids or set()
     stable = [proxy for proxy in proxies if _reliability_status(proxy) == STABLE]
     unstable = [proxy for proxy in proxies if _reliability_status(proxy) == DEGRADED]
+    reliable = [proxy for proxy in proxies if proxy.ensure_id() in reliable_ids]
     texts = {
         "all.txt": subscription_text(proxies),
         "stable.txt": subscription_text(stable),
         "unstable.txt": subscription_text(unstable),
+        "reliable.txt": subscription_text(reliable),
     }
     counts = {
         "all": len(proxies),
         "stable": len(stable),
         "unstable": len(unstable),
+        "reliable": len(reliable),
         "unclassified": len(proxies) - len(stable) - len(unstable),
     }
-    return texts, counts
+    return texts, counts, reliable
 
 
 def _publish_subscription_generation(output_dir: Path, texts: dict[str, str]) -> None:
@@ -131,10 +139,16 @@ def publish_merged(
     data_dir: Path,
     proxies: list[ProxyConfig],
     diversity_cfg: dict | None = None,
+    reliable_ids: set[str] | None = None,
 ) -> tuple[Path, None]:
-    """Publish all.txt, stable.txt and unstable.txt after diversity.
+    """Publish all/stable/unstable/reliable subscriptions after diversity.
 
-    Canonical JSONL snapshots remain in data/work and data/state. Only the three
+    ``reliable_ids`` is an orthogonal historical classification. It does not
+    influence diversity or current-run stream reliability. Because the reliable
+    view is selected only after diversity, reliable.txt is always a subset of
+    all.txt.
+
+    Canonical JSONL snapshots remain in data/work and data/state. Only the four
     managed subscription files are replaced in data/output; unrelated files are
     preserved.
 
@@ -198,7 +212,8 @@ def publish_merged(
 
     # Render/validate the whole next generation before changing any live
     # subscription file. This prevents one bad view from leaving a partial set.
-    texts, split_counts = _subscription_generation(proxies)
+    texts, split_counts, reliable = _subscription_generation(proxies, reliable_ids)
+    write_jsonl(work_dir / "reliable.jsonl", reliable)
     output_dir = data_dir / "output"
     _publish_subscription_generation(output_dir, texts)
     write_json(reports_dir / "subscriptions.json", split_counts)
