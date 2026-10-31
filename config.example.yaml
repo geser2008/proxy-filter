@@ -158,11 +158,23 @@ history:
   # history/proxy-history.sqlite3 under data_dir.
   database: history/proxy-history.sqlite3
 
+# Historical reliability is independent of the current speed-test reliability
+# class. One complete global run can add at most one confirmation per proxy,
+# even when the same proxy is present in several sources. Only tested outcomes
+# affect these counters; source absence or a source fetch outage is not a failure.
+# A proxy is written to output/reliable.txt only when it is also selected by the
+# current diversity policy, so reliable.txt is always a subset of all.txt.
+reliable:
+  enabled: true
+  min_confirmed_passes: 3
+  min_consecutive_passes: 2
+
 # Applied only to merged publication after all real proxy tests and the global
 # canonical dedup. Exact exit IP duplicates are reduced first; only the winners
 # then compete inside the broader exit-subnet + ASN cluster. The selected set is
-# subsequently split by reliability into output/stable.* and output/unstable.*;
-# output/all.* always contains both classes.
+# subsequently split by current-run stream reliability into output/stable.txt
+# and output/unstable.txt. output/all.txt contains both classes; reliable.txt is
+# an independent historical view of the diversity-selected set.
 diversity:
   enabled: true
   max_same_exit_ip: 1
@@ -196,5 +208,6 @@ output:
   # unless the rename_template already contains {stream_reliability} or
   # {reliability}. Reliability no longer excludes a proxy before publication:
   # all.txt contains every diversity-selected proxy, stable.txt only stable,
-  # and unstable.txt only degraded.
+  # unstable.txt only degraded, and reliable.txt is selected independently from
+  # the historical counters above.
   include_stream_reliability: true
