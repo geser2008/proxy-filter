@@ -25,14 +25,15 @@ from proxyfilter.probes import check_latency_many
 from proxyfilter.publish import publish_merged, publish_source
 from proxyfilter.resume import STAGE_ORDER, load_stage, stage_index, stage_should_run, validate_resume_range
 from proxyfilter.security import check_static_security
-from proxyfilter.singbox_backend import SingBoxBackend
+from proxyfilter.singbox_auto import SingBoxBackend
 from proxyfilter.source_status import (
     apply_warning_summary,
     build_source_status_rows,
     warning_source_ids,
     write_source_status,
 )
-from proxyfilter.speed import check_download_many, check_upload_many
+from proxyfilter.speed_reliability import check_download_many
+from proxyfilter.speed_semantics import check_upload_many
 from proxyfilter.tcpcheck import check_many
 
 
