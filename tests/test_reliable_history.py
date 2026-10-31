@@ -96,7 +96,10 @@ class ReliableHistoryTests(unittest.TestCase):
 
             counts = update_global_reliability(db, [from_a, from_b], [])
             row = reliability_rows(db)[from_a.id]
-            self.assertEqual(counts, {"tested": 1, "passed": 1, "failed": 0})
+            self.assertEqual(
+                counts,
+                {"tested": 1, "passed": 1, "failed": 0, "skipped": 0},
+            )
             self.assertEqual(row["test_count"], 1)
             self.assertEqual(row["confirmed_passes"], 1)
 
@@ -114,6 +117,25 @@ class ReliableHistoryTests(unittest.TestCase):
             rows = reliability_rows(db)
             self.assertEqual(rows[tested.id], before)
             self.assertNotIn(absent.id, rows)
+
+    def test_same_run_key_is_counted_only_once(self):
+        with TemporaryDirectory() as tmp:
+            db = Path(tmp) / "history.sqlite3"
+            proxy = make_proxy(9)
+            first = update_global_reliability(db, [proxy], [], run_key="run-1")
+            replay = update_global_reliability(db, [proxy], [], run_key="run-1")
+
+            self.assertEqual(first["skipped"], 0)
+            self.assertEqual(replay, {"tested": 0, "passed": 0, "failed": 0, "skipped": 1})
+            self.assertEqual(reliability_rows(db)[proxy.id]["test_count"], 1)
+
+    def test_different_run_keys_are_distinct_confirmations(self):
+        with TemporaryDirectory() as tmp:
+            db = Path(tmp) / "history.sqlite3"
+            proxy = make_proxy(10)
+            update_global_reliability(db, [proxy], [], run_key="run-1")
+            update_global_reliability(db, [proxy], [], run_key="run-2")
+            self.assertEqual(reliability_rows(db)[proxy.id]["confirmed_passes"], 2)
 
     def test_overlap_is_rejected_as_ambiguous(self):
         with TemporaryDirectory() as tmp:
