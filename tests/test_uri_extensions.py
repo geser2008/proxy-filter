@@ -7,7 +7,7 @@ from urllib.parse import quote
 from proxyfilter.ingest import parse_uri
 from proxyfilter.model import SourceInfo
 from proxyfilter.render import render_uri, validate_round_trip
-from proxyfilter.singbox_backend import SingBoxBackend
+from proxyfilter.singbox_modes import SingBoxBackend
 
 
 SOURCE = SourceInfo("test", "test", "plain")
