@@ -7,7 +7,7 @@ import unittest
 
 from proxyfilter.engine import EngineError
 from proxyfilter.model import ProxyConfig, SourceInfo
-from proxyfilter.singbox_backend import SingBoxBackend
+from proxyfilter.singbox_modes import SingBoxBackend
 from proxyfilter.cli import process_proxies
 
 
