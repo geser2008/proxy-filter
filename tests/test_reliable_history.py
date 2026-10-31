@@ -1,10 +1,14 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
 
+from proxyfilter.history import _connect as history_connect
 from proxyfilter.model import ProxyConfig, SourceInfo
 from proxyfilter.reliable_history import (
+    migrate_reliable_history,
+    reliability_db_path,
     reliable_ids,
     reliability_rows,
     update_global_reliability,
@@ -24,6 +28,68 @@ def make_proxy(suffix: int, source_id: str = "source-a") -> ProxyConfig:
 
 
 class ReliableHistoryTests(unittest.TestCase):
+    def test_default_database_is_existing_history_database(self):
+        data_dir = Path("/srv/proxy-filter/data")
+        self.assertEqual(
+            reliability_db_path(data_dir),
+            data_dir / "history" / "proxy-history.sqlite3",
+        )
+        self.assertEqual(
+            reliability_db_path(data_dir, {"database": "custom/history.sqlite3"}),
+            data_dir / "custom" / "history.sqlite3",
+        )
+        self.assertEqual(
+            reliability_db_path(data_dir, {"database": "/tmp/proxy-history.sqlite3"}),
+            Path("/tmp/proxy-history.sqlite3"),
+        )
+
+    def test_migration_preserves_existing_history_data(self):
+        with TemporaryDirectory() as tmp:
+            db = Path(tmp) / "proxy-history.sqlite3"
+            with history_connect(db) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO runs(
+                        run_id, source_id, source_name, started_at, finished_at, status
+                    ) VALUES(?,?,?,?,?,?)
+                    """,
+                    (
+                        "existing-run",
+                        "existing-source",
+                        "Existing Source",
+                        "2026-10-31T10:00:00+00:00",
+                        "2026-10-31T10:05:00+00:00",
+                        "ok",
+                    ),
+                )
+
+            migrate_reliable_history(db)
+
+            with sqlite3.connect(db) as conn:
+                existing = conn.execute(
+                    "SELECT source_id, status FROM runs WHERE run_id='existing-run'"
+                ).fetchone()
+                self.assertEqual(existing, ("existing-source", "ok"))
+                tables = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                self.assertIn("proxy_global_reliability", tables)
+                self.assertIn("proxy_global_reliability_runs", tables)
+                feature_version = conn.execute(
+                    """
+                    SELECT version FROM feature_schema_meta
+                    WHERE feature='global_reliability'
+                    """
+                ).fetchone()
+                self.assertEqual(feature_version, (1,))
+                core_version = conn.execute(
+                    "SELECT value FROM schema_meta WHERE key='schema_version'"
+                ).fetchone()
+                self.assertEqual(core_version, ("3",))
+
     def test_first_pass_is_not_reliable(self):
         with TemporaryDirectory() as tmp:
             db = Path(tmp) / "history.sqlite3"
