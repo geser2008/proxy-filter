@@ -23,7 +23,7 @@ class ProductionBase64IngestTests(unittest.TestCase):
         )
         proxies, errors, fmt = detect_and_parse(raw, "test", "Test")
         self.assertEqual(proxies, [])
-        self.assertEqual(fmt, "unknown")
+        self.assertEqual(fmt, "base64/unknown")
         self.assertEqual(errors, [{"reason": "unsupported_subscription_format"}])
 
     def test_production_rejects_base64_singbox_json(self) -> None:
@@ -43,7 +43,7 @@ class ProductionBase64IngestTests(unittest.TestCase):
         )
         proxies, errors, fmt = detect_and_parse(raw, "test", "Test")
         self.assertEqual(proxies, [])
-        self.assertEqual(fmt, "unknown")
+        self.assertEqual(fmt, "base64/unknown")
         self.assertEqual(errors, [{"reason": "unsupported_subscription_format"}])
 
     def test_production_still_accepts_base64_uri_text(self) -> None:
