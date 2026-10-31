@@ -10,7 +10,6 @@ sing-box-extended ``parser`` outbound.
 """
 
 from copy import copy
-import os
 from typing import Any
 
 from .engine import EngineError
@@ -69,15 +68,15 @@ _PRECHECK_ONLY_FIELDS = {
 
 
 class SingBoxBackend(_MappedSingBoxBackend):
-    """Dual-mode production backend.
+    """Explicit dual-mode backend used by the automatic production selector.
 
-    ``standard`` is the default. The optional environment variable
-    ``PROXYFILTER_SINGBOX_MODE`` lets real-data runs switch between ``standard``
-    and ``extended`` without changing the existing config schema yet.
+    ``standard`` is the deterministic default for direct callers. Production
+    auto-detection is implemented in ``proxyfilter.singbox_auto`` and passes the
+    selected mode explicitly.
     """
 
     def __init__(self, *args: Any, backend_mode: str | None = None, **kwargs: Any) -> None:
-        mode = str(backend_mode or os.environ.get("PROXYFILTER_SINGBOX_MODE", "standard")).strip().lower()
+        mode = str(backend_mode or "standard").strip().lower()
         if mode not in {"standard", "extended"}:
             raise EngineError(f"unsupported sing-box backend mode: {mode}")
         self.backend_mode = mode
