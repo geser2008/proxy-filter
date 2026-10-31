@@ -14,6 +14,16 @@ DEFAULT_MIN_CONFIRMED_PASSES = 3
 DEFAULT_MIN_CONSECUTIVE_PASSES = 2
 
 
+class _ClosingConnection(sqlite3.Connection):
+    """SQLite connection whose context manager also closes the handle."""
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 def default_reliability_db(data_dir: Path) -> Path:
     return data_dir / "state" / "proxy-reliability.sqlite3"
 
@@ -25,7 +35,7 @@ def _iso_now(now: datetime | None = None) -> str:
 
 def _connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, factory=_ClosingConnection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
