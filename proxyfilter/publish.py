@@ -13,7 +13,7 @@ from .reliability import DEGRADED, STABLE
 from .reliable_history import (
     DEFAULT_MIN_CONFIRMED_PASSES,
     DEFAULT_MIN_CONSECUTIVE_PASSES,
-    default_reliability_db,
+    reliability_db_path,
     reliable_ids as load_reliable_ids,
     snapshot_run_key,
     update_global_reliability,
@@ -148,12 +148,13 @@ def _historical_reliable_ids(
     data_dir: Path,
     qualified: list[ProxyConfig],
     reliable_cfg: dict | None,
+    history_cfg: dict | None,
 ) -> tuple[set[str], dict]:
     cfg = reliable_cfg or {}
     enabled = bool(cfg.get("enabled", True))
     min_confirmed = int(cfg.get("min_confirmed_passes", DEFAULT_MIN_CONFIRMED_PASSES))
     min_consecutive = int(cfg.get("min_consecutive_passes", DEFAULT_MIN_CONSECUTIVE_PASSES))
-    db_path = default_reliability_db(data_dir)
+    db_path = reliability_db_path(data_dir, history_cfg)
 
     report = {
         "enabled": enabled,
@@ -192,6 +193,7 @@ def publish_merged(
     diversity_cfg: dict | None = None,
     reliable_ids: set[str] | None = None,
     reliable_cfg: dict | None = None,
+    history_cfg: dict | None = None,
 ) -> tuple[Path, None]:
     """Publish all/stable/unstable/reliable subscriptions after diversity.
 
@@ -200,8 +202,8 @@ def publish_merged(
     view is selected only after diversity, reliable.txt is always a subset of
     all.txt.
 
-    When ``reliable_ids`` is omitted, a full work snapshot updates the persistent
-    global reliability state in data/state/proxy-reliability.sqlite3. The update
+    When ``reliable_ids`` is omitted, a full work snapshot updates persistent
+    global reliability state inside the configured history database. The update
     is idempotent for resume-from-publish because the exact global snapshot has a
     stable run key.
 
@@ -228,6 +230,7 @@ def publish_merged(
             data_dir,
             proxies,
             reliable_cfg,
+            history_cfg,
         )
         write_json(reports_dir / "reliable.json", reliable_report)
 
