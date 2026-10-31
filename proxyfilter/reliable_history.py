@@ -5,6 +5,7 @@ from pathlib import Path
 import hashlib
 import sqlite3
 
+from .history import _connect as history_connect
 from .model import ProxyConfig
 
 
@@ -12,20 +13,17 @@ RESULT_PASS = "pass"
 RESULT_FAIL = "fail"
 DEFAULT_MIN_CONFIRMED_PASSES = 3
 DEFAULT_MIN_CONSECUTIVE_PASSES = 2
+RELIABLE_SCHEMA_VERSION = 1
 
 
-class _ClosingConnection(sqlite3.Connection):
-    """SQLite connection whose context manager also closes the handle."""
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        try:
-            return super().__exit__(exc_type, exc_value, traceback)
-        finally:
-            self.close()
-
-
-def default_reliability_db(data_dir: Path) -> Path:
-    return data_dir / "state" / "proxy-reliability.sqlite3"
+def reliability_db_path(data_dir: Path, history_cfg: dict | None = None) -> Path:
+    """Resolve the existing history database used by the rest of proxy-filter."""
+    cfg = history_cfg or {}
+    raw = cfg.get("database")
+    if not raw:
+        return data_dir / "history" / "proxy-history.sqlite3"
+    path = Path(str(raw))
+    return path if path.is_absolute() else data_dir / path
 
 
 def _iso_now(now: datetime | None = None) -> str:
@@ -33,19 +31,20 @@ def _iso_now(now: datetime | None = None) -> str:
     return value.isoformat(timespec="seconds")
 
 
-def _connect(path: Path) -> sqlite3.Connection:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, factory=_ClosingConnection)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA synchronous = NORMAL")
-    _ensure_schema(conn)
-    return conn
-
-
 def _ensure_schema(conn: sqlite3.Connection) -> None:
+    """Idempotently migrate the existing history DB with reliable-history tables.
+
+    The core history schema remains owned by proxyfilter.history. This additive
+    migration stores its own feature schema version so an existing history DB can
+    be upgraded in place without rebuilding or losing per-source history.
+    """
     conn.executescript(
         """
+        CREATE TABLE IF NOT EXISTS feature_schema_meta (
+            feature TEXT PRIMARY KEY,
+            version INTEGER NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS proxy_global_reliability (
             proxy_id TEXT PRIMARY KEY,
             first_tested_at TEXT NOT NULL,
@@ -75,7 +74,40 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    row = conn.execute(
+        "SELECT version FROM feature_schema_meta WHERE feature='global_reliability'"
+    ).fetchone()
+    version = int(row[0]) if row is not None else 0
+    if version > RELIABLE_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"global reliability schema v{version} is newer than supported "
+            f"v{RELIABLE_SCHEMA_VERSION}"
+        )
+    conn.execute(
+        """
+        INSERT INTO feature_schema_meta(feature, version)
+        VALUES('global_reliability', ?)
+        ON CONFLICT(feature) DO UPDATE SET version=excluded.version
+        """,
+        (RELIABLE_SCHEMA_VERSION,),
+    )
     conn.commit()
+
+
+def _connect(path: Path) -> sqlite3.Connection:
+    conn = history_connect(path)
+    try:
+        _ensure_schema(conn)
+    except Exception:
+        conn.close()
+        raise
+    return conn
+
+
+def migrate_reliable_history(db_path: Path) -> None:
+    """Apply the additive reliable-history migration to an existing history DB."""
+    with _connect(db_path):
+        pass
 
 
 def _deduplicated_ids(proxies: list[ProxyConfig]) -> set[str]:
