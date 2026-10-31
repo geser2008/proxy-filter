@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
+from proxyfilter.cli import build_engine
 from proxyfilter.singbox_auto import (
     SingBoxBackend,
     detect_backend_mode,
     normalize_backend_mode,
     resolve_singbox_command,
 )
+from proxyfilter.singbox_modes import SingBoxBackend as ModeSingBoxBackend
 
 
 class SingBoxAutoTests(unittest.TestCase):
@@ -63,6 +66,40 @@ class SingBoxAutoTests(unittest.TestCase):
         with patch.dict(os.environ, {"PROXYFILTER_SINGBOX_MODE": "extended"}):
             backend = SingBoxBackend()
         self.assertEqual(backend.backend_mode, "standard")
+
+    def test_mode_adapter_default_is_standard_even_with_legacy_environment_variable(self) -> None:
+        with patch.dict(os.environ, {"PROXYFILTER_SINGBOX_MODE": "extended"}):
+            backend = ModeSingBoxBackend()
+        self.assertEqual(backend.backend_mode, "standard")
+
+    @patch("proxyfilter.singbox_auto.shutil.which", return_value="/usr/local/bin/sing-box")
+    @patch(
+        "proxyfilter.singbox_auto._ModeSingBoxBackend.version",
+        return_value="sing-box version 1.14.3-extended-2.7.3-lite",
+    )
+    def test_cli_build_engine_uses_auto_detected_extended_backend(self, version, which) -> None:
+        backend = build_engine({}, Path("/tmp/proxy-filter-test"))
+        self.assertIsInstance(backend, SingBoxBackend)
+        self.assertEqual(backend.command, "/usr/local/bin/sing-box")
+        self.assertEqual(backend.backend_mode, "extended")
+        self.assertEqual(backend.version(), "sing-box version 1.14.3-extended-2.7.3-lite")
+        version.assert_called_once()
+        which.assert_called_once_with("sing-box")
+
+    @patch("proxyfilter.singbox_auto.shutil.which")
+    @patch(
+        "proxyfilter.singbox_auto._ModeSingBoxBackend.version",
+        return_value="sing-box version 1.14.3",
+    )
+    def test_cli_build_engine_preserves_explicit_command(self, version, which) -> None:
+        backend = build_engine(
+            {"engine": {"command": "/opt/sing-box/bin/sing-box"}},
+            Path("/tmp/proxy-filter-test"),
+        )
+        self.assertEqual(backend.command, "/opt/sing-box/bin/sing-box")
+        self.assertEqual(backend.backend_mode, "standard")
+        version.assert_called_once()
+        which.assert_not_called()
 
 
 if __name__ == "__main__":
