@@ -96,7 +96,14 @@ def _try_base64_text(text: str, *, allow_structured: bool = False) -> str | None
             decoded = blob.decode("utf-8")
             if _contains_proxy_uri(decoded):
                 return decoded
-            if allow_structured and ("proxies:" in decoded or '"outbounds"' in decoded):
+            if allow_structured:
+                if "proxies:" in decoded or '"outbounds"' in decoded:
+                    return decoded
+            else:
+                # Preserve the fact that the outer subscription was valid Base64
+                # even when the decoded payload is not a supported URI list. The
+                # recursive production parser will classify that inner document
+                # as unknown without invoking structured parsers.
                 return decoded
         except (binascii.Error, UnicodeDecodeError, ValueError):
             continue
