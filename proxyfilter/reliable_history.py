@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+import hashlib
 import sqlite3
 
 from .model import ProxyConfig
@@ -9,6 +10,12 @@ from .model import ProxyConfig
 
 RESULT_PASS = "pass"
 RESULT_FAIL = "fail"
+DEFAULT_MIN_CONFIRMED_PASSES = 3
+DEFAULT_MIN_CONSECUTIVE_PASSES = 2
+
+
+def default_reliability_db(data_dir: Path) -> Path:
+    return data_dir / "state" / "proxy-reliability.sqlite3"
 
 
 def _iso_now(now: datetime | None = None) -> str:
@@ -49,6 +56,13 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
                 consecutive_passes DESC,
                 last_confirmed_at DESC
             );
+
+        CREATE TABLE IF NOT EXISTS proxy_global_reliability_runs (
+            run_key TEXT PRIMARY KEY,
+            observed_at TEXT NOT NULL,
+            passed_count INTEGER NOT NULL,
+            failed_count INTEGER NOT NULL
+        );
         """
     )
     conn.commit()
@@ -58,18 +72,51 @@ def _deduplicated_ids(proxies: list[ProxyConfig]) -> set[str]:
     return {proxy.ensure_id() for proxy in proxies}
 
 
+def snapshot_run_key(
+    work_dir: Path,
+    passed: list[ProxyConfig],
+    failed: list[ProxyConfig],
+) -> str | None:
+    """Identify one concrete global pipeline run for idempotent state updates.
+
+    A fresh full run rewrites 01-parsed.jsonl. Resume-from-publish keeps the same
+    snapshot, so its mtime plus the terminal outcome set is stable and prevents
+    double-counting. If the parsed snapshot is unavailable, the caller should
+    avoid an implicit reliability-state update.
+    """
+    parsed = work_dir / "01-parsed.jsonl"
+    if not parsed.is_file():
+        return None
+
+    digest = hashlib.sha256()
+    digest.update(str(parsed.stat().st_mtime_ns).encode("ascii"))
+    digest.update(b"\0pass\0")
+    for proxy_id in sorted(_deduplicated_ids(passed)):
+        digest.update(proxy_id.encode("utf-8"))
+        digest.update(b"\0")
+    digest.update(b"fail\0")
+    for proxy_id in sorted(_deduplicated_ids(failed)):
+        digest.update(proxy_id.encode("utf-8"))
+        digest.update(b"\0")
+    return "global-" + digest.hexdigest()
+
+
 def update_global_reliability(
     db_path: Path,
     passed: list[ProxyConfig],
     failed: list[ProxyConfig],
     *,
     now: datetime | None = None,
+    run_key: str | None = None,
 ) -> dict[str, int]:
     """Record one complete global test outcome per proxy.
 
     A proxy is counted at most once per call even when it carries provenance
     from multiple sources. Only actually tested proxies should be supplied:
     source absence or fetch failure by itself is not a reliability failure.
+
+    When ``run_key`` is supplied, replaying the same global snapshot is
+    idempotent. This is required for resume-from-publish workflows.
     """
     passed_ids = _deduplicated_ids(passed)
     failed_ids = _deduplicated_ids(failed)
@@ -82,6 +129,14 @@ def update_global_reliability(
 
     observed_at = _iso_now(now)
     with _connect(db_path) as conn:
+        if run_key:
+            exists = conn.execute(
+                "SELECT 1 FROM proxy_global_reliability_runs WHERE run_key=?",
+                (run_key,),
+            ).fetchone()
+            if exists is not None:
+                return {"tested": 0, "passed": 0, "failed": 0, "skipped": 1}
+
         for proxy_id in sorted(passed_ids):
             conn.execute(
                 """
@@ -157,10 +212,21 @@ def update_global_reliability(
                 ),
             )
 
+        if run_key:
+            conn.execute(
+                """
+                INSERT INTO proxy_global_reliability_runs(
+                    run_key, observed_at, passed_count, failed_count
+                ) VALUES(?,?,?,?)
+                """,
+                (run_key, observed_at, len(passed_ids), len(failed_ids)),
+            )
+
     return {
         "tested": len(passed_ids) + len(failed_ids),
         "passed": len(passed_ids),
         "failed": len(failed_ids),
+        "skipped": 0,
     }
 
 
@@ -177,8 +243,8 @@ def reliability_rows(db_path: Path) -> dict[str, dict]:
 def reliable_ids(
     db_path: Path,
     *,
-    min_confirmed_passes: int = 3,
-    min_consecutive_passes: int = 2,
+    min_confirmed_passes: int = DEFAULT_MIN_CONFIRMED_PASSES,
+    min_consecutive_passes: int = DEFAULT_MIN_CONSECUTIVE_PASSES,
 ) -> set[str]:
     if min_confirmed_passes < 1:
         raise ValueError("reliable.min_confirmed_passes must be at least 1")
