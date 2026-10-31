@@ -74,6 +74,7 @@ class LatencyGateTests(unittest.TestCase):
             max_ms=800,
             workers=4,
             batch_size=128,
+            recovery_enabled=True,
         )
 
         self.assertEqual({proxy.id for proxy in passed}, {runtime_fail.id, good.id})
