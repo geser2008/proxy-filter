@@ -7,8 +7,17 @@ from tempfile import TemporaryDirectory
 
 from .diversity import select_diverse
 from .io import write_json, write_jsonl, write_text
+from .known_working import load_rejected_candidates
 from .model import ProxyConfig
 from .reliability import DEGRADED, STABLE
+from .reliable_history import (
+    DEFAULT_MIN_CONFIRMED_PASSES,
+    DEFAULT_MIN_CONSECUTIVE_PASSES,
+    default_reliability_db,
+    reliable_ids as load_reliable_ids,
+    snapshot_run_key,
+    update_global_reliability,
+)
 
 
 FINAL_SUBSCRIPTION_NAMES = ("all.txt", "stable.txt", "unstable.txt", "reliable.txt")
@@ -135,18 +144,66 @@ def _publish_subscription_generation(output_dir: Path, texts: dict[str, str]) ->
             raise
 
 
+def _historical_reliable_ids(
+    data_dir: Path,
+    qualified: list[ProxyConfig],
+    reliable_cfg: dict | None,
+) -> tuple[set[str], dict]:
+    cfg = reliable_cfg or {}
+    enabled = bool(cfg.get("enabled", True))
+    min_confirmed = int(cfg.get("min_confirmed_passes", DEFAULT_MIN_CONFIRMED_PASSES))
+    min_consecutive = int(cfg.get("min_consecutive_passes", DEFAULT_MIN_CONSECUTIVE_PASSES))
+    db_path = default_reliability_db(data_dir)
+
+    report = {
+        "enabled": enabled,
+        "database": str(db_path),
+        "min_confirmed_passes": min_confirmed,
+        "min_consecutive_passes": min_consecutive,
+        "update": {"tested": 0, "passed": 0, "failed": 0, "skipped": 1},
+        "eligible": 0,
+    }
+    if not enabled:
+        return set(), report
+
+    rejected = load_rejected_candidates(data_dir)
+    run_key = snapshot_run_key(data_dir / "work", qualified, rejected)
+    if run_key is not None:
+        report["update"] = update_global_reliability(
+            db_path,
+            qualified,
+            rejected,
+            run_key=run_key,
+        )
+        report["run_key"] = run_key
+
+    ids = load_reliable_ids(
+        db_path,
+        min_confirmed_passes=min_confirmed,
+        min_consecutive_passes=min_consecutive,
+    )
+    report["eligible"] = len(ids)
+    return ids, report
+
+
 def publish_merged(
     data_dir: Path,
     proxies: list[ProxyConfig],
     diversity_cfg: dict | None = None,
     reliable_ids: set[str] | None = None,
+    reliable_cfg: dict | None = None,
 ) -> tuple[Path, None]:
     """Publish all/stable/unstable/reliable subscriptions after diversity.
 
-    ``reliable_ids`` is an orthogonal historical classification. It does not
+    ``reliable`` is an orthogonal historical classification. It does not
     influence diversity or current-run stream reliability. Because the reliable
     view is selected only after diversity, reliable.txt is always a subset of
     all.txt.
+
+    When ``reliable_ids`` is omitted, a full work snapshot updates the persistent
+    global reliability state in data/state/proxy-reliability.sqlite3. The update
+    is idempotent for resume-from-publish because the exact global snapshot has a
+    stable run key.
 
     Canonical JSONL snapshots remain in data/work and data/state. Only the four
     managed subscription files are replaced in data/output; unrelated files are
@@ -165,6 +222,14 @@ def publish_merged(
     for proxy in proxies:
         proxy.tests.status = "qualified"
     write_jsonl(work_dir / "12-qualified.jsonl", proxies)
+
+    if reliable_ids is None:
+        reliable_ids, reliable_report = _historical_reliable_ids(
+            data_dir,
+            proxies,
+            reliable_cfg,
+        )
+        write_json(reports_dir / "reliable.json", reliable_report)
 
     if enabled:
         selected, suppressed, report = select_diverse(
