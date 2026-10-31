@@ -26,6 +26,40 @@ class URIValidationTests(unittest.TestCase):
         proxy = parse_uri(uri, self.source)
         self.assertEqual(proxy.params["path"], "/api")
 
+    def test_rejects_duplicate_generic_query_parameter(self) -> None:
+        uri = (
+            "trojan://secret@example.com:443"
+            "?security=tls&type=tcp&sni=one.example&sni=two.example"
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate URI query parameter.*sni"):
+            parse_uri(uri, self.source)
+
+    def test_rejects_duplicate_shadowsocks_query_parameter(self) -> None:
+        uri = (
+            "ss://YWVzLTI1Ni1nY206c2VjcmV0@example.com:8388"
+            "?plugin=v2ray-plugin&plugin=obfs-local"
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate URI query parameter.*plugin"):
+            parse_uri(uri, self.source)
+
+    def test_preserves_undocumented_lowercase_allowinsecure_key(self) -> None:
+        uri = (
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443"
+            "?encryption=none&security=tls&type=tcp&allowinsecure=1"
+        )
+        proxy = parse_uri(uri, self.source)
+        self.assertEqual(proxy.params["allowinsecure"], "1")
+        self.assertNotIn("allowInsecure", proxy.params)
+
+    def test_distinct_opaque_keys_are_not_treated_as_duplicate_semantics(self) -> None:
+        uri = (
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443"
+            "?encryption=none&security=tls&type=tcp&allowinsecure=1&allowInsecure=0"
+        )
+        proxy = parse_uri(uri, self.source)
+        self.assertEqual(proxy.params["allowinsecure"], "1")
+        self.assertEqual(proxy.params["allowInsecure"], "0")
+
     def test_accepts_plain_sip002_shadowsocks_userinfo(self) -> None:
         uri = (
             "ss://chacha20-ietf-poly1305:oZIoA69Q8yhcQV8ka3Pa3A@"

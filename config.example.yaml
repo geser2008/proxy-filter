@@ -1,6 +1,13 @@
 paths:
   data_dir: /srv/proxy-filter/data
 
+# Proxies that have passed the full qualifying pipeline at least once are kept
+# in data/state/known-working.jsonl and re-tested on every fresh full run. A
+# previously working proxy may fail temporarily and remain in this retained set;
+# it expires only after its last successful run is older than this period.
+state:
+  working_retention_days: 30
+
 filters:
   security:
     reject_allow_insecure: true
@@ -13,57 +20,57 @@ filters:
 
   latency:
     mode: singbox-api
-    test_url: https://www.gstatic.com/generate_204
+
+    # Recovery is disabled by default: every proxy gets exactly one primary URL
+    # test. Set true to allow one second attempt after an eligible runtime
+    # failure. With fallback_url configured, that attempt uses the alternate
+    # endpoint; without it, only transient failures are retried on primary_url.
+    recovery_enabled: false
+    primary_url: https://www.gstatic.com/generate_204
+    fallback_url: https://www.cloudflare.com/cdn-cgi/trace
     timeout_seconds: 12
-    max_ms: 1200
+
+    # A negative value disables rejection by the measured latency while keeping
+    # a successful primary or recovery URL test mandatory.
+    max_ms: -1
+
     batch_size: 128
     workers: 32
-    # Fallback/debug mode only:
+    # Debug/curl mode only:
     command: curl
 
   speed:
-    # Primary staged speed-test endpoint. The total payload is kept constant
-    # across stream stages. 80 MB avoids Cloudflare's observed rejected byte
-    # ranges for the default 1/2/4/8/10 stages.
+    # Cloudflare is the primary download backend. The configured stream stages
+    # are measurements, not retries: each number is one aggregate test using
+    # that many parallel streams. [1, 8] means one single-stream measurement
+    # followed by one eight-stream measurement. A complete successful measurement
+    # is preferred; when all usable measurements end only by max-time timeout,
+    # the fastest partial timeout measurement is used for the speed threshold.
     download_url: https://speed.cloudflare.com/__down?bytes=80000000
+    download_streams: [1, 8]
 
-    # Aggregate download stages. Any non-empty sequence of unique positive
-    # integers is allowed and the configured order is preserved. Examples:
-    # [1] = single-stream only, [10] = one 10-stream aggregate test,
-    # [1, 2, 4, 8, 10] = five stages. If omitted, defaults to [1, 2, 4, 8].
-    download_streams:
-      - 1
-      - 2
-      - 4
-      - 8
-      - 10
+    # One recovery pass is allowed only after a technical download failure
+    # (for example a transient TLS/SOCKS/zero-byte timeout/stall failure).
+    # A valid measurement below min_download_mbps is not retried. Explicit
+    # provider failures continue to use download_fallback_url instead.
+    recovery_enabled: true
 
-    # Skip stages whose share of the fixed total payload would be smaller than
-    # this value. With 80 MB total and 5 MB minimum, stages through 16 streams
-    # are allowed; higher counts are recorded as skipped rather than producing
-    # very short, noisy transfers.
+    # Skip a configured stage when its share of the fixed payload would be too
+    # small for a meaningful measurement.
     download_min_stream_bytes: 5000000
 
-    # Alternate backend. Switching policy is fixed in code and is intentionally
-    # not configurable: retry on invalid payload, HTTP 403/429, or HTTP 5xx from
-    # the primary provider. Transport/TLS/SOCKS failures and zero-byte timeouts
-    # do not switch provider.
-    download_fallback_urls:
-      - https://cachefly.cachefly.net/100mb.test
+    # Exactly one alternate download backend. It is used only for an eligible
+    # provider failure of the primary backend. CacheFly runs the same configured
+    # download_streams once; it is not retried and there is no further fallback.
+    download_fallback_url: https://cachefly.cachefly.net/100mb.test
 
-    # Multi-stream stages with inconsistent per-stream outcomes (for example,
-    # some streams succeed while siblings time out or fail at the transport
-    # layer) are marked stream_reliability=degraded. Keep them in diagnostic
-    # work files either way; this switch controls whether they may reach the
-    # final rendered files and subscriptions.
-    include_unreliable_proxies: true
-
-    # Upload uses Cloudflare's public upload endpoint. If an upload ends after
-    # only an interim HTTP 100 response, retry once against the same URL with
-    # the Expect header disabled. Optional fallback URLs can then be tried for
-    # another interim-100 failure or the configured HTTP status codes.
+    # Upload uses the same configurable stage model. [1, 8] means one
+    # single-stream measurement followed by one eight-stream measurement.
+    # Upload keeps its existing HTTP-specific retry/fallback behavior.
     upload_url: https://speed.cloudflare.com/__up
     upload_bytes: 20000000
+    upload_streams: [1, 8]
+    upload_min_stream_bytes: 1000000
     upload_fallback_urls: []
     upload_fallback_http_codes:
       - 429
@@ -75,6 +82,9 @@ filters:
     # Connection establishment and speed-transfer budgets are configured
     # separately. curl --max-time is their sum (10 + 30 = 40 seconds here),
     # so connection setup no longer consumes the configured transfer budget.
+    # Only a normal max-time timeout may use a partial numeric speed for the
+    # threshold. TLS/SOCKS/EOF/stall/provider/payload failures remain technical
+    # errors even when curl managed to transfer some bytes before failing.
     connect_timeout_seconds: 10
     transfer_timeout_seconds: 30
     min_download_mbps: 80
@@ -84,6 +94,15 @@ filters:
 
   exit_ip:
     url: https://api.ipify.org
+
+    # Enabled by default. If the primary service fails or returns no valid IP,
+    # exactly one request is made to this independent fallback service. The same
+    # setting is used both for automatic direct-WAN discovery and for exit-IP
+    # measurement through every tested proxy. A valid primary IP is final even
+    # when it later matches a direct WAN address.
+    fallback_enabled: true
+    fallback_url: https://checkip.amazonaws.com
+
     timeout_seconds: 8
     workers: 4
     command: curl
@@ -91,13 +110,13 @@ filters:
     # Reject confirmed direct-WAN leaks.
     reject_direct_wan_ip: true
 
-    # If the exit-IP lookup itself fails, keep the proxy by default and mark
-    # the result as unknown. Set true for strict fail-closed behavior.
+    # If both exit-IP lookups fail, keep the proxy by default and mark the
+    # result as unknown. Set true for strict fail-closed behavior.
     reject_unknown_exit_ip: false
 
-    # Discover the server's current direct public IP using the same endpoint
-    # without a proxy. For multi-WAN systems, list any additional public WAN
-    # addresses in direct_ips so a leak through either ISP is rejected.
+    # Discover the server's current direct public IP using the same primary +
+    # configured fallback lookup. For multi-WAN systems, list any additional
+    # public WAN addresses in direct_ips so a leak through either ISP is rejected.
     auto_discover_direct_ip: true
     direct_ips: []
 
@@ -107,12 +126,21 @@ filters:
   geo:
     provider: ipwhois
     url_template: https://ipwho.is/{ip}
+
+    # Enabled by default. If the primary provider fails, returns metadata for a
+    # different IP, or omits a valid country_code, try exactly one independent
+    # fallback provider. Set false to disable GeoIP fallback completely.
+    fallback_enabled: true
+    fallback_provider: ipapi
+    fallback_url_template: https://ipapi.co/{ip}/json/
+
     timeout_seconds: 8
     workers: 4
     command: curl
 
-# Long-term per-source availability history. Existing JSONL stage files remain
-# runtime checkpoints; SQLite is the analytical history store.
+# Long-term per-source availability history. The filtering pipeline uses one
+# global set of JSONL work checkpoints; source provenance is stored in each
+# proxy record. SQLite remains the analytical per-source history store.
 #
 # Normal full publish runs are recorded automatically when enabled=true.
 # History is also an explicit non-filtering stage after publish:
@@ -130,9 +158,11 @@ history:
   # history/proxy-history.sqlite3 under data_dir.
   database: history/proxy-history.sqlite3
 
-# Applied only to merged all.txt/all.jsonl after all real proxy tests and the
-# global canonical dedup. Exact exit IP duplicates are reduced first; only the
-# winners then compete inside the broader exit-subnet + ASN cluster.
+# Applied only to merged publication after all real proxy tests and the global
+# canonical dedup. Exact exit IP duplicates are reduced first; only the winners
+# then compete inside the broader exit-subnet + ASN cluster. The selected set is
+# subsequently split by reliability into output/stable.* and output/unstable.*;
+# output/all.* always contains both classes.
 diversity:
   enabled: true
   max_same_exit_ip: 1
@@ -142,7 +172,13 @@ diversity:
 
 engine:
   backend: sing-box
-  command: sing-box
+
+  # By default proxy-filter finds sing-box in PATH and derives standard vs
+  # extended mode from `sing-box version`. Any version string containing
+  # "extended" (including extended-light/lite variants) is treated as extended.
+  # Uncomment to override the executable path explicitly.
+  # command: /usr/local/bin/sing-box
+
   startup_timeout_seconds: 5
   shutdown_timeout_seconds: 3
   listen_host: 127.0.0.1
@@ -158,5 +194,7 @@ output:
 
   # Append an explicit reliability:<status> marker to every rendered URI name,
   # unless the rename_template already contains {stream_reliability} or
-  # {reliability}. This makes the field visible in plain-text subscriptions.
+  # {reliability}. Reliability no longer excludes a proxy before publication:
+  # all.txt contains every diversity-selected proxy, stable.txt only stable,
+  # and unstable.txt only degraded.
   include_stream_reliability: true

@@ -15,7 +15,7 @@ import yaml
 
 from proxyfilter import cli
 from proxyfilter.history import new_run_id, record_failed_run, record_source_run, utc_now
-from proxyfilter.output_policy import render_proxies as render_proxies_with_reliability
+from proxyfilter.history_global import record_global_source_run
 from proxyfilter.source_config import merged_config
 
 # Backward-compatible public import used by existing tests and callers.
@@ -130,16 +130,20 @@ def _import_history_snapshot(cfg: dict, args: list[str]) -> int:
     imported = 0
     skipped = 0
 
+    global_work = data_dir / "work"
+    use_global = all((global_work / name).is_file() for name in ("02-unique.jsonl", "12-published.jsonl"))
+
     for source_id in sorted(source_ids):
         source = configured[source_id]
-        work_dir = data_dir / "work" / source_id
+        work_dir = global_work if use_global else data_dir / "work" / source_id
         try:
             _validate_snapshot(work_dir)
             run_id = _snapshot_run_id(source_id, work_dir)
             now = utc_now()
             started_at = _mtime_iso(work_dir / "01-parsed.jsonl", now)
             finished_at = _mtime_iso(work_dir / "12-published.jsonl", now)
-            record_source_run(
+            recorder = record_global_source_run if use_global else record_source_run
+            recorder(
                 db_path,
                 run_id=run_id,
                 source_id=source_id,
@@ -189,16 +193,14 @@ def _record_history(
 
     configured, source_ids = _selected_source_ids(cfg, remaining)
     db_path = _history_db_path(cfg, data_dir)
+    work_dir = data_dir / "work"
 
     for source_id in sorted(source_ids):
         source = configured.get(source_id) or {}
         source_name = str(source.get("name", source_id))
-        result = (summary.get("sources") or {}).get(source_id) or {}
+        source_result = (summary.get("sources") or {}).get(source_id) or {}
         try:
             if requested_until == "history" and resume_from:
-                # A history-only stage consumes the existing complete work snapshot
-                # and uses a deterministic id so rerunning it is idempotent.
-                work_dir = data_dir / "work" / source_id
                 _validate_snapshot(work_dir)
                 run_id = _snapshot_run_id(source_id, work_dir)
                 history_started = _mtime_iso(work_dir / "01-parsed.jsonl", started_at)
@@ -208,17 +210,31 @@ def _record_history(
                 history_started = started_at
                 history_finished = utc_now()
 
-            if result.get("status") == "ok":
-                record_source_run(
+            status = str(source_result.get("status") or "error")
+            if status in {"ok", "warning"}:
+                warning = status == "warning"
+                error = str(source_result.get("error") or "source unavailable") if warning else None
+                record_global_source_run(
                     db_path,
                     run_id=run_id,
                     source_id=source_id,
                     source_name=source_name,
-                    work_dir=data_dir / "work" / source_id,
+                    work_dir=work_dir,
                     started_at=history_started,
                     finished_at=history_finished,
+                    source_available=not warning,
+                    run_status=status,
+                    run_error=error,
+                    warning_stage="fetch" if warning else None,
+                    warning_reason="source_unavailable" if warning else None,
+                    warning_message=(
+                        "Source could not be fetched; retained proxies were still tested"
+                        if warning
+                        else None
+                    ),
                 )
-                print(f"[history] source={source_id} recorded run_id={run_id}")
+                suffix = " warning=source_unavailable" if warning else ""
+                print(f"[history] source={source_id} recorded run_id={run_id}{suffix}")
             else:
                 record_failed_run(
                     db_path,
@@ -227,19 +243,15 @@ def _record_history(
                     source_name=source_name,
                     started_at=history_started,
                     finished_at=history_finished,
-                    error=str(result.get("error") or "source run failed"),
+                    error=str(source_result.get("error") or "source run failed"),
                 )
         except sqlite3.IntegrityError:
             print(f"[history] source={source_id} already_recorded")
         except Exception as exc:
-            # History is analytical persistence, not part of filtering
-            # correctness. Database problems must not suppress publication.
             print(f"[history] source={source_id} ERROR: {exc}", file=sys.stderr)
 
 
 def main() -> int:
-    # Launcher-owned options have independent defaults. Supplying one option
-    # never changes the interpretation or default of another option.
     pre_parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     pre_parser.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     pre_parser.add_argument("--sources", default=DEFAULT_SOURCES_PATH)
@@ -257,7 +269,6 @@ def main() -> int:
         except ValueError as exc:
             pre_parser.error(str(exc))
 
-    tmp_path: str | None = None
     started_at = utc_now()
     selected = set(_option_values(remaining, "--source"))
     configured_ids = {str(source.get("id")) for source in cfg.get("sources", [])}
@@ -270,6 +281,7 @@ def main() -> int:
     if history_stage and resume_from and resume_from[-1] != "publish":
         pre_parser.error("--until history may resume only from --resume-from publish")
 
+    tmp_path: str | None = None
     try:
         with tempfile.NamedTemporaryFile(
             mode="w",
@@ -281,12 +293,6 @@ def main() -> int:
             yaml.safe_dump(cfg, fh, allow_unicode=True, sort_keys=False)
             tmp_path = fh.name
 
-        # Keep cli.py as the pipeline implementation while applying the output
-        # policy here, where the merged config is already available.
-        cli._render_proxies = render_proxies_with_reliability
-
-        # history is a launcher-owned non-filtering stage after publish. The
-        # package CLI still executes through publish; then the snapshot is stored.
         cli_args = list(remaining)
         if history_stage:
             cli_args = _replace_option(cli_args, "--until", "publish")
@@ -296,8 +302,6 @@ def main() -> int:
         sys.argv = [sys.argv[0], "--config", tmp_path, *cli_args]
         result = cli.main()
 
-        # Use the original requested arguments so explicit history remains
-        # distinguishable from a normal publish with automatic history enabled.
         _record_history(
             cfg,
             remaining if _has_option(remaining, "--until") else [*remaining, "--until", "publish"],

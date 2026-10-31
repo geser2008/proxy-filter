@@ -29,43 +29,46 @@ def find_proxy_in_work(
     proxy_ref: str,
     source_ids: Iterable[str] | None = None,
 ) -> tuple[ProxyConfig, Path]:
-    """Find one proxy by full id or unique id prefix in existing work JSONL.
+    """Find one proxy by full id or unique id prefix in global work JSONL.
 
     Stage files are searched from the latest latency result backwards so the
-    returned object retains the most useful existing test state. Repeated
-    copies of the same proxy across pipeline stages are de-duplicated by id.
+    returned object retains the most useful existing test state. ``source_ids``
+    optionally filters matches by provenance instead of selecting source work
+    directories, because the pipeline now has one common work directory.
     """
     ref = proxy_ref.strip().lower()
     if not ref:
         raise ValueError("empty proxy id/prefix")
 
+    requested_sources = set(source_ids or [])
     work_root = data_dir / "work"
-    if source_ids:
-        source_dirs = [work_root / source_id for source_id in source_ids]
-    else:
-        source_dirs = [path for path in sorted(work_root.iterdir()) if path.is_dir() and path.name != "all"] if work_root.exists() else []
-
     matches: dict[str, tuple[ProxyConfig, Path]] = {}
-    for source_dir in source_dirs:
-        for filename in _STAGE_FILES:
-            path = source_dir / filename
-            if not path.is_file():
-                continue
-            with path.open("r", encoding="utf-8") as fh:
-                for lineno, line in enumerate(fh, 1):
-                    line = line.strip()
-                    if not line:
+
+    for filename in _STAGE_FILES:
+        path = work_root / filename
+        if not path.is_file():
+            continue
+        with path.open("r", encoding="utf-8") as fh:
+            for lineno, line in enumerate(fh, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"invalid JSON in {path}:{lineno}: {exc}") from exc
+                proxy_id = str(data.get("id", "")).lower()
+                if not proxy_id.startswith(ref) or proxy_id in matches:
+                    continue
+                proxy = ProxyConfig.from_dict(data)
+                if requested_sources:
+                    provenance = {source.id for source in proxy.provenance_sources() if source.id}
+                    if not provenance.intersection(requested_sources):
                         continue
-                    try:
-                        data = json.loads(line)
-                    except json.JSONDecodeError as exc:
-                        raise ValueError(f"invalid JSON in {path}:{lineno}: {exc}") from exc
-                    proxy_id = str(data.get("id", "")).lower()
-                    if proxy_id.startswith(ref) and proxy_id not in matches:
-                        matches[proxy_id] = (ProxyConfig.from_dict(data), path)
+                matches[proxy_id] = (proxy, path)
 
     if not matches:
-        scope = ", ".join(source_ids or []) or "all sources"
+        scope = ", ".join(sorted(requested_sources)) if requested_sources else "all sources"
         raise ValueError(f"proxy id/prefix {proxy_ref!r} not found in work data ({scope})")
     if len(matches) > 1:
         ids = ", ".join(sorted(proxy_id[:16] for proxy_id in matches))

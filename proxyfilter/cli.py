@@ -11,15 +11,29 @@ from proxyfilter.batch_latency import check_latency_batched
 from proxyfilter.debug_latency import debug_latency_proxy, find_proxy_in_work
 from proxyfilter.exit_ip import check_exit_ip_many, discover_direct_ip
 from proxyfilter.geoip import enrich_geo_many
-from proxyfilter.singbox_backend import SingBoxBackend
 from proxyfilter.ingest import detect_and_parse
 from proxyfilter.io import fetch_url, write_json, write_jsonl
+from proxyfilter.known_working import (
+    load_known_working,
+    load_rejected_candidates,
+    load_seen_ids,
+    update_known_working,
+)
+from proxyfilter.model import ProxyConfig, TestState
+from proxyfilter.output_policy import render_proxies as render_proxies_with_reliability
 from proxyfilter.probes import check_latency_many
 from proxyfilter.publish import publish_merged, publish_source
-from proxyfilter.render import render_proxy
 from proxyfilter.resume import STAGE_ORDER, load_stage, stage_index, stage_should_run, validate_resume_range
 from proxyfilter.security import check_static_security
-from proxyfilter.speed import check_download_many, check_upload_many
+from proxyfilter.singbox_auto import SingBoxBackend
+from proxyfilter.source_status import (
+    apply_warning_summary,
+    build_source_status_rows,
+    warning_source_ids,
+    write_source_status,
+)
+from proxyfilter.speed_reliability import check_download_many
+from proxyfilter.speed_semantics import check_upload_many
 from proxyfilter.tcpcheck import check_many
 
 
@@ -68,71 +82,115 @@ def _as_int_set(value, default):
 
 
 def _render_proxies(proxies, cfg):
-    output_cfg = cfg.get("output", {})
-    rename_template = str(output_cfg.get("rename_template", "{flag} [{source}] {name}"))
-    include_original_name = bool(output_cfg.get("include_original_name", True))
-    render_ok, render_rejected = [], []
+    return render_proxies_with_reliability(proxies, cfg)
 
+
+def _proxy_source_ids(proxy: ProxyConfig) -> set[str]:
+    return {source.id for source in proxy.provenance_sources() if source.id}
+
+
+def _source_survivor_count(proxies: list[ProxyConfig], source_id: str) -> int:
+    return sum(1 for proxy in proxies if source_id in _proxy_source_ids(proxy))
+
+
+def _load_previous_working(data_dir: Path, selected: set[str]) -> tuple[list[ProxyConfig], Path]:
+    return load_known_working(data_dir, selected)
+
+
+def _reset_tests(proxies: list[ProxyConfig]) -> None:
     for proxy in proxies:
-        result = render_proxy(
-            proxy,
-            rename_template=rename_template,
-            include_original_name=include_original_name,
-        )
-        proxy.tests.render = {
-            "status": "pass" if result.ok else "fail",
-            "name": result.name,
-            "uri": result.uri,
-            "error": result.error,
-        }
-        if result.ok:
-            proxy.tests.status = "render_pass"
-            render_ok.append(proxy)
-        else:
-            proxy.tests.status = "rejected_render"
-            render_rejected.append(proxy)
-
-    return render_ok, render_rejected
+        proxy.tests = TestState()
 
 
-def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from: str | None = None):
-    source_id = source["id"]
-    source_name = source.get("name", source_id)
-    work = data_dir / "work" / source_id
+def _ingest_sources(
+    sources: list[dict],
+    data_dir: Path,
+    summary: dict,
+) -> tuple[list[ProxyConfig], bool]:
     raw_dir = data_dir / "raw"
-    reports = data_dir / "reports"
-    work.mkdir(parents=True, exist_ok=True)
+    reports_dir = data_dir / "reports"
     raw_dir.mkdir(parents=True, exist_ok=True)
-    reports.mkdir(parents=True, exist_ok=True)
+    reports_dir.mkdir(parents=True, exist_ok=True)
 
-    current = None
-    if resume_from is not None:
-        current, resume_path = load_stage(data_dir, source_id, resume_from)
-        print(f"[{source_id}] resume_from={resume_from} records={len(current)} file={resume_path}")
-        if until == resume_from:
-            return current
+    parsed_all: list[ProxyConfig] = []
+    for source in sources:
+        source_id = str(source["id"])
+        source_name = str(source.get("name", source_id))
+        try:
+            print(f"[{source_id}] download {source['url']}")
+            raw = fetch_url(source["url"])
+            (raw_dir / f"{source_id}.raw").write_bytes(raw)
 
-    if stage_should_run("parse", resume_from):
-        print(f"[{source_id}] download {source['url']}")
-        raw = fetch_url(source["url"])
-        (raw_dir / f"{source_id}.raw").write_bytes(raw)
+            proxies, parse_errors, detected_format = detect_and_parse(raw, source_id, source_name)
+            for proxy in proxies:
+                proxy.source.format = detected_format
+                proxy.sources = proxy.provenance_sources()
+            parsed_all.extend(proxies)
+            write_json(reports_dir / f"{source_id}-parse-errors.json", parse_errors)
+            summary["sources"][source_id] = {
+                "status": "ok",
+                "parsed": len(proxies),
+                "parse_errors": len(parse_errors),
+                "format": detected_format,
+            }
+            print(f"[{source_id}] parsed={len(proxies)} errors={len(parse_errors)} format={detected_format}")
+        except Exception as exc:
+            summary["sources"][source_id] = {"status": "error", "error": str(exc)}
+            print(f"[{source_id}] ERROR: {exc}", file=sys.stderr)
 
-        proxies, parse_errors, detected_format = detect_and_parse(raw, source_id, source_name)
-        for proxy in proxies:
-            proxy.source.format = detected_format
-            proxy.sources = proxy.provenance_sources()
-        write_jsonl(work / "01-parsed.jsonl", proxies)
-        write_json(reports / f"{source_id}-parse-errors.json", parse_errors)
-        print(f"[{source_id}] parsed={len(proxies)} errors={len(parse_errors)} format={detected_format}")
-        current = proxies
-        if until == "parse":
-            return current
+    rows = build_source_status_rows(sources, summary)
+    apply_warning_summary(summary, rows)
+    write_source_status(data_dir / "work" / "00-source-status.jsonl", rows)
+    warnings = warning_source_ids(rows)
+    if warnings:
+        print(
+            "[all] WARNING source_unavailable="
+            + ",".join(sorted(warnings))
+            + " publish_policy=successful_sources_plus_retained"
+        )
+
+    # A fetch failure is a source warning, not a global filtering failure.
+    # Retained proxies from unavailable sources still participate in the run.
+    return parsed_all, True
+
+
+def _sort_for_stage(proxies: list[ProxyConfig], stage: str) -> None:
+    if stage == "latency":
+        proxies.sort(key=lambda proxy: proxy.tests.latency_ms if proxy.tests.latency_ms is not None else float("inf"))
+    elif stage == "download":
+        proxies.sort(key=lambda proxy: proxy.tests.download_mbps if proxy.tests.download_mbps is not None else -1, reverse=True)
+    elif stage == "upload":
+        proxies.sort(key=lambda proxy: proxy.tests.upload_mbps if proxy.tests.upload_mbps is not None else -1, reverse=True)
+    elif stage == "exit-ip":
+        proxies.sort(key=lambda proxy: (proxy.tests.exit_ip is None, proxy.tests.exit_ip or "", -(proxy.tests.download_mbps or 0)))
+    elif stage in {"geo", "render", "publish"}:
+        proxies.sort(
+            key=lambda proxy: (
+                proxy.tests.geo.get("country_code") or "ZZ",
+                proxy.tests.exit_ip is None,
+                proxy.tests.exit_ip or "",
+            )
+        )
+
+
+def process_proxies(
+    current: list[ProxyConfig],
+    cfg: dict,
+    data_dir: Path,
+    until: str,
+    engine,
+    *,
+    resume_from: str | None = None,
+) -> list[ProxyConfig]:
+    work = data_dir / "work"
+    work.mkdir(parents=True, exist_ok=True)
 
     if stage_should_run("dedup", resume_from):
         current, duplicates = deduplicate(current)
+        _reset_tests(current)
         write_jsonl(work / "02-unique.jsonl", current)
         write_jsonl(work / "02-duplicates.jsonl", duplicates)
-        print(f"[{source_id}] unique={len(current)} duplicates={len(duplicates)}")
+        print(f"[all] unique={len(current)} duplicates={len(duplicates)}")
         if until == "dedup":
             return current
 
@@ -144,7 +202,7 @@ def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from:
             (safe if ok else rejected).append(proxy)
         write_jsonl(work / "03-safe.jsonl", safe)
         write_jsonl(work / "03-rejected-security.jsonl", rejected)
-        print(f"[{source_id}] security_pass={len(safe)} rejected={len(rejected)}")
+        print(f"[all] security_pass={len(safe)} rejected={len(rejected)}")
         current = safe
         if until == "security":
             return current
@@ -161,7 +219,7 @@ def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from:
             passed, tcp_rejected = current, []
         write_jsonl(work / "04-tcp-ok.jsonl", passed)
         write_jsonl(work / "04-rejected-tcp.jsonl", tcp_rejected)
-        print(f"[{source_id}] tcp_pass={len(passed)} rejected={len(tcp_rejected)}")
+        print(f"[all] tcp_pass={len(passed)} rejected={len(tcp_rejected)}")
         current = passed
         if until == "tcp":
             return current
@@ -174,10 +232,10 @@ def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from:
             proxy.tests.status = "core_valid" if ok else "rejected_core"
             (core_ok if ok else core_rejected).append(proxy)
             if idx % 100 == 0:
-                print(f"[{source_id}] core_checked={idx}/{len(current)}")
+                print(f"[all] core_checked={idx}/{len(current)}")
         write_jsonl(work / "05-core-ok.jsonl", core_ok)
         write_jsonl(work / "05-rejected-core.jsonl", core_rejected)
-        print(f"[{source_id}] core_pass={len(core_ok)} rejected={len(core_rejected)}")
+        print(f"[all] core_pass={len(core_ok)} rejected={len(core_rejected)}")
         current = core_ok
         if until == "core":
             return current
@@ -185,20 +243,29 @@ def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from:
     if stage_should_run("latency", resume_from):
         latency_cfg = cfg.get("filters", {}).get("latency", {})
         latency_mode = str(latency_cfg.get("mode", "singbox-api")).lower()
+        primary_url = str(
+            latency_cfg.get(
+                "primary_url",
+                latency_cfg.get("test_url", "https://www.gstatic.com/generate_204"),
+            )
+        )
+        fallback_url = str(latency_cfg.get("fallback_url", "")).strip() or None
         common_latency_args = {
-            "url": str(latency_cfg.get("test_url", "https://www.gstatic.com/generate_204")),
+            "url": primary_url,
             "timeout": float(latency_cfg.get("timeout_seconds", 8)),
             "max_ms": float(latency_cfg.get("max_ms", 800)),
             "workers": int(latency_cfg.get("workers", 32)),
         }
 
-        print(f"[{source_id}] latency_mode={latency_mode}")
+        print(f"[all] latency_mode={latency_mode}")
         if latency_mode in {"singbox-api", "api", "batch"}:
             latency_ok, latency_rejected = check_latency_batched(
                 current,
                 engine,
                 **common_latency_args,
                 batch_size=int(latency_cfg.get("batch_size", 128)),
+                fallback_url=fallback_url,
+                recovery_enabled=bool(latency_cfg.get("recovery_enabled", False)),
             )
         elif latency_mode == "curl":
             latency_ok, latency_rejected = check_latency_many(
@@ -210,23 +277,26 @@ def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from:
         else:
             raise ValueError(f"unsupported latency mode: {latency_mode}")
 
-        latency_ok.sort(key=lambda proxy: proxy.tests.latency_ms if proxy.tests.latency_ms is not None else float("inf"))
+        _sort_for_stage(latency_ok, "latency")
         write_jsonl(work / "06-latency-ok.jsonl", latency_ok)
         write_jsonl(work / "06-rejected-latency.jsonl", latency_rejected)
-        print(f"[{source_id}] latency_pass={len(latency_ok)} rejected={len(latency_rejected)}")
+        print(f"[all] latency_pass={len(latency_ok)} rejected={len(latency_rejected)}")
         current = latency_ok
         if until == "latency":
             return current
 
     if stage_should_run("download", resume_from):
         speed_cfg = cfg.get("filters", {}).get("speed", {})
-        speed_transfer_timeout = float(
-            speed_cfg.get("transfer_timeout_seconds", speed_cfg.get("timeout_seconds", 30))
-        )
+        speed_transfer_timeout = float(speed_cfg.get("transfer_timeout_seconds", speed_cfg.get("timeout_seconds", 30)))
         speed_connect_timeout = float(speed_cfg.get("connect_timeout_seconds", 10))
         speed_workers = int(speed_cfg.get("workers", 1))
         speed_curl = str(speed_cfg.get("command", "curl"))
-        download_fallback_urls = _as_string_list(speed_cfg.get("download_fallback_urls", []))
+
+        configured_fallback = str(speed_cfg.get("download_fallback_url", "")).strip()
+        if configured_fallback:
+            download_fallback_urls = [configured_fallback]
+        else:
+            download_fallback_urls = _as_string_list(speed_cfg.get("download_fallback_urls", []))[:1]
 
         download_ok, download_rejected = check_download_many(
             current,
@@ -240,19 +310,18 @@ def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from:
             fallback_urls=download_fallback_urls,
             stream_stages=speed_cfg.get("download_streams"),
             min_stream_bytes=int(speed_cfg.get("download_min_stream_bytes", 5_000_000)),
+            recovery_enabled=bool(speed_cfg.get("recovery_enabled", False)),
         )
         write_jsonl(work / "07-download-ok.jsonl", download_ok)
         write_jsonl(work / "07-rejected-download.jsonl", download_rejected)
-        print(f"[{source_id}] download_pass={len(download_ok)} rejected={len(download_rejected)}")
+        print(f"[all] download_pass={len(download_ok)} rejected={len(download_rejected)}")
         current = download_ok
         if until == "download":
             return current
 
     if stage_should_run("upload", resume_from):
         speed_cfg = cfg.get("filters", {}).get("speed", {})
-        speed_transfer_timeout = float(
-            speed_cfg.get("transfer_timeout_seconds", speed_cfg.get("timeout_seconds", 30))
-        )
+        speed_transfer_timeout = float(speed_cfg.get("transfer_timeout_seconds", speed_cfg.get("timeout_seconds", 30)))
         speed_connect_timeout = float(speed_cfg.get("connect_timeout_seconds", 10))
         speed_workers = int(speed_cfg.get("workers", 1))
         speed_curl = str(speed_cfg.get("command", "curl"))
@@ -274,10 +343,12 @@ def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from:
             curl_command=speed_curl,
             fallback_urls=upload_fallback_urls,
             fallback_http_codes=upload_fallback_http_codes,
+            stream_stages=speed_cfg.get("upload_streams"),
+            min_stream_bytes=int(speed_cfg.get("upload_min_stream_bytes", 1_000_000)),
         )
         write_jsonl(work / "08-upload-ok.jsonl", upload_ok)
         write_jsonl(work / "08-rejected-upload.jsonl", upload_rejected)
-        print(f"[{source_id}] upload_pass={len(upload_ok)} rejected={len(upload_rejected)}")
+        print(f"[all] upload_pass={len(upload_ok)} rejected={len(upload_rejected)}")
         current = upload_ok
         if until == "upload":
             return current
@@ -288,14 +359,22 @@ def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from:
         exit_timeout = float(exit_cfg.get("timeout_seconds", 8))
         exit_workers = int(exit_cfg.get("workers", 4))
         exit_curl = str(exit_cfg.get("command", "curl"))
+        fallback_enabled = bool(exit_cfg.get("fallback_enabled", True))
+        fallback_url = str(exit_cfg.get("fallback_url", "https://checkip.amazonaws.com")).strip()
+        exit_fallback_urls = [fallback_url] if fallback_enabled and fallback_url else []
         reject_direct = bool(exit_cfg.get("reject_direct_wan_ip", True))
         reject_unknown = bool(exit_cfg.get("reject_unknown_exit_ip", False))
         direct_ips = set(_as_string_list(exit_cfg.get("direct_ips", [])))
 
         if reject_direct and bool(exit_cfg.get("auto_discover_direct_ip", True)):
-            direct_ip = discover_direct_ip(url=exit_url, timeout=exit_timeout, curl_command=exit_curl)
+            direct_ip = discover_direct_ip(
+                url=exit_url,
+                timeout=exit_timeout,
+                curl_command=exit_curl,
+                fallback_urls=exit_fallback_urls,
+            )
             direct_ips.add(direct_ip)
-            print(f"[{source_id}] direct_wan_ip={direct_ip}")
+            print(f"[all] direct_wan_ip={direct_ip}")
         elif reject_direct and not direct_ips:
             raise ValueError("exit_ip.direct_ips is required when auto_discover_direct_ip is false")
 
@@ -309,24 +388,34 @@ def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from:
             direct_ips=direct_ips,
             workers=exit_workers,
             curl_command=exit_curl,
+            fallback_urls=exit_fallback_urls,
         )
         write_jsonl(work / "09-exit-ip-ok.jsonl", exit_ok)
         write_jsonl(work / "09-rejected-exit-ip.jsonl", exit_rejected)
         unknown_count = sum(1 for proxy in exit_ok if proxy.tests.exit_ip is None)
-        print(
-            f"[{source_id}] exit_ip_pass={len(exit_ok) - unknown_count} "
-            f"unknown={unknown_count} rejected={len(exit_rejected)}"
-        )
+        print(f"[all] exit_ip_pass={len(exit_ok) - unknown_count} unknown={unknown_count} rejected={len(exit_rejected)}")
         current = exit_ok
         if until == "exit-ip":
             return current
 
     if stage_should_run("geo", resume_from):
         geo_cfg = cfg.get("filters", {}).get("geo", {})
+        fallback_enabled = bool(geo_cfg.get("fallback_enabled", True))
         geo_ok = enrich_geo_many(
             current,
             provider=str(geo_cfg.get("provider", "ipwhois")),
             url_template=str(geo_cfg.get("url_template", "https://ipwho.is/{ip}")),
+            fallback_enabled=fallback_enabled,
+            fallback_provider=(
+                str(geo_cfg.get("fallback_provider", "ipapi"))
+                if fallback_enabled
+                else None
+            ),
+            fallback_url_template=(
+                str(geo_cfg.get("fallback_url_template", "https://ipapi.co/{ip}/json/"))
+                if fallback_enabled
+                else None
+            ),
             timeout=float(geo_cfg.get("timeout_seconds", 8)),
             workers=int(geo_cfg.get("workers", 4)),
             curl_command=str(geo_cfg.get("command", "curl")),
@@ -335,7 +424,7 @@ def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from:
         geo_success = sum(1 for proxy in geo_ok if proxy.tests.geo.get("status") == "ok")
         geo_unknown = sum(1 for proxy in geo_ok if proxy.tests.geo.get("status") == "unknown")
         geo_errors = len(geo_ok) - geo_success - geo_unknown
-        print(f"[{source_id}] geo_ok={geo_success} unknown={geo_unknown} errors={geo_errors}")
+        print(f"[all] geo_ok={geo_success} unknown={geo_unknown} errors={geo_errors}")
         current = geo_ok
         if until == "geo":
             return current
@@ -344,17 +433,10 @@ def process_source(source, cfg, data_dir: Path, until: str, engine, resume_from:
         render_ok, render_rejected = _render_proxies(current, cfg)
         write_jsonl(work / "11-render-ok.jsonl", render_ok)
         write_jsonl(work / "11-rejected-render.jsonl", render_rejected)
-        print(f"[{source_id}] render_pass={len(render_ok)} rejected={len(render_rejected)}")
+        print(f"[all] render_pass={len(render_ok)} rejected={len(render_rejected)}")
         current = render_ok
         if until == "render":
             return current
-
-    if stage_should_run("publish", resume_from):
-        for proxy in current:
-            proxy.tests.status = "published"
-        txt_path, jsonl_path = publish_source(data_dir, source_id, current)
-        write_jsonl(work / "12-published.jsonl", current)
-        print(f"[{source_id}] published={len(current)} txt={txt_path} jsonl={jsonl_path}")
 
     return current
 
@@ -379,7 +461,7 @@ def main() -> int:
 
     data_dir = Path(cfg.get("paths", {}).get("data_dir", "/srv/proxy-filter/data"))
     configured_sources = cfg.get("sources", [])
-    configured_ids = {source.get("id") for source in configured_sources}
+    configured_ids = {str(source.get("id")) for source in configured_sources}
     selected = set(args.source or [])
     if selected:
         missing = sorted(selected - configured_ids)
@@ -395,7 +477,12 @@ def main() -> int:
             parser.error(str(exc))
 
         latency_cfg = cfg.get("filters", {}).get("latency", {})
-        test_url = str(latency_cfg.get("test_url", "https://www.gstatic.com/generate_204"))
+        test_url = str(
+            latency_cfg.get(
+                "primary_url",
+                latency_cfg.get("test_url", "https://www.gstatic.com/generate_204"),
+            )
+        )
         timeout = float(latency_cfg.get("timeout_seconds", 8))
         result, runtime = debug_latency_proxy(
             proxy,
@@ -421,67 +508,149 @@ def main() -> int:
     if engine is not None:
         print("[engine] " + engine.version().splitlines()[0])
 
-    sources = [source for source in configured_sources if not selected or source.get("id") in selected]
-
-    all_survivors = []
+    sources = [source for source in configured_sources if not selected or str(source.get("id")) in selected]
     summary = {"sources": {}}
+    all_sources_ok = True
+    warning_rows: list[dict] = []
+    previous: list[ProxyConfig] = []
+    work = data_dir / "work"
+    work.mkdir(parents=True, exist_ok=True)
 
-    for source in sources:
+    if args.resume_from is not None:
         try:
-            survivors = process_source(source, cfg, data_dir, args.until, engine, resume_from=args.resume_from)
-            all_survivors.extend(survivors)
-            summary["sources"][source["id"]] = {
+            current, resume_path = load_stage(data_dir, args.resume_from)
+        except (FileNotFoundError, ValueError) as exc:
+            parser.error(str(exc))
+        if selected:
+            current = [proxy for proxy in current if _proxy_source_ids(proxy) & selected]
+        print(f"[all] resume_from={args.resume_from} records={len(current)} file={resume_path}")
+        for source in sources:
+            source_id = str(source["id"])
+            summary["sources"][source_id] = {
                 "status": "ok",
-                "survivors": len(survivors),
+                "survivors": _source_survivor_count(current, source_id),
                 "resume_from": args.resume_from,
             }
-        except Exception as exc:
-            summary["sources"][source.get("id", "unknown")] = {"status": "error", "error": str(exc)}
-            print(f"[{source.get('id', 'unknown')}] ERROR: {exc}", file=sys.stderr)
+        if args.until == args.resume_from:
+            _sort_for_stage(current, args.until)
+            summary["pipeline"] = {
+                "status": "ok",
+                "stage": args.until,
+                "survivors": len(current),
+                "resume_from": args.resume_from,
+            }
+            write_json(data_dir / "reports" / "summary.json", summary)
+            return 0
+    else:
+        parsed, all_sources_ok = _ingest_sources(sources, data_dir, summary)
+        warning_rows = build_source_status_rows(sources, summary)
+        write_jsonl(work / "01-parsed.jsonl", parsed)
+        summary["parsed"] = len(parsed)
+        if args.until == "parse":
+            apply_warning_summary(summary, warning_rows)
+            write_json(data_dir / "reports" / "summary.json", summary)
+            return 0 if all_sources_ok else 1
 
-    merged, duplicates = deduplicate(all_survivors)
+        previous, previous_path = _load_previous_working(data_dir, selected)
+        summary["previous_working"] = len(previous)
+        summary["previous_working_file"] = str(previous_path)
+        print(f"[all] previous_working={len(previous)} file={previous_path}")
+        current = [*parsed, *previous]
 
-    if args.until in {"render", "publish"}:
-        merged, merged_render_rejected = _render_proxies(merged, cfg)
-        if merged_render_rejected:
-            failed = ", ".join((proxy.id or "<unknown>")[:12] for proxy in merged_render_rejected[:5])
-            raise RuntimeError(f"merged provenance render failed for {len(merged_render_rejected)} proxy(s): {failed}")
-        if args.until == "publish":
-            for proxy in merged:
-                proxy.tests.status = "published"
-
-    if args.until == "latency":
-        merged.sort(key=lambda proxy: proxy.tests.latency_ms if proxy.tests.latency_ms is not None else float("inf"))
-    elif args.until == "download":
-        merged.sort(key=lambda proxy: proxy.tests.download_mbps if proxy.tests.download_mbps is not None else -1, reverse=True)
-    elif args.until == "upload":
-        merged.sort(key=lambda proxy: proxy.tests.upload_mbps if proxy.tests.upload_mbps is not None else -1, reverse=True)
-    elif args.until == "exit-ip":
-        merged.sort(key=lambda proxy: (proxy.tests.exit_ip is None, proxy.tests.exit_ip or "", -(proxy.tests.download_mbps or 0)))
-    elif args.until in {"geo", "render", "publish"}:
-        merged.sort(
-            key=lambda proxy: (
-                proxy.tests.geo.get("country_code") or "ZZ",
-                proxy.tests.exit_ip is None,
-                proxy.tests.exit_ip or "",
-            )
+    try:
+        current = process_proxies(
+            current,
+            cfg,
+            data_dir,
+            args.until,
+            engine,
+            resume_from=args.resume_from,
         )
+    except Exception as exc:
+        summary["pipeline"] = {"status": "error", "error": str(exc)}
+        if warning_rows:
+            apply_warning_summary(summary, warning_rows)
+        write_json(data_dir / "reports" / "summary.json", summary)
+        print(f"[all] ERROR: {exc}", file=sys.stderr)
+        return 1
 
-    write_jsonl(data_dir / "work" / "all" / f"{args.until}.jsonl", merged)
-    write_json(data_dir / "reports" / "summary.json", summary)
+    _sort_for_stage(current, args.until)
 
-    all_sources_ok = bool(summary["sources"]) and all(v["status"] == "ok" for v in summary["sources"].values())
-    full_source_set = not selected or selected == configured_ids
     if args.until == "publish":
-        if all_sources_ok and full_source_set:
-            txt_path, jsonl_path = publish_merged(data_dir, merged, cfg.get("diversity", {}))
-            print(f"[all] published={len(merged)} txt={txt_path} jsonl={jsonl_path}")
-        elif not full_source_set:
-            print("[all] publish_skipped=partial_source_selection")
-        else:
-            print("[all] publish_skipped=source_error")
+        working = list(current)
+        for proxy in working:
+            proxy.tests.status = "published"
 
-    print(f"[all] survivors={len(merged)} cross_source_duplicates={len(duplicates)}")
+        for source in sources:
+            source_id = str(source["id"])
+            source_summary = summary["sources"].get(source_id) or {}
+            if source_summary.get("status") != "ok":
+                print(f"[{source_id}] publish_skipped=source_error")
+                continue
+            source_proxies = [proxy for proxy in working if source_id in _proxy_source_ids(proxy)]
+            txt_path, jsonl_path = publish_source(data_dir, source_id, source_proxies)
+            print(f"[{source_id}] published={len(source_proxies)} txt={txt_path} jsonl={jsonl_path}")
+            source_summary["survivors"] = len(source_proxies)
+
+        full_source_set = not selected or selected == configured_ids
+        if all_sources_ok and full_source_set:
+            diversity_cfg = cfg.get("filters", {}).get("diversity", cfg.get("diversity", {}))
+            selected_for_publish = list(working)
+            txt_path, jsonl_path = publish_merged(data_dir, selected_for_publish, diversity_cfg)
+            write_jsonl(work / "12-published.jsonl", selected_for_publish)
+
+            if args.resume_from is None:
+                retention_days = int((cfg.get("state", {}) or {}).get("working_retention_days", 30))
+                counts = update_known_working(
+                    data_dir,
+                    previous,
+                    working,
+                    load_rejected_candidates(data_dir),
+                    seen_ids=load_seen_ids(data_dir),
+                    retention_days=retention_days,
+                )
+                print(
+                    "[state] known_working="
+                    f"{counts['retained']} working_now={counts['working_now']} "
+                    f"failing_retained={counts['failing_retained']} "
+                    f"new={counts['new_working']} recovered={counts['recovered']} "
+                    f"expired={counts['expired']} retention_days={retention_days}"
+                )
+
+            current = selected_for_publish
+            summary["working"] = len(working)
+            summary["published"] = len(current)
+            print(f"[all] published={len(current)} working={len(working)} txt={txt_path} jsonl={jsonl_path}")
+        elif not full_source_set:
+            write_jsonl(work / "12-published.jsonl", working)
+            current = working
+            print("[all] publish_skipped=partial_source_selection state_update_skipped=true")
+        else:
+            write_jsonl(work / "12-published.jsonl", working)
+            current = working
+            print("[all] publish_skipped=source_error state_update_skipped=true")
+
+    for source in sources:
+        source_id = str(source["id"])
+        source_summary = summary["sources"].get(source_id)
+        if source_summary and source_summary.get("status") == "ok":
+            source_summary["survivors"] = _source_survivor_count(current, source_id)
+            source_summary["resume_from"] = args.resume_from
+
+    summary["pipeline"] = {
+        "status": "ok",
+        "stage": args.until,
+        "survivors": len(current),
+        "resume_from": args.resume_from,
+    }
+    if warning_rows:
+        apply_warning_summary(summary, warning_rows)
+    write_json(data_dir / "reports" / "summary.json", summary)
+    print(f"[all] survivors={len(current)}")
+
+    warnings = warning_source_ids(warning_rows) if warning_rows else set()
+    if warnings:
+        print("[all] WARNING completed_with_source_warnings=" + ",".join(sorted(warnings)))
     return 0 if all_sources_ok else 1
 
 

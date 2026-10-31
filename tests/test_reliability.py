@@ -61,6 +61,74 @@ class ReliabilityTests(unittest.TestCase):
         self.assertIn("mixed_success_failure", result["mixed_stages"][0]["reasons"])
         self.assertIn("mixed_timeout_transport", result["mixed_stages"][0]["reasons"])
 
+    def test_success_failed_success_stages_are_degraded(self):
+        stages = [
+            {
+                "backend": "cloudflare",
+                "streams": 1,
+                "skipped": False,
+                "stream_results": [
+                    {"ok": True, "bytes": 80_000_000, "error": None},
+                ],
+            },
+            {
+                "backend": "cloudflare",
+                "streams": 4,
+                "skipped": False,
+                "stream_results": [
+                    {"ok": False, "bytes": 0, "error": "curl: (28) Operation timed out"}
+                    for _ in range(4)
+                ],
+            },
+            {
+                "backend": "cloudflare",
+                "streams": 8,
+                "skipped": False,
+                "stream_results": [
+                    {"ok": True, "bytes": 10_000_000, "error": None}
+                    for _ in range(8)
+                ],
+            },
+        ]
+        result = analyze_stream_reliability(stages, selected_backend="cloudflare")
+        self.assertEqual(result["status"], "degraded")
+        self.assertTrue(result["mixed_stage_outcomes"])
+        self.assertEqual(result["successful_stage_count"], 2)
+        self.assertEqual(result["failed_stage_count"], 1)
+        self.assertIn("stage_consistency", result["reason"])
+
+    def test_annotation_ignores_failed_primary_when_fallback_backend_is_selected(self):
+        proxy = make_proxy()
+        proxy.tests.download["backend"] = "cachefly"
+        proxy.tests.download["stages"] = [
+            {
+                "backend": "cloudflare",
+                "streams": 8,
+                "skipped": False,
+                "stream_results": [
+                    {"ok": False, "bytes": 0, "error": "HTTP 429"}
+                    for _ in range(8)
+                ],
+            },
+            {
+                "backend": "cachefly",
+                "streams": 8,
+                "skipped": False,
+                "stream_results": [
+                    {"ok": True, "bytes": 10_000_000, "error": None}
+                    for _ in range(8)
+                ],
+            },
+        ]
+        reliability = annotate_download_reliability(proxy)
+        self.assertEqual(reliability["status"], "stable")
+        self.assertEqual(reliability["successful_streams"], 8)
+        self.assertEqual(reliability["failed_streams"], 0)
+        self.assertEqual(reliability["total_streams"], 8)
+        self.assertEqual(reliability["ignored_stage_count"], 1)
+        self.assertTrue(reliability["provider_fallback"])
+        self.assertTrue(proxy.tests.download["provider_fallback"])
+
     def test_annotation_is_serialized_inside_download(self):
         proxy = make_proxy()
         proxy.tests.download["stages"] = [
@@ -78,7 +146,7 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(serialized["tests"]["download"]["stream_reliability"], "degraded")
         self.assertTrue(serialized["tests"]["download"]["stream_reliability_details"]["degraded"])
 
-    def test_output_policy_excludes_degraded_when_disabled(self):
+    def test_output_policy_keeps_degraded_even_with_legacy_exclusion_flag(self):
         proxy = make_proxy()
         proxy.tests.download["stages"] = [
             {
@@ -95,10 +163,11 @@ class ReliabilityTests(unittest.TestCase):
             "output": {"rename_template": "{protocol}", "include_stream_reliability": True},
         }
         accepted, rejected = render_proxies([proxy], cfg)
-        self.assertEqual(accepted, [])
-        self.assertEqual(rejected, [proxy])
-        self.assertEqual(proxy.tests.status, "excluded_unreliable")
-        self.assertEqual(proxy.tests.render["status"], "excluded")
+        self.assertEqual(rejected, [])
+        self.assertEqual(accepted, [proxy])
+        self.assertEqual(proxy.tests.status, "render_pass")
+        self.assertEqual(proxy.tests.render["status"], "pass")
+        self.assertIn("reliability:degraded", proxy.tests.render["name"])
 
     def test_output_policy_keeps_degraded_and_marks_subscription_name(self):
         proxy = make_proxy()

@@ -5,6 +5,12 @@ from typing import Any
 import hashlib
 import json
 
+from .identity_semantics import (
+    canonical_identity_params,
+    canonical_identity_protocol,
+    canonical_uri_identity_params,
+)
+
 
 @dataclass(slots=True)
 class SourceInfo:
@@ -17,10 +23,15 @@ class SourceInfo:
 class TestState:
     security: dict[str, Any] = field(default_factory=lambda: {"status": "pending", "reasons": []})
     tcp: dict[str, Any] = field(default_factory=lambda: {"status": "pending", "latency_ms": None})
-    core: dict[str, Any] = field(default_factory=lambda: {"status": "pending", "error": None})
+    core: dict[str, Any] = field(default_factory=lambda: {"status": "pending", "category": None, "error": None})
     latency: dict[str, Any] = field(default_factory=lambda: {"status": "pending", "latency_ms": None, "http_code": None, "error": None})
     download: dict[str, Any] = field(default_factory=lambda: {"status": "pending", "mbps": None, "error": None})
     upload: dict[str, Any] = field(default_factory=lambda: {"status": "pending", "mbps": None, "error": None})
+    reliability: dict[str, Any] = field(default_factory=lambda: {
+        "status": "unknown",
+        "reason": None,
+        "details": {},
+    })
     exit_ip_probe: dict[str, Any] = field(default_factory=lambda: {"status": "pending", "ip": None, "error": None})
     geo: dict[str, Any] = field(default_factory=lambda: {
         "status": "pending",
@@ -72,6 +83,7 @@ class ProxyConfig:
     tests: TestState = field(default_factory=TestState)
     id: str = ""
     sources: list[SourceInfo] = field(default_factory=list)
+    lifecycle: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.sources = self._merge_source_lists([self.source], self.sources)
@@ -95,21 +107,29 @@ class ProxyConfig:
     def merge_sources_from(self, other: "ProxyConfig") -> None:
         self.sources = self._merge_source_lists(self.provenance_sources(), other.provenance_sources())
 
-    def identity_payload(self) -> dict[str, Any]:
+    def semantic_payload(self) -> dict[str, Any]:
+        """Canonical semantic view used by compatibility/render validation."""
         return {
-            "protocol": self.protocol.lower(),
+            "protocol": canonical_identity_protocol(self.protocol),
             "server": self.server.strip().lower(),
             "port": int(self.port),
-            "params": self._canonical_params(self.params),
+            "params": canonical_identity_params(self.protocol, self.params),
         }
 
-    @staticmethod
-    def _canonical_params(value: Any) -> Any:
-        if isinstance(value, dict):
-            return {k: ProxyConfig._canonical_params(value[k]) for k in sorted(value) if k not in {"name", "tag", "ps"}}
-        if isinstance(value, list):
-            return [ProxyConfig._canonical_params(v) for v in value]
-        return value
+    def identity_payload(self) -> dict[str, Any]:
+        """Conservative identity used for IDs and production deduplication.
+
+        Every parsed parameter participates in identity. Unknown, empty and future
+        parameters are preserved so deduplication cannot collapse configurations
+        whose semantics proxy-filter does not understand yet. Documented URI
+        equivalences are applied during ingest before this payload is built.
+        """
+        return {
+            "protocol": canonical_identity_protocol(self.protocol),
+            "server": self.server.strip().lower(),
+            "port": int(self.port),
+            "params": canonical_uri_identity_params(self.protocol, self.params),
+        }
 
     def ensure_id(self) -> str:
         payload = json.dumps(self.identity_payload(), ensure_ascii=False, separators=(",", ":"), sort_keys=True)
@@ -144,10 +164,15 @@ class ProxyConfig:
         tests = TestState(
             security=tests_data.get("security", {"status": "pending", "reasons": []}),
             tcp=tests_data.get("tcp", {"status": "pending", "latency_ms": None}),
-            core=tests_data.get("core", {"status": "pending", "error": None}),
+            core=tests_data.get("core", {"status": "pending", "category": None, "error": None}),
             latency=tests_data.get("latency", {"status": "pending", "latency_ms": None, "http_code": None, "error": None}),
             download=tests_data.get("download", {"status": "pending", "mbps": None, "error": None}),
             upload=tests_data.get("upload", {"status": "pending", "mbps": None, "error": None}),
+            reliability=tests_data.get("reliability", {
+                "status": "unknown",
+                "reason": None,
+                "details": {},
+            }),
             exit_ip_probe=tests_data.get("exit_ip_probe", {"status": "pending", "ip": None, "error": None}),
             geo=tests_data.get("geo", {
                 "status": "pending",
@@ -211,7 +236,7 @@ class ProxyConfig:
             tests=tests,
             id=str(data.get("id", "")),
             sources=sources,
+            lifecycle=dict(data.get("lifecycle") or {}),
         )
-        if not proxy.id:
-            proxy.ensure_id()
+        proxy.ensure_id()
         return proxy

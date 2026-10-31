@@ -28,14 +28,32 @@ def _is_timeout_error(error: str | None) -> bool:
     if not error:
         return False
     text = error.lower()
+    if "operation too slow" in text or ("bytes/sec" in text and "less than" in text):
+        return False
     return "curl: (28)" in text or "timed out" in text or "timeout" in text
+
+
+def _attempt_is_timeout(attempt: dict) -> bool:
+    reason = attempt.get("failure_reason")
+    if reason is not None:
+        return reason == "timeout"
+    return _is_timeout_error(attempt.get("error"))
 
 
 def _result_is_timeout(result: base.SpeedResult) -> bool:
     failures = [attempt for attempt in result.attempts if not attempt.get("ok")]
     if failures:
-        return all(_is_timeout_error(attempt.get("error")) for attempt in failures)
+        return all(_attempt_is_timeout(attempt) for attempt in failures)
+    if result.failure_reason is not None:
+        return not result.ok and result.failure_reason == "timeout"
     return not result.ok and _is_timeout_error(result.error)
+
+
+def _stage_is_timeout(stage: dict) -> bool:
+    reason = stage.get("failure_reason")
+    if reason is not None:
+        return reason == "timeout"
+    return _is_timeout_error(stage.get("error"))
 
 
 def _final_backend_timed_out(result: base.SpeedResult) -> bool:
@@ -45,7 +63,7 @@ def _final_backend_timed_out(result: base.SpeedResult) -> bool:
         if not stage.get("skipped") and stage.get("backend") == result.backend
     ]
     return bool(stages) and not any(stage.get("ok") for stage in stages) and all(
-        _is_timeout_error(stage.get("error")) for stage in stages
+        _stage_is_timeout(stage) for stage in stages
     )
 
 
@@ -56,7 +74,7 @@ def _best_partial(stages: list[dict]) -> tuple[float | None, int | None, str | N
         if not stage.get("skipped")
         and not stage.get("ok")
         and stage.get("mbps") is not None
-        and _is_timeout_error(stage.get("error"))
+        and _stage_is_timeout(stage)
     ]
     if not candidates:
         return None, None, None
@@ -277,6 +295,7 @@ def _upload_via_socks(
             str(connect_timeout),
             "--max-time",
             str(max_time),
+            *base._curl_stall_args(),
             "--header",
             "Content-Type: application/octet-stream",
         ]
@@ -304,16 +323,19 @@ def _upload_via_socks(
                 if size is not None and size > 0 and elapsed is not None and elapsed > 0
                 else None
             )
+            error = (proc.stderr or proc.stdout).strip() or f"curl exited {proc.returncode}"
             return base.SpeedResult(
                 False,
                 mbps=mbps,
                 bytes_transferred=size,
                 time_seconds=elapsed,
                 http_code=http_code,
-                error=(proc.stderr or proc.stdout).strip() or f"curl exited {proc.returncode}",
+                error=error,
                 url=url,
                 expect_disabled=disable_expect,
                 expected_bytes=expected_bytes,
+                failure_reason=base._curl_failure_reason(proc.returncode, error),
+                curl_exit_code=proc.returncode,
             )
 
         size, elapsed, http_code = base._parse_curl_metrics(proc.stdout)
@@ -329,6 +351,7 @@ def _upload_via_socks(
                 expect_disabled=disable_expect,
                 expected_bytes=expected_bytes,
                 payload_valid=False,
+                failure_reason="invalid_payload",
             )
         return base.SpeedResult(
             True,
@@ -341,13 +364,23 @@ def _upload_via_socks(
             expected_bytes=expected_bytes,
             payload_valid=True,
         )
-    except (subprocess.TimeoutExpired, OSError, ValueError) as exc:
+    except subprocess.TimeoutExpired as exc:
         return base.SpeedResult(
             False,
             error=str(exc),
             url=url,
             expect_disabled=disable_expect,
             expected_bytes=expected_bytes,
+            failure_reason="process_timeout",
+        )
+    except (OSError, ValueError) as exc:
+        return base.SpeedResult(
+            False,
+            error=str(exc),
+            url=url,
+            expect_disabled=disable_expect,
+            expected_bytes=expected_bytes,
+            failure_reason="probe_error",
         )
 
 
@@ -444,7 +477,13 @@ def _upload_parallel_stage(
                 stream_results = [future.result() for future in futures]
             elapsed = time.monotonic() - started
     except (EngineError, OSError, ValueError) as exc:
-        return base.SpeedResult(False, error=str(exc), url=url, backend="upload")
+        return base.SpeedResult(
+            False,
+            error=str(exc),
+            url=url,
+            backend="upload",
+            failure_reason="probe_error",
+        )
     finally:
         if session is not None:
             engine.stop(session)
@@ -477,6 +516,8 @@ def _upload_parallel_stage(
         payload_valid=payload_valid,
         attempts=[base._attempt_dict(result) for result in stream_results],
         backend="upload",
+        failure_reason=first_failure.failure_reason if first_failure else None,
+        curl_exit_code=first_failure.curl_exit_code if first_failure else None,
     )
 
 
@@ -790,12 +831,16 @@ def check_upload_many(
             "connect_timeout_seconds": connect_timeout,
             "transfer_timeout_seconds": timeout,
             "max_time_seconds": max_time,
+            "stall_limit_bps": base.DEFAULT_SPEED_STALL_LIMIT_BPS,
+            "stall_time_seconds": base.DEFAULT_SPEED_STALL_TIME_SECONDS,
             "bytes": result.bytes_transferred,
             "expected_bytes": result.expected_bytes,
             "payload_valid": result.payload_valid,
             "time_seconds": result.time_seconds,
             "http_code": result.http_code,
             "error": result.error,
+            "failure_reason": result.failure_reason,
+            "curl_exit_code": result.curl_exit_code,
             "url": result.url,
             "attempts": result.attempts,
             "stages": result.stages,

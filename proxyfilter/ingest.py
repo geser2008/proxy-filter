@@ -9,6 +9,7 @@ from urllib.parse import urlsplit, parse_qs, unquote
 import yaml
 
 from .model import ProxyConfig, SourceInfo
+from .v2ray_ingest import is_v2ray_config, parse_v2ray_config
 
 SUPPORTED_SCHEMES = {"vless", "vmess", "trojan", "ss", "hysteria2", "hy2", "tuic"}
 URI_RE = re.compile(r"^(vless|vmess|trojan|ss|hysteria2|hy2|tuic)://", re.I)
@@ -25,11 +26,39 @@ def _contains_proxy_uri(text: str) -> bool:
 
 
 def detect_and_parse(raw: bytes | str, source_id: str, source_name: str) -> tuple[list[ProxyConfig], list[dict], str]:
+    """Parse the production URI-only input formats: plain TXT and Base64(TXT)."""
+    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+    text = text.lstrip("\ufeff").strip()
+
+    if _contains_proxy_uri(text):
+        proxies, errors = _parse_plain(text, source_id, source_name, "plain")
+        return proxies, errors, "plain"
+
+    decoded = _try_base64_text(text)
+    if decoded is not None:
+        proxies, errors, nested = detect_and_parse(decoded, source_id, source_name)
+        detected_format = f"base64/{nested}"
+        for proxy in proxies:
+            proxy.source.format = detected_format
+        return proxies, errors, detected_format
+
+    return [], [{"reason": "unsupported_subscription_format"}], "unknown"
+
+
+def detect_and_parse_compat(raw: bytes | str, source_id: str, source_name: str) -> tuple[list[ProxyConfig], list[dict], str]:
+    """Parse all currently implemented subscription formats.
+
+    This compatibility API is retained for tests and future multi-format work.
+    Production ingest should call ``detect_and_parse`` instead.
+    """
     text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
     text = text.lstrip("\ufeff").strip()
 
     try:
         obj = json.loads(text)
+        if is_v2ray_config(obj):
+            proxies, errors = parse_v2ray_config(obj, source_id, source_name)
+            return proxies, errors, "v2ray-json"
         if isinstance(obj, dict) and isinstance(obj.get("outbounds"), list):
             return _parse_singbox(obj, source_id, source_name), [], "sing-box"
     except json.JSONDecodeError:
@@ -46,9 +75,9 @@ def detect_and_parse(raw: bytes | str, source_id: str, source_name: str) -> tupl
         proxies, errors = _parse_plain(text, source_id, source_name, "plain")
         return proxies, errors, "plain"
 
-    decoded = _try_base64_text(text)
+    decoded = _try_base64_text(text, allow_structured=True)
     if decoded is not None:
-        proxies, errors, nested = detect_and_parse(decoded, source_id, source_name)
+        proxies, errors, nested = detect_and_parse_compat(decoded, source_id, source_name)
         for proxy in proxies:
             proxy.source.format = f"base64/{nested}"
         return proxies, errors, f"base64/{nested}"
@@ -56,7 +85,7 @@ def detect_and_parse(raw: bytes | str, source_id: str, source_name: str) -> tupl
     return [], [{"reason": "unsupported_subscription_format"}], "unknown"
 
 
-def _try_base64_text(text: str) -> str | None:
+def _try_base64_text(text: str, *, allow_structured: bool = False) -> str | None:
     compact = "".join(text.split())
     if len(compact) < 16 or re.search(r"[^A-Za-z0-9+/=_-]", compact):
         return None
@@ -65,7 +94,16 @@ def _try_base64_text(text: str) -> str | None:
         try:
             blob = base64.b64decode(padded, altchars=altchars, validate=False)
             decoded = blob.decode("utf-8")
-            if _contains_proxy_uri(decoded) or "proxies:" in decoded or '"outbounds"' in decoded:
+            if _contains_proxy_uri(decoded):
+                return decoded
+            if allow_structured:
+                if "proxies:" in decoded or '"outbounds"' in decoded:
+                    return decoded
+            else:
+                # Preserve the fact that the outer subscription was valid Base64
+                # even when the decoded payload is not a supported URI list. The
+                # recursive production parser will classify that inner document
+                # as unknown without invoking structured parsers.
                 return decoded
         except (binascii.Error, UnicodeDecodeError, ValueError):
             continue
@@ -89,15 +127,44 @@ def _parse_plain(text: str, source_id: str, source_name: str, fmt: str) -> tuple
 
 
 def _validate_percent_escapes(uri: str) -> None:
-    """Reject malformed percent escapes instead of letting tolerant parsers guess.
-
-    URI percent-encoding is syntactic: every literal percent sign must be followed
-    by exactly two hexadecimal digits.  This check is protocol-independent and
-    intentionally does not repair malformed input (for example ``%`` -> ``%25``).
-    """
+    """Reject malformed percent escapes instead of letting tolerant parsers guess."""
     match = _INVALID_PERCENT_ESCAPE_RE.search(uri)
     if match:
         raise ValueError(f"invalid URI percent escape at offset {match.start()}")
+
+
+def _normalize_uri_params(protocol: str, params: dict[str, object]) -> dict[str, object]:
+    """Apply only documented equivalences for URI inputs.
+
+    Unknown keys, empty values and vendor extensions are preserved verbatim. Xray
+    RAW is the renamed TCP transport; VLESS share links canonicalize it as
+    ``type=tcp``. Legacy VMess JSON uses ``net`` for the same Xray transport.
+    """
+    normalized = dict(params)
+    protocol = protocol.strip().lower()
+
+    if protocol == "vless":
+        value = normalized.get("type")
+        if isinstance(value, str) and value.strip().lower() == "raw":
+            normalized["type"] = "tcp"
+    elif protocol == "vmess":
+        value = normalized.get("net")
+        if isinstance(value, str) and value.strip().lower() == "raw":
+            normalized["net"] = "tcp"
+
+    return normalized
+
+
+def _parse_unique_query(query: str, protocol: str) -> dict[str, str]:
+    parsed = parse_qs(query, keep_blank_values=True)
+    duplicates = sorted(key for key, values in parsed.items() if len(values) != 1)
+    if duplicates:
+        raise ValueError("duplicate URI query parameter(s): " + ", ".join(duplicates))
+    params = {key: values[0] for key, values in parsed.items()}
+    return {
+        str(key): str(value)
+        for key, value in _normalize_uri_params(protocol, params).items()
+    }
 
 
 def parse_uri(uri: str, source: SourceInfo) -> ProxyConfig:
@@ -113,7 +180,7 @@ def parse_uri(uri: str, source: SourceInfo) -> ProxyConfig:
     parts = urlsplit(uri)
     if not parts.hostname or parts.port is None:
         raise ValueError("missing server or port")
-    params = {k: v[-1] if len(v) == 1 else v for k, v in parse_qs(parts.query, keep_blank_values=True).items()}
+    params = _parse_unique_query(parts.query, scheme)
     if parts.username:
         key = "uuid" if scheme in {"vless", "tuic"} else "password"
         params[key] = unquote(parts.username)
@@ -135,21 +202,15 @@ def _parse_vmess_uri(uri: str, source: SourceInfo) -> ProxyConfig:
         raise ValueError("vmess missing add/port")
     name = str(data.get("ps") or "")
     params = {k: v for k, v in data.items() if k not in {"add", "port", "ps"}}
+    params = _normalize_uri_params("vmess", params)
     proxy = ProxyConfig(source, "vmess", str(server), port, name, params, "vmess-uri", uri)
     proxy.ensure_id()
     return proxy
 
 
 def _normalize_ss_query(query: str) -> dict[str, str]:
-    """Parse SIP002 query parameters with exactly one URI-decoding pass.
-
-    ``parse_qs`` performs the URI percent-decoding required for the query.  The
-    decoded ``plugin`` value is then split according to SIP002's
-    ``plugin;option=value`` syntax.  Extra percent-decoding layers are not
-    guessed: a double-encoded feed remains double-encoded and is rejected later
-    if the resulting plugin cannot be represented by the backend.
-    """
-    params = {k: v[-1] for k, v in parse_qs(query, keep_blank_values=True).items()}
+    """Parse SIP002 query parameters with exactly one URI-decoding pass."""
+    params = _parse_unique_query(query, "ss")
     plugin = params.get("plugin")
     if plugin and ";" in plugin:
         name, opts = plugin.split(";", 1)
@@ -194,7 +255,6 @@ def _parse_ss_uri(uri: str, source: SourceInfo) -> ProxyConfig:
     if method.strip().lower() == "ss":
         raise ValueError("invalid shadowsocks method: ss")
     params = {"method": method, "password": unquote(reparsed.password)}
-    # Query parameters belong to the original URI, not to the base64 token.
     original_query = urlsplit(uri).query
     if original_query:
         params.update(_normalize_ss_query(original_query))
@@ -244,3 +304,4 @@ def _parse_singbox(obj: dict, source_id: str, source_name: str) -> list[ProxyCon
         proxy = ProxyConfig(SourceInfo(source_id, source_name, "sing-box"), protocol, str(server), int(port), str(item.get("tag", "")), params, "sing-box", json.dumps(item, ensure_ascii=False, separators=(",", ":")))
         proxy.ensure_id()
         out.append(proxy)
+    return out

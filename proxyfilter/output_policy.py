@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-from .reliability import annotate_download_reliability, is_unreliable
+from .reliability import annotate_download_reliability
 from .render import render_proxy
 
 
 def render_proxies(proxies, cfg):
     output_cfg = cfg.get("output", {})
-    speed_cfg = cfg.get("filters", {}).get("speed", {})
 
     rename_template = str(output_cfg.get("rename_template", "{flag} [{source}] {name}"))
     include_original_name = bool(output_cfg.get("include_original_name", True))
     include_reliability_in_name = bool(output_cfg.get("include_stream_reliability", True))
-    include_unreliable = bool(speed_cfg.get("include_unreliable_proxies", True))
 
     if (
         include_reliability_in_name
@@ -25,18 +23,9 @@ def render_proxies(proxies, cfg):
     for proxy in proxies:
         reliability = annotate_download_reliability(proxy)
 
-        if not include_unreliable and is_unreliable(proxy):
-            proxy.tests.render = {
-                "status": "excluded",
-                "name": None,
-                "uri": None,
-                "error": "excluded by filters.speed.include_unreliable_proxies=false",
-                "stream_reliability": reliability["status"],
-            }
-            proxy.tests.status = "excluded_unreliable"
-            render_rejected.append(proxy)
-            continue
-
+        # Reliability is a publication class, not a filtering criterion.
+        # Degraded proxies stay eligible for all.txt and are later separated
+        # into unstable.txt after the global diversity selection.
         result = render_proxy(
             proxy,
             rename_template=rename_template,
