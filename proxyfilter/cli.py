@@ -595,8 +595,14 @@ def main() -> int:
         full_source_set = not selected or selected == configured_ids
         if all_sources_ok and full_source_set:
             diversity_cfg = cfg.get("filters", {}).get("diversity", cfg.get("diversity", {}))
+            reliable_cfg = cfg.get("reliable", {}) or {}
             selected_for_publish = list(working)
-            txt_path, jsonl_path = publish_merged(data_dir, selected_for_publish, diversity_cfg)
+            txt_path, jsonl_path = publish_merged(
+                data_dir,
+                selected_for_publish,
+                diversity_cfg,
+                reliable_cfg=reliable_cfg,
+            )
             write_jsonl(work / "12-published.jsonl", selected_for_publish)
 
             if args.resume_from is None:
