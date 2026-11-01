@@ -167,19 +167,22 @@ def _historical_reliable_ids(
     if not enabled:
         return set(), report
 
-    # Derive terminal outcomes only from current-run snapshots. Rejected stage
-    # files are diagnostics: they can contain recovered proxies and can remain
-    # stale when a stage is not rewritten in a later run.
-    passed, failed = terminal_outcomes_from_work(data_dir / "work", qualified)
-    run_key = snapshot_run_key(data_dir / "work", passed, failed)
-    if run_key is not None:
-        report["update"] = update_global_reliability(
-            db_path,
-            passed,
-            failed,
-            run_key=run_key,
-        )
-        report["run_key"] = run_key
+    work_dir = data_dir / "work"
+    parsed = work_dir / "01-parsed.jsonl"
+    if parsed.is_file():
+        # Derive terminal outcomes only from current-run snapshots. Rejected stage
+        # files are diagnostics: they can contain recovered proxies and can remain
+        # stale when a stage is not rewritten in a later run.
+        passed, failed = terminal_outcomes_from_work(work_dir, qualified)
+        run_key = snapshot_run_key(work_dir, passed, failed)
+        if run_key is not None:
+            report["update"] = update_global_reliability(
+                db_path,
+                passed,
+                failed,
+                run_key=run_key,
+            )
+            report["run_key"] = run_key
 
     ids = load_reliable_ids(
         db_path,
