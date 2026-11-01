@@ -14,10 +14,12 @@ from .reliable_history import (
     DEFAULT_MIN_CONSECUTIVE_PASSES,
     reliability_db_path,
     reliable_ids as load_reliable_ids,
+    reliable_name_metrics,
     snapshot_run_key,
     terminal_outcomes_from_work,
     update_global_reliability,
 )
+from .render import render_uri, validate_round_trip
 
 
 FINAL_SUBSCRIPTION_NAMES = ("all.txt", "stable.txt", "unstable.txt", "reliable.txt")
@@ -49,12 +51,7 @@ def publish_source(
     source_id: str,
     proxies: list[ProxyConfig],
 ) -> tuple[None, None]:
-    """Compatibility no-op: per-source final subscriptions are disabled.
-
-    Source provenance remains available in work/state/history JSONL records, but
-    final publication is intentionally global only:
-    all/stable/unstable/reliable.
-    """
+    """Compatibility no-op: per-source final subscriptions are disabled."""
     return None, None
 
 
@@ -88,13 +85,7 @@ def _subscription_generation(
 
 
 def _publish_subscription_generation(output_dir: Path, texts: dict[str, str]) -> None:
-    """Transactionally replace only proxy-filter managed subscription files.
-
-    The complete next generation is prepared first. Existing managed files are
-    copied into a rollback area, then each prepared file is moved into place with
-    os.replace(). If any commit step raises, the previous managed generation is
-    restored. Unmanaged files in output_dir are never removed or modified.
-    """
+    """Transactionally replace only proxy-filter managed subscription files."""
     output_dir.mkdir(parents=True, exist_ok=True)
     unexpected = set(texts) - set(FINAL_SUBSCRIPTION_NAMES)
     missing = set(FINAL_SUBSCRIPTION_NAMES) - set(texts)
@@ -135,7 +126,7 @@ def _publish_subscription_generation(output_dir: Path, texts: dict[str, str]) ->
                             os.replace(backup, target)
                     elif target.exists():
                         target.unlink()
-                except Exception as rollback_exc:  # pragma: no cover - catastrophic filesystem failure
+                except Exception as rollback_exc:  # pragma: no cover
                     rollback_errors.append(rollback_exc)
             if rollback_errors:
                 raise RuntimeError(
@@ -154,6 +145,8 @@ def _historical_reliable_ids(
     enabled = bool(cfg.get("enabled", True))
     min_confirmed = int(cfg.get("min_confirmed_passes", DEFAULT_MIN_CONFIRMED_PASSES))
     min_consecutive = int(cfg.get("min_consecutive_passes", DEFAULT_MIN_CONSECUTIVE_PASSES))
+    name_metric = str(cfg.get("name_metric", "raw")).lower()
+    name_show_counts = bool(cfg.get("name_show_counts", True))
     db_path = reliability_db_path(data_dir, history_cfg)
 
     report = {
@@ -161,6 +154,8 @@ def _historical_reliable_ids(
         "database": str(db_path),
         "min_confirmed_passes": min_confirmed,
         "min_consecutive_passes": min_consecutive,
+        "name_metric": name_metric,
+        "name_show_counts": name_show_counts,
         "update": {"tested": 0, "passed": 0, "failed": 0, "skipped": 1},
         "eligible": 0,
     }
@@ -170,9 +165,6 @@ def _historical_reliable_ids(
     work_dir = data_dir / "work"
     parsed = work_dir / "01-parsed.jsonl"
     if parsed.is_file():
-        # Derive terminal outcomes only from current-run snapshots. Rejected stage
-        # files are diagnostics: they can contain recovered proxies and can remain
-        # stale when a stage is not rewritten in a later run.
         passed, failed = terminal_outcomes_from_work(work_dir, qualified)
         run_key = snapshot_run_key(work_dir, passed, failed)
         if run_key is not None:
@@ -193,6 +185,54 @@ def _historical_reliable_ids(
     return ids, report
 
 
+def _apply_reliable_name_metrics(
+    data_dir: Path,
+    proxies: list[ProxyConfig],
+    reliable_cfg: dict | None,
+    history_cfg: dict | None,
+) -> int:
+    """Re-render only eligible reliable proxies with a derived history marker."""
+    cfg = reliable_cfg or {}
+    if not bool(cfg.get("enabled", True)):
+        return 0
+
+    metric = str(cfg.get("name_metric", "raw")).lower()
+    if metric == "none":
+        return 0
+
+    min_confirmed = int(cfg.get("min_confirmed_passes", DEFAULT_MIN_CONFIRMED_PASSES))
+    min_consecutive = int(cfg.get("min_consecutive_passes", DEFAULT_MIN_CONSECUTIVE_PASSES))
+    show_counts = bool(cfg.get("name_show_counts", True))
+    db_path = reliability_db_path(data_dir, history_cfg)
+    markers = reliable_name_metrics(
+        db_path,
+        min_confirmed_passes=min_confirmed,
+        min_consecutive_passes=min_consecutive,
+        metric=metric,
+        show_counts=show_counts,
+    )
+
+    changed = 0
+    for proxy in proxies:
+        marker = markers.get(proxy.ensure_id())
+        if not marker:
+            continue
+        render = dict(proxy.tests.render or {})
+        if render.get("status") != "pass":
+            continue
+        base_name = str(render.get("base_name") or render.get("name") or proxy.name or "").strip()
+        name = f"{base_name} | {marker}" if base_name else marker
+        uri = render_uri(proxy, name)
+        validate_round_trip(proxy, uri)
+        render["base_name"] = base_name
+        render["name"] = name
+        render["uri"] = uri
+        render["historical_reliability"] = marker
+        proxy.tests.render = render
+        changed += 1
+    return changed
+
+
 def publish_merged(
     data_dir: Path,
     proxies: list[ProxyConfig],
@@ -201,38 +241,25 @@ def publish_merged(
     reliable_cfg: dict | None = None,
     history_cfg: dict | None = None,
 ) -> tuple[Path, None]:
-    """Publish all/stable/unstable/reliable subscriptions after diversity.
-
-    ``reliable`` is an orthogonal historical classification. It does not
-    influence diversity or current-run stream reliability. Because the reliable
-    view is selected only after diversity, reliable.txt is always a subset of
-    all.txt.
-
-    When ``reliable_ids`` is omitted, a full work snapshot updates persistent
-    global reliability state inside the configured history database. The update
-    is idempotent for resume-from-publish because the exact global snapshot has a
-    stable run key.
-
-    Canonical JSONL snapshots remain in data/work and data/state. Only the four
-    managed subscription files are replaced in data/output; unrelated files are
-    preserved.
-
-    The second return value is kept as None for compatibility with the existing
-    caller that previously expected an output JSONL path.
-    """
+    """Publish all/stable/unstable/reliable subscriptions after diversity."""
     diversity_cfg = diversity_cfg or {}
     enabled = bool(diversity_cfg.get("enabled", True))
     work_dir = data_dir / "work"
     reports_dir = data_dir / "reports"
 
-    # Snapshot the complete working set before diversity. This is also the set
-    # that should be carried into the next full run for re-testing.
     for proxy in proxies:
         proxy.tests.status = "qualified"
     write_jsonl(work_dir / "12-qualified.jsonl", proxies)
 
-    if reliable_ids is None:
+    auto_reliable = reliable_ids is None
+    if auto_reliable:
         reliable_ids, reliable_report = _historical_reliable_ids(
+            data_dir,
+            proxies,
+            reliable_cfg,
+            history_cfg,
+        )
+        reliable_report["name_annotated"] = _apply_reliable_name_metrics(
             data_dir,
             proxies,
             reliable_cfg,
@@ -260,7 +287,6 @@ def publish_merged(
         proxy.tests.diversity["status"] = "suppressed"
         proxy.tests.status = "diversity_suppressed"
 
-    # Internal diagnostic/checkpoint files remain JSONL under work/.
     write_jsonl(work_dir / "13-diversity-selected.jsonl", selected)
     write_jsonl(work_dir / "13-diversity-suppressed.jsonl", suppressed)
     write_jsonl(work_dir / "diversity-selected.jsonl", selected)
@@ -284,8 +310,6 @@ def publish_merged(
         proxy.tests.status = "published"
     write_jsonl(work_dir / "14-published.jsonl", proxies)
 
-    # Render/validate the whole next generation before changing any live
-    # subscription file. This prevents one bad view from leaving a partial set.
     texts, split_counts, reliable = _subscription_generation(proxies, reliable_ids)
     write_jsonl(work_dir / "reliable.jsonl", reliable)
     output_dir = data_dir / "output"
