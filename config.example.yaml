@@ -20,53 +20,21 @@ filters:
 
   latency:
     mode: singbox-api
-
-    # Recovery is disabled by default: every proxy gets exactly one primary URL
-    # test. Set true to allow one second attempt after an eligible runtime
-    # failure. With fallback_url configured, that attempt uses the alternate
-    # endpoint; without it, only transient failures are retried on primary_url.
     recovery_enabled: false
     primary_url: https://www.gstatic.com/generate_204
     fallback_url: https://www.cloudflare.com/cdn-cgi/trace
     timeout_seconds: 12
-
-    # A negative value disables rejection by the measured latency while keeping
-    # a successful primary or recovery URL test mandatory.
     max_ms: -1
-
     batch_size: 128
     workers: 32
-    # Debug/curl mode only:
     command: curl
 
   speed:
-    # Cloudflare is the primary download backend. The configured stream stages
-    # are measurements, not retries: each number is one aggregate test using
-    # that many parallel streams. [1, 8] means one single-stream measurement
-    # followed by one eight-stream measurement. A complete successful measurement
-    # is preferred; when all usable measurements end only by max-time timeout,
-    # the fastest partial timeout measurement is used for the speed threshold.
     download_url: https://speed.cloudflare.com/__down?bytes=80000000
     download_streams: [1, 8]
-
-    # One recovery pass is allowed only after a technical download failure
-    # (for example a transient TLS/SOCKS/zero-byte timeout/stall failure).
-    # A valid measurement below min_download_mbps is not retried. Explicit
-    # provider failures continue to use download_fallback_url instead.
     recovery_enabled: true
-
-    # Skip a configured stage when its share of the fixed payload would be too
-    # small for a meaningful measurement.
     download_min_stream_bytes: 5000000
-
-    # Exactly one alternate download backend. It is used only for an eligible
-    # provider failure of the primary backend. CacheFly runs the same configured
-    # download_streams once; it is not retried and there is no further fallback.
     download_fallback_url: https://cachefly.cachefly.net/100mb.test
-
-    # Upload uses the same configurable stage model. [1, 8] means one
-    # single-stream measurement followed by one eight-stream measurement.
-    # Upload keeps its existing HTTP-specific retry/fallback behavior.
     upload_url: https://speed.cloudflare.com/__up
     upload_bytes: 20000000
     upload_streams: [1, 8]
@@ -78,13 +46,6 @@ filters:
       - 502
       - 503
       - 504
-
-    # Connection establishment and speed-transfer budgets are configured
-    # separately. curl --max-time is their sum (10 + 30 = 40 seconds here),
-    # so connection setup no longer consumes the configured transfer budget.
-    # Only a normal max-time timeout may use a partial numeric speed for the
-    # threshold. TLS/SOCKS/EOF/stall/provider/payload failures remain technical
-    # errors even when curl managed to transfer some bytes before failing.
     connect_timeout_seconds: 10
     transfer_timeout_seconds: 30
     min_download_mbps: 80
@@ -94,87 +55,53 @@ filters:
 
   exit_ip:
     url: https://api.ipify.org
-
-    # Enabled by default. If the primary service fails or returns no valid IP,
-    # exactly one request is made to this independent fallback service. The same
-    # setting is used both for automatic direct-WAN discovery and for exit-IP
-    # measurement through every tested proxy. A valid primary IP is final even
-    # when it later matches a direct WAN address.
     fallback_enabled: true
     fallback_url: https://checkip.amazonaws.com
-
     timeout_seconds: 8
     workers: 4
     command: curl
-
-    # Reject confirmed direct-WAN leaks.
     reject_direct_wan_ip: true
-
-    # If both exit-IP lookups fail, keep the proxy by default and mark the
-    # result as unknown. Set true for strict fail-closed behavior.
     reject_unknown_exit_ip: false
-
-    # Discover the server's current direct public IP using the same primary +
-    # configured fallback lookup. For multi-WAN systems, list any additional
-    # public WAN addresses in direct_ips so a leak through either ISP is rejected.
     auto_discover_direct_ip: true
     direct_ips: []
 
-  # GeoIP is enrichment, not a rejection stage. Proxies with unknown exit IP
-  # or a failed metadata lookup remain in the survivor set with geo status
-  # unknown/error. Lookups are deduplicated by exit IP.
   geo:
     provider: ipwhois
     url_template: https://ipwho.is/{ip}
-
-    # Enabled by default. If the primary provider fails, returns metadata for a
-    # different IP, or omits a valid country_code, try exactly one independent
-    # fallback provider. Set false to disable GeoIP fallback completely.
     fallback_enabled: true
     fallback_provider: ipapi
     fallback_url_template: https://ipapi.co/{ip}/json/
-
     timeout_seconds: 8
     workers: 4
     command: curl
 
-# Long-term per-source availability history. The filtering pipeline uses one
-# global set of JSONL work checkpoints; source provenance is stored in each
-# proxy record. SQLite remains the analytical per-source history store.
-#
-# Normal full publish runs are recorded automatically when enabled=true.
-# History is also an explicit non-filtering stage after publish:
-#   --until history
-# and an existing complete work snapshot can be imported without network tests:
-#   --history-import --source radikal
-# or equivalently:
-#   --resume-from publish --until history --source radikal
-# Snapshot imports are idempotent: importing unchanged work files again does not
-# create another run. Failed source fetches never mark all previous proxies absent.
+# Analytical history database for per-source observations and global historical
+# reliability state. Relative database paths are resolved under paths.data_dir.
 history:
   enabled: true
-
-  # Absolute path, or relative to paths.data_dir. If omitted, the default is:
-  # history/proxy-history.sqlite3 under data_dir.
   database: history/proxy-history.sqlite3
 
-# Historical reliability is independent of the current speed-test reliability
-# class. One complete global run can add at most one confirmation per proxy,
-# even when the same proxy is present in several sources. Only tested outcomes
-# affect these counters; source absence or a source fetch outage is not a failure.
-# A proxy is written to output/reliable.txt only when it is also selected by the
-# current diversity policy, so reliable.txt is always a subset of all.txt.
+# Historical reliability is independent of current stream reliability.
+# One complete global run contributes at most one terminal PASS/FAIL per proxy.
+# Source absence alone is not a failure. reliable.txt remains a post-diversity
+# subset of all.txt.
 reliable:
   enabled: true
   min_confirmed_passes: 3
   min_consecutive_passes: 2
 
+  # Historical metric shown only in names of proxies that are already eligible
+  # as reliable. The database stores only counters; the display value is derived
+  # at publish time.
+  #   none     -> no historical metric in the name
+  #   raw      -> R87%(13/15), confirmed_passes / test_count
+  #   bayesian -> B82%(13/15), (confirmed_passes + 1) / (test_count + 2)
+  name_metric: raw
+  name_show_counts: true
+
 # Applied only to merged publication after all real proxy tests and the global
-# canonical dedup. Exact exit IP duplicates are reduced first; only the winners
-# then compete inside the broader exit-subnet + ASN cluster. The selected set is
-# subsequently split by current-run stream reliability into output/stable.txt
-# and output/unstable.txt. output/all.txt contains both classes; reliable.txt is
-# an independent historical view of the diversity-selected set.
+# canonical dedup. reliable.txt is selected independently from current stream
+# reliability but only from proxies that also survive diversity.
 diversity:
   enabled: true
   max_same_exit_ip: 1
@@ -184,13 +111,6 @@ diversity:
 
 engine:
   backend: sing-box
-
-  # By default proxy-filter finds sing-box in PATH and derives standard vs
-  # extended mode from `sing-box version`. Any version string containing
-  # "extended" (including extended-light/lite variants) is treated as extended.
-  # Uncomment to override the executable path explicitly.
-  # command: /usr/local/bin/sing-box
-
   startup_timeout_seconds: 5
   shutdown_timeout_seconds: 3
   listen_host: 127.0.0.1
@@ -205,9 +125,7 @@ output:
   include_original_name: false
 
   # Append an explicit reliability:<status> marker to every rendered URI name,
-  # unless the rename_template already contains {stream_reliability} or
-  # {reliability}. Reliability no longer excludes a proxy before publication:
-  # all.txt contains every diversity-selected proxy, stable.txt only stable,
-  # unstable.txt only degraded, and reliable.txt is selected independently from
-  # the historical counters above.
+  # unless rename_template already contains {stream_reliability} or
+  # {reliability}. This is current-run stream reliability and is separate from
+  # reliable.name_metric above.
   include_stream_reliability: true
