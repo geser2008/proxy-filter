@@ -7,7 +7,6 @@ from tempfile import TemporaryDirectory
 
 from .diversity import select_diverse
 from .io import write_json, write_jsonl, write_text
-from .known_working import load_rejected_candidates
 from .model import ProxyConfig
 from .reliability import DEGRADED, STABLE
 from .reliable_history import (
@@ -16,6 +15,7 @@ from .reliable_history import (
     reliability_db_path,
     reliable_ids as load_reliable_ids,
     snapshot_run_key,
+    terminal_outcomes_from_work,
     update_global_reliability,
 )
 
@@ -167,22 +167,16 @@ def _historical_reliable_ids(
     if not enabled:
         return set(), report
 
-    # Rejected stage files are diagnostic snapshots and may still contain a
-    # proxy that recovered later in the same run (for example download recovery).
-    # Reaching 12-qualified is the terminal technical outcome, so PASS wins over
-    # any earlier rejection snapshot for the same canonical proxy id.
-    qualified_ids = {proxy.ensure_id() for proxy in qualified}
-    rejected = [
-        proxy
-        for proxy in load_rejected_candidates(data_dir)
-        if proxy.ensure_id() not in qualified_ids
-    ]
-    run_key = snapshot_run_key(data_dir / "work", qualified, rejected)
+    # Derive terminal outcomes only from current-run snapshots. Rejected stage
+    # files are diagnostics: they can contain recovered proxies and can remain
+    # stale when a stage is not rewritten in a later run.
+    passed, failed = terminal_outcomes_from_work(data_dir / "work", qualified)
+    run_key = snapshot_run_key(data_dir / "work", passed, failed)
     if run_key is not None:
         report["update"] = update_global_reliability(
             db_path,
-            qualified,
-            rejected,
+            passed,
+            failed,
             run_key=run_key,
         )
         report["run_key"] = run_key
