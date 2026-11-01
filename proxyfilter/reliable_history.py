@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 import hashlib
+import json
 import sqlite3
 
 from .history import _connect as history_connect
@@ -112,6 +113,59 @@ def migrate_reliable_history(db_path: Path) -> None:
 
 def _deduplicated_ids(proxies: list[ProxyConfig]) -> set[str]:
     return {proxy.ensure_id() for proxy in proxies}
+
+
+def _read_proxy_jsonl(path: Path) -> list[ProxyConfig]:
+    if not path.is_file():
+        return []
+    proxies: list[ProxyConfig] = []
+    with path.open("r", encoding="utf-8") as fh:
+        for lineno, line in enumerate(fh, 1):
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"invalid JSON in {path}:{lineno}: {exc}") from exc
+            if not isinstance(data, dict):
+                raise ValueError(f"invalid record in {path}:{lineno}: expected JSON object")
+            proxies.append(ProxyConfig.from_dict(data))
+    return proxies
+
+
+def terminal_outcomes_from_work(
+    work_dir: Path,
+    qualified: list[ProxyConfig],
+) -> tuple[list[ProxyConfig], list[ProxyConfig]]:
+    """Derive one terminal PASS/FAIL outcome for every current-run candidate.
+
+    ``02-unique.jsonl`` is the complete deduplicated candidate set for the current
+    global run. A proxy that reaches ``12-qualified`` is a terminal PASS even if
+    an earlier attempt was written to a rejected checkpoint and later recovered.
+    Every remaining unique candidate is a terminal FAIL. This avoids treating
+    stale rejected checkpoint files from previous runs as current failures.
+    """
+    unique_path = work_dir / "02-unique.jsonl"
+    unique = _read_proxy_jsonl(unique_path)
+    if not unique_path.is_file():
+        raise FileNotFoundError(f"missing current-run unique snapshot: {unique_path}")
+
+    unique_by_id = {proxy.ensure_id(): proxy for proxy in unique}
+    qualified_by_id = {proxy.ensure_id(): proxy for proxy in qualified}
+    missing = set(qualified_by_id) - set(unique_by_id)
+    if missing:
+        raise ValueError(
+            "qualified proxy ids are missing from current-run unique snapshot: "
+            + ", ".join(sorted(missing)[:10])
+        )
+
+    passed = [qualified_by_id[proxy_id] for proxy_id in sorted(qualified_by_id)]
+    failed = [
+        unique_by_id[proxy_id]
+        for proxy_id in sorted(set(unique_by_id) - set(qualified_by_id))
+    ]
+    return passed, failed
 
 
 def snapshot_run_key(
