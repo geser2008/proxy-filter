@@ -1,3 +1,4 @@
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sqlite3
@@ -65,7 +66,7 @@ class ReliableHistoryTests(unittest.TestCase):
 
             migrate_reliable_history(db)
 
-            with sqlite3.connect(db) as conn:
+            with closing(sqlite3.connect(db)) as conn:
                 existing = conn.execute(
                     "SELECT source_id, status FROM runs WHERE run_id='existing-run'"
                 ).fetchone()
@@ -177,8 +178,6 @@ class ReliableHistoryTests(unittest.TestCase):
             update_global_reliability(db, [tested], [])
             before = reliability_rows(db)[tested.id].copy()
 
-            # Source outage/absence is represented by omission from both outcome
-            # lists. It must not become a synthetic reliability failure.
             update_global_reliability(db, [], [])
             rows = reliability_rows(db)
             self.assertEqual(rows[tested.id], before)
