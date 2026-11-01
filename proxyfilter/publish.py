@@ -167,7 +167,16 @@ def _historical_reliable_ids(
     if not enabled:
         return set(), report
 
-    rejected = load_rejected_candidates(data_dir)
+    # Rejected stage files are diagnostic snapshots and may still contain a
+    # proxy that recovered later in the same run (for example download recovery).
+    # Reaching 12-qualified is the terminal technical outcome, so PASS wins over
+    # any earlier rejection snapshot for the same canonical proxy id.
+    qualified_ids = {proxy.ensure_id() for proxy in qualified}
+    rejected = [
+        proxy
+        for proxy in load_rejected_candidates(data_dir)
+        if proxy.ensure_id() not in qualified_ids
+    ]
     run_key = snapshot_run_key(data_dir / "work", qualified, rejected)
     if run_key is not None:
         report["update"] = update_global_reliability(
