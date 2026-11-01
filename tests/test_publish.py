@@ -3,8 +3,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
+from proxyfilter.io import write_jsonl
 from proxyfilter.model import ProxyConfig, SourceInfo
 from proxyfilter.publish import publish_merged, publish_source, subscription_text
+from proxyfilter.reliable_history import reliability_rows
 
 
 class PublishTests(unittest.TestCase):
@@ -137,6 +139,36 @@ class PublishTests(unittest.TestCase):
                 for line in (data_dir / "work" / "reliable.jsonl").read_text().splitlines()
             ]
             self.assertEqual([record["id"] for record in records], [unstable.id])
+
+    def test_recovered_proxy_is_terminal_pass_not_historical_failure(self):
+        proxy = self._proxy("vless://recovered@example.com:443#recovered", suffix=21)
+        proxy.tests.reliability = {"status": "stable", "reason": None, "details": {}}
+
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            work = data_dir / "work"
+            work.mkdir(parents=True)
+
+            # Simulate a proxy that entered an intermediate rejected snapshot,
+            # then recovered and reached the final qualified set in the same run.
+            write_jsonl(work / "01-parsed.jsonl", [proxy])
+            rejected_snapshot = ProxyConfig.from_dict(proxy.to_dict())
+            rejected_snapshot.tests.status = "rejected_download"
+            write_jsonl(work / "07-rejected-download.jsonl", [rejected_snapshot])
+
+            publish_merged(
+                data_dir,
+                [proxy],
+                {"enabled": False},
+                history_cfg={"database": "history/proxy-history.sqlite3"},
+            )
+
+            db = data_dir / "history" / "proxy-history.sqlite3"
+            row = reliability_rows(db)[proxy.id]
+            self.assertEqual(row["test_count"], 1)
+            self.assertEqual(row["confirmed_passes"], 1)
+            self.assertEqual(row["confirmed_failures"], 0)
+            self.assertEqual(row["last_result"], "pass")
 
     def test_publish_merged_keeps_two_best_from_same_infrastructure(self):
         values = [
