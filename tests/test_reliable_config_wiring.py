@@ -12,7 +12,7 @@ from proxyfilter.model import ProxyConfig, SourceInfo
 
 
 class ReliableConfigWiringTests(unittest.TestCase):
-    def test_cli_passes_reliable_config_to_global_publish(self):
+    def test_cli_passes_reliable_and_history_config_to_global_publish(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             data_dir = root / "data"
@@ -45,10 +45,13 @@ class ReliableConfigWiringTests(unittest.TestCase):
                     }
                 ],
                 "diversity": {"enabled": False},
+                "history": {"enabled": True, "database": "custom/history.sqlite3"},
                 "reliable": {
                     "enabled": True,
                     "min_confirmed_passes": 7,
                     "min_consecutive_passes": 4,
+                    "name_metric": "bayesian",
+                    "name_show_counts": False,
                 },
             }
             config_path = root / "config.yaml"
@@ -63,6 +66,7 @@ class ReliableConfigWiringTests(unittest.TestCase):
                 captured["data_dir"] = data_dir_arg
                 captured["diversity"] = diversity_cfg
                 captured["reliable"] = kwargs.get("reliable_cfg")
+                captured["history"] = kwargs.get("history_cfg")
                 return data_dir_arg / "output" / "all.txt", None
 
             argv = [
@@ -88,7 +92,13 @@ class ReliableConfigWiringTests(unittest.TestCase):
                     "enabled": True,
                     "min_confirmed_passes": 7,
                     "min_consecutive_passes": 4,
+                    "name_metric": "bayesian",
+                    "name_show_counts": False,
                 },
+            )
+            self.assertEqual(
+                captured["history"],
+                {"enabled": True, "database": "custom/history.sqlite3"},
             )
 
 
