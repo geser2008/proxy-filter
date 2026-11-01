@@ -15,6 +15,7 @@ RESULT_FAIL = "fail"
 DEFAULT_MIN_CONFIRMED_PASSES = 3
 DEFAULT_MIN_CONSECUTIVE_PASSES = 2
 RELIABLE_SCHEMA_VERSION = 1
+RELIABILITY_NAME_METRICS = {"none", "raw", "bayesian"}
 
 
 def reliability_db_path(data_dir: Path, history_cfg: dict | None = None) -> Path:
@@ -138,14 +139,7 @@ def terminal_outcomes_from_work(
     work_dir: Path,
     qualified: list[ProxyConfig],
 ) -> tuple[list[ProxyConfig], list[ProxyConfig]]:
-    """Derive one terminal PASS/FAIL outcome for every current-run candidate.
-
-    ``02-unique.jsonl`` is the complete deduplicated candidate set for the current
-    global run. A proxy that reaches ``12-qualified`` is a terminal PASS even if
-    an earlier attempt was written to a rejected checkpoint and later recovered.
-    Every remaining unique candidate is a terminal FAIL. This avoids treating
-    stale rejected checkpoint files from previous runs as current failures.
-    """
+    """Derive one terminal PASS/FAIL outcome for every current-run candidate."""
     unique_path = work_dir / "02-unique.jsonl"
     unique = _read_proxy_jsonl(unique_path)
     if not unique_path.is_file():
@@ -173,13 +167,7 @@ def snapshot_run_key(
     passed: list[ProxyConfig],
     failed: list[ProxyConfig],
 ) -> str | None:
-    """Identify one concrete global pipeline run for idempotent state updates.
-
-    A fresh full run rewrites 01-parsed.jsonl. Resume-from-publish keeps the same
-    snapshot, so its mtime plus the terminal outcome set is stable and prevents
-    double-counting. If the parsed snapshot is unavailable, the caller should
-    avoid an implicit reliability-state update.
-    """
+    """Identify one concrete global pipeline run for idempotent state updates."""
     parsed = work_dir / "01-parsed.jsonl"
     if not parsed.is_file():
         return None
@@ -205,15 +193,7 @@ def update_global_reliability(
     now: datetime | None = None,
     run_key: str | None = None,
 ) -> dict[str, int]:
-    """Record one complete global test outcome per proxy.
-
-    A proxy is counted at most once per call even when it carries provenance
-    from multiple sources. Only actually tested proxies should be supplied:
-    source absence or fetch failure by itself is not a reliability failure.
-
-    When ``run_key`` is supplied, replaying the same global snapshot is
-    idempotent. This is required for resume-from-publish workflows.
-    """
+    """Record one complete global test outcome per proxy."""
     passed_ids = _deduplicated_ids(passed)
     failed_ids = _deduplicated_ids(failed)
     overlap = passed_ids & failed_ids
@@ -336,16 +316,20 @@ def reliability_rows(db_path: Path) -> dict[str, dict]:
     return {str(row["proxy_id"]): dict(row) for row in rows}
 
 
+def _validate_thresholds(min_confirmed_passes: int, min_consecutive_passes: int) -> None:
+    if min_confirmed_passes < 1:
+        raise ValueError("reliable.min_confirmed_passes must be at least 1")
+    if min_consecutive_passes < 1:
+        raise ValueError("reliable.min_consecutive_passes must be at least 1")
+
+
 def reliable_ids(
     db_path: Path,
     *,
     min_confirmed_passes: int = DEFAULT_MIN_CONFIRMED_PASSES,
     min_consecutive_passes: int = DEFAULT_MIN_CONSECUTIVE_PASSES,
 ) -> set[str]:
-    if min_confirmed_passes < 1:
-        raise ValueError("reliable.min_confirmed_passes must be at least 1")
-    if min_consecutive_passes < 1:
-        raise ValueError("reliable.min_consecutive_passes must be at least 1")
+    _validate_thresholds(min_confirmed_passes, min_consecutive_passes)
     if not db_path.is_file():
         return set()
 
@@ -361,3 +345,81 @@ def reliable_ids(
             (min_confirmed_passes, min_consecutive_passes),
         ).fetchall()
     return {str(row["proxy_id"]) for row in rows}
+
+
+def format_reliability_name_metric(
+    row: dict,
+    *,
+    metric: str = "raw",
+    show_counts: bool = True,
+) -> str:
+    """Format an eligible proxy's historical reliability name marker.
+
+    Raw uses confirmed_passes / test_count. Bayesian uses a Beta(1,1) prior:
+    (confirmed_passes + 1) / (test_count + 2). The database stores only the
+    underlying counters; both display metrics are derived at publication time.
+    """
+    metric = str(metric or "none").lower()
+    if metric not in RELIABILITY_NAME_METRICS:
+        raise ValueError(
+            "reliable.name_metric must be one of: none, raw, bayesian"
+        )
+    if metric == "none":
+        return ""
+
+    tests = int(row.get("test_count") or 0)
+    passes = int(row.get("confirmed_passes") or 0)
+    if tests < 1 or passes < 0 or passes > tests:
+        raise ValueError("invalid reliability counters for name metric")
+
+    if metric == "raw":
+        score = passes / tests
+        prefix = "R"
+    else:
+        score = (passes + 1) / (tests + 2)
+        prefix = "B"
+
+    percent = int(round(score * 100))
+    marker = f"{prefix}{percent}%"
+    if show_counts:
+        marker += f"({passes}/{tests})"
+    return marker
+
+
+def reliable_name_metrics(
+    db_path: Path,
+    *,
+    min_confirmed_passes: int = DEFAULT_MIN_CONFIRMED_PASSES,
+    min_consecutive_passes: int = DEFAULT_MIN_CONSECUTIVE_PASSES,
+    metric: str = "raw",
+    show_counts: bool = True,
+) -> dict[str, str]:
+    """Return display markers only for proxies currently eligible as reliable."""
+    _validate_thresholds(min_confirmed_passes, min_consecutive_passes)
+    metric = str(metric or "none").lower()
+    if metric not in RELIABILITY_NAME_METRICS:
+        raise ValueError(
+            "reliable.name_metric must be one of: none, raw, bayesian"
+        )
+    if metric == "none" or not db_path.is_file():
+        return {}
+
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM proxy_global_reliability
+            WHERE confirmed_passes >= ?
+              AND consecutive_passes >= ?
+              AND last_result = 'pass'
+            ORDER BY proxy_id
+            """,
+            (min_confirmed_passes, min_consecutive_passes),
+        ).fetchall()
+
+    return {
+        str(row["proxy_id"]): format_reliability_name_metric(
+            dict(row), metric=metric, show_counts=show_counts
+        )
+        for row in rows
+    }
