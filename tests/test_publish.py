@@ -3,8 +3,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
+from proxyfilter.io import write_jsonl
 from proxyfilter.model import ProxyConfig, SourceInfo
 from proxyfilter.publish import publish_merged, publish_source, subscription_text
+from proxyfilter.reliable_history import reliability_rows
 
 
 class PublishTests(unittest.TestCase):
@@ -81,21 +83,135 @@ class PublishTests(unittest.TestCase):
             (output_dir / "old-source.txt").write_text("keep me\n", encoding="utf-8")
             (output_dir / "all.jsonl").write_text("keep me too\n", encoding="utf-8")
 
-            all_path, legacy_jsonl = publish_merged(data_dir, [stable, unstable], {"enabled": False})
+            all_path, legacy_jsonl = publish_merged(
+                data_dir,
+                [stable, unstable],
+                {"enabled": False},
+                reliable_ids={stable.id},
+            )
 
             self.assertIsNone(legacy_jsonl)
             self.assertEqual(all_path, output_dir / "all.txt")
             self.assertEqual(
                 sorted(path.name for path in output_dir.iterdir()),
-                ["all.jsonl", "all.txt", "old-source.txt", "stable.txt", "unstable.txt"],
+                [
+                    "all.jsonl",
+                    "all.txt",
+                    "old-source.txt",
+                    "reliable.txt",
+                    "stable.txt",
+                    "unstable.txt",
+                ],
             )
             self.assertEqual((output_dir / "old-source.txt").read_text(encoding="utf-8"), "keep me\n")
             self.assertEqual((output_dir / "all.jsonl").read_text(encoding="utf-8"), "keep me too\n")
             self.assertEqual(len((output_dir / "all.txt").read_text().splitlines()), 2)
             self.assertEqual((output_dir / "stable.txt").read_text().splitlines(), [stable.tests.render["uri"]])
             self.assertEqual((output_dir / "unstable.txt").read_text().splitlines(), [unstable.tests.render["uri"]])
+            self.assertEqual((output_dir / "reliable.txt").read_text().splitlines(), [stable.tests.render["uri"]])
             counts = json.loads((data_dir / "reports" / "subscriptions.json").read_text())
-            self.assertEqual(counts, {"all": 2, "stable": 1, "unstable": 1, "unclassified": 0})
+            self.assertEqual(
+                counts,
+                {"all": 2, "stable": 1, "unstable": 1, "reliable": 1, "unclassified": 0},
+            )
+
+    def test_reliable_is_independent_of_current_stream_reliability(self):
+        stable = self._proxy("vless://stable@example1.com:443#stable", suffix=11)
+        unstable = self._proxy("vless://unstable@example2.com:443#unstable", suffix=12)
+        stable.tests.reliability = {"status": "stable", "reason": None, "details": {}}
+        unstable.tests.reliability = {"status": "degraded", "reason": "transport", "details": {}}
+
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            publish_merged(
+                data_dir,
+                [stable, unstable],
+                {"enabled": False},
+                reliable_ids={unstable.id},
+            )
+
+            self.assertEqual(
+                (data_dir / "output" / "reliable.txt").read_text().splitlines(),
+                [unstable.tests.render["uri"]],
+            )
+            records = [
+                json.loads(line)
+                for line in (data_dir / "work" / "reliable.jsonl").read_text().splitlines()
+            ]
+            self.assertEqual([record["id"] for record in records], [unstable.id])
+
+    def test_recovered_proxy_is_terminal_pass_not_historical_failure(self):
+        proxy = self._proxy("vless://recovered@example.com:443#recovered", suffix=21)
+        proxy.tests.reliability = {"status": "stable", "reason": None, "details": {}}
+
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            work = data_dir / "work"
+            work.mkdir(parents=True)
+
+            # Simulate a proxy that entered an intermediate rejected snapshot,
+            # then recovered and reached the final qualified set in the same run.
+            write_jsonl(work / "01-parsed.jsonl", [proxy])
+            write_jsonl(work / "02-unique.jsonl", [proxy])
+            rejected_snapshot = ProxyConfig.from_dict(proxy.to_dict())
+            rejected_snapshot.tests.status = "rejected_download"
+            write_jsonl(work / "07-rejected-download.jsonl", [rejected_snapshot])
+
+            publish_merged(
+                data_dir,
+                [proxy],
+                {"enabled": False},
+                history_cfg={"database": "history/proxy-history.sqlite3"},
+            )
+
+            db = data_dir / "history" / "proxy-history.sqlite3"
+            row = reliability_rows(db)[proxy.id]
+            self.assertEqual(row["test_count"], 1)
+            self.assertEqual(row["confirmed_passes"], 1)
+            self.assertEqual(row["confirmed_failures"], 0)
+            self.assertEqual(row["last_result"], "pass")
+
+    def test_stale_rejected_snapshot_is_not_current_failure(self):
+        passed = self._proxy("vless://passed@example.com:443#passed", suffix=31)
+        failed = self._proxy("vless://failed@example.com:443#failed", suffix=32)
+        stale = self._proxy("vless://stale@example.com:443#stale", suffix=33)
+        passed.tests.reliability = {"status": "stable", "reason": None, "details": {}}
+
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            work = data_dir / "work"
+            work.mkdir(parents=True)
+            write_jsonl(work / "01-parsed.jsonl", [passed, failed])
+            write_jsonl(work / "02-unique.jsonl", [passed, failed])
+
+            failed_snapshot = ProxyConfig.from_dict(failed.to_dict())
+            failed_snapshot.tests.status = "rejected_download"
+            stale_snapshot = ProxyConfig.from_dict(stale.to_dict())
+            stale_snapshot.tests.status = "rejected_download"
+            write_jsonl(
+                work / "07-rejected-download.jsonl",
+                [failed_snapshot, stale_snapshot],
+            )
+
+            publish_merged(
+                data_dir,
+                [passed],
+                {"enabled": False},
+                history_cfg={"database": "history/proxy-history.sqlite3"},
+            )
+
+            db = data_dir / "history" / "proxy-history.sqlite3"
+            rows = reliability_rows(db)
+            self.assertEqual(set(rows), {passed.id, failed.id})
+            self.assertEqual(rows[passed.id]["last_result"], "pass")
+            self.assertEqual(rows[failed.id]["last_result"], "fail")
+            self.assertNotIn(stale.id, rows)
+
+            report = json.loads((data_dir / "reports" / "reliable.json").read_text())
+            self.assertEqual(
+                report["update"],
+                {"tested": 2, "passed": 1, "failed": 1, "skipped": 0},
+            )
 
     def test_publish_merged_keeps_two_best_from_same_infrastructure(self):
         values = [
@@ -124,6 +240,7 @@ class PublishTests(unittest.TestCase):
             self.assertIsNone(legacy_jsonl)
             self.assertEqual([proxy.id for proxy in proxies], expected)
             self.assertEqual(len(txt_path.read_text(encoding="utf-8").splitlines()), 2)
+            self.assertEqual((data_dir / "output" / "reliable.txt").read_text(), "")
             published_records = [
                 json.loads(line)
                 for line in (data_dir / "work" / "14-published.jsonl").read_text(encoding="utf-8").splitlines()

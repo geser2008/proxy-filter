@@ -9,9 +9,20 @@ from .diversity import select_diverse
 from .io import write_json, write_jsonl, write_text
 from .model import ProxyConfig
 from .reliability import DEGRADED, STABLE
+from .reliable_history import (
+    DEFAULT_MIN_CONFIRMED_PASSES,
+    DEFAULT_MIN_CONSECUTIVE_PASSES,
+    reliability_db_path,
+    reliable_ids as load_reliable_ids,
+    reliable_name_metrics,
+    snapshot_run_key,
+    terminal_outcomes_from_work,
+    update_global_reliability,
+)
+from .render import render_uri, validate_round_trip
 
 
-FINAL_SUBSCRIPTION_NAMES = ("all.txt", "stable.txt", "unstable.txt")
+FINAL_SUBSCRIPTION_NAMES = ("all.txt", "stable.txt", "unstable.txt", "reliable.txt")
 
 
 def _rendered_uri(proxy: ProxyConfig) -> str:
@@ -40,11 +51,7 @@ def publish_source(
     source_id: str,
     proxies: list[ProxyConfig],
 ) -> tuple[None, None]:
-    """Compatibility no-op: per-source final subscriptions are disabled.
-
-    Source provenance remains available in work/state/history JSONL records, but
-    final publication is intentionally global only: all/stable/unstable.
-    """
+    """Compatibility no-op: per-source final subscriptions are disabled."""
     return None, None
 
 
@@ -52,32 +59,33 @@ def _reliability_status(proxy: ProxyConfig) -> str:
     return str((proxy.tests.reliability or {}).get("status") or "unknown")
 
 
-def _subscription_generation(proxies: list[ProxyConfig]) -> tuple[dict[str, str], dict[str, int]]:
+def _subscription_generation(
+    proxies: list[ProxyConfig],
+    reliable_ids: set[str] | None = None,
+) -> tuple[dict[str, str], dict[str, int], list[ProxyConfig]]:
     """Render the complete publication generation before touching live files."""
+    reliable_ids = reliable_ids or set()
     stable = [proxy for proxy in proxies if _reliability_status(proxy) == STABLE]
     unstable = [proxy for proxy in proxies if _reliability_status(proxy) == DEGRADED]
+    reliable = [proxy for proxy in proxies if proxy.ensure_id() in reliable_ids]
     texts = {
         "all.txt": subscription_text(proxies),
         "stable.txt": subscription_text(stable),
         "unstable.txt": subscription_text(unstable),
+        "reliable.txt": subscription_text(reliable),
     }
     counts = {
         "all": len(proxies),
         "stable": len(stable),
         "unstable": len(unstable),
+        "reliable": len(reliable),
         "unclassified": len(proxies) - len(stable) - len(unstable),
     }
-    return texts, counts
+    return texts, counts, reliable
 
 
 def _publish_subscription_generation(output_dir: Path, texts: dict[str, str]) -> None:
-    """Transactionally replace only proxy-filter managed subscription files.
-
-    The complete next generation is prepared first. Existing managed files are
-    copied into a rollback area, then each prepared file is moved into place with
-    os.replace(). If any commit step raises, the previous managed generation is
-    restored. Unmanaged files in output_dir are never removed or modified.
-    """
+    """Transactionally replace only proxy-filter managed subscription files."""
     output_dir.mkdir(parents=True, exist_ok=True)
     unexpected = set(texts) - set(FINAL_SUBSCRIPTION_NAMES)
     missing = set(FINAL_SUBSCRIPTION_NAMES) - set(texts)
@@ -118,7 +126,7 @@ def _publish_subscription_generation(output_dir: Path, texts: dict[str, str]) ->
                             os.replace(backup, target)
                     elif target.exists():
                         target.unlink()
-                except Exception as rollback_exc:  # pragma: no cover - catastrophic filesystem failure
+                except Exception as rollback_exc:  # pragma: no cover
                     rollback_errors.append(rollback_exc)
             if rollback_errors:
                 raise RuntimeError(
@@ -127,30 +135,137 @@ def _publish_subscription_generation(output_dir: Path, texts: dict[str, str]) ->
             raise
 
 
+def _historical_reliable_ids(
+    data_dir: Path,
+    qualified: list[ProxyConfig],
+    reliable_cfg: dict | None,
+    history_cfg: dict | None,
+) -> tuple[set[str], dict]:
+    cfg = reliable_cfg or {}
+    enabled = bool(cfg.get("enabled", True))
+    min_confirmed = int(cfg.get("min_confirmed_passes", DEFAULT_MIN_CONFIRMED_PASSES))
+    min_consecutive = int(cfg.get("min_consecutive_passes", DEFAULT_MIN_CONSECUTIVE_PASSES))
+    name_metric = str(cfg.get("name_metric", "raw")).lower()
+    name_show_counts = bool(cfg.get("name_show_counts", True))
+    db_path = reliability_db_path(data_dir, history_cfg)
+
+    report = {
+        "enabled": enabled,
+        "database": str(db_path),
+        "min_confirmed_passes": min_confirmed,
+        "min_consecutive_passes": min_consecutive,
+        "name_metric": name_metric,
+        "name_show_counts": name_show_counts,
+        "update": {"tested": 0, "passed": 0, "failed": 0, "skipped": 1},
+        "eligible": 0,
+    }
+    if not enabled:
+        return set(), report
+
+    work_dir = data_dir / "work"
+    parsed = work_dir / "01-parsed.jsonl"
+    if parsed.is_file():
+        passed, failed = terminal_outcomes_from_work(work_dir, qualified)
+        run_key = snapshot_run_key(work_dir, passed, failed)
+        if run_key is not None:
+            report["update"] = update_global_reliability(
+                db_path,
+                passed,
+                failed,
+                run_key=run_key,
+            )
+            report["run_key"] = run_key
+
+    ids = load_reliable_ids(
+        db_path,
+        min_confirmed_passes=min_confirmed,
+        min_consecutive_passes=min_consecutive,
+    )
+    report["eligible"] = len(ids)
+    return ids, report
+
+
+def _apply_reliable_name_metrics(
+    data_dir: Path,
+    proxies: list[ProxyConfig],
+    reliable_cfg: dict | None,
+    history_cfg: dict | None,
+) -> int:
+    """Re-render only eligible reliable proxies with a derived history marker."""
+    cfg = reliable_cfg or {}
+    if not bool(cfg.get("enabled", True)):
+        return 0
+
+    metric = str(cfg.get("name_metric", "raw")).lower()
+    if metric == "none":
+        return 0
+
+    min_confirmed = int(cfg.get("min_confirmed_passes", DEFAULT_MIN_CONFIRMED_PASSES))
+    min_consecutive = int(cfg.get("min_consecutive_passes", DEFAULT_MIN_CONSECUTIVE_PASSES))
+    show_counts = bool(cfg.get("name_show_counts", True))
+    db_path = reliability_db_path(data_dir, history_cfg)
+    markers = reliable_name_metrics(
+        db_path,
+        min_confirmed_passes=min_confirmed,
+        min_consecutive_passes=min_consecutive,
+        metric=metric,
+        show_counts=show_counts,
+    )
+
+    changed = 0
+    for proxy in proxies:
+        marker = markers.get(proxy.ensure_id())
+        if not marker:
+            continue
+        render = dict(proxy.tests.render or {})
+        if render.get("status") != "pass":
+            continue
+        base_name = str(render.get("base_name") or render.get("name") or proxy.name or "").strip()
+        name = f"{base_name} | {marker}" if base_name else marker
+        uri = render_uri(proxy, name)
+        validate_round_trip(proxy, uri)
+        render["base_name"] = base_name
+        render["name"] = name
+        render["uri"] = uri
+        render["historical_reliability"] = marker
+        proxy.tests.render = render
+        changed += 1
+    return changed
+
+
 def publish_merged(
     data_dir: Path,
     proxies: list[ProxyConfig],
     diversity_cfg: dict | None = None,
+    reliable_ids: set[str] | None = None,
+    reliable_cfg: dict | None = None,
+    history_cfg: dict | None = None,
 ) -> tuple[Path, None]:
-    """Publish all.txt, stable.txt and unstable.txt after diversity.
-
-    Canonical JSONL snapshots remain in data/work and data/state. Only the three
-    managed subscription files are replaced in data/output; unrelated files are
-    preserved.
-
-    The second return value is kept as None for compatibility with the existing
-    caller that previously expected an output JSONL path.
-    """
+    """Publish all/stable/unstable/reliable subscriptions after diversity."""
     diversity_cfg = diversity_cfg or {}
     enabled = bool(diversity_cfg.get("enabled", True))
     work_dir = data_dir / "work"
     reports_dir = data_dir / "reports"
 
-    # Snapshot the complete working set before diversity. This is also the set
-    # that should be carried into the next full run for re-testing.
     for proxy in proxies:
         proxy.tests.status = "qualified"
     write_jsonl(work_dir / "12-qualified.jsonl", proxies)
+
+    auto_reliable = reliable_ids is None
+    if auto_reliable:
+        reliable_ids, reliable_report = _historical_reliable_ids(
+            data_dir,
+            proxies,
+            reliable_cfg,
+            history_cfg,
+        )
+        reliable_report["name_annotated"] = _apply_reliable_name_metrics(
+            data_dir,
+            proxies,
+            reliable_cfg,
+            history_cfg,
+        )
+        write_json(reports_dir / "reliable.json", reliable_report)
 
     if enabled:
         selected, suppressed, report = select_diverse(
@@ -172,7 +287,6 @@ def publish_merged(
         proxy.tests.diversity["status"] = "suppressed"
         proxy.tests.status = "diversity_suppressed"
 
-    # Internal diagnostic/checkpoint files remain JSONL under work/.
     write_jsonl(work_dir / "13-diversity-selected.jsonl", selected)
     write_jsonl(work_dir / "13-diversity-suppressed.jsonl", suppressed)
     write_jsonl(work_dir / "diversity-selected.jsonl", selected)
@@ -196,9 +310,8 @@ def publish_merged(
         proxy.tests.status = "published"
     write_jsonl(work_dir / "14-published.jsonl", proxies)
 
-    # Render/validate the whole next generation before changing any live
-    # subscription file. This prevents one bad view from leaving a partial set.
-    texts, split_counts = _subscription_generation(proxies)
+    texts, split_counts, reliable = _subscription_generation(proxies, reliable_ids)
+    write_jsonl(work_dir / "reliable.jsonl", reliable)
     output_dir = data_dir / "output"
     _publish_subscription_generation(output_dir, texts)
     write_json(reports_dir / "subscriptions.json", split_counts)

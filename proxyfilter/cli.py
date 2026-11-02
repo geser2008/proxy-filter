@@ -149,8 +149,6 @@ def _ingest_sources(
             + " publish_policy=successful_sources_plus_retained"
         )
 
-    # A fetch failure is a source warning, not a global filtering failure.
-    # Retained proxies from unavailable sources still participate in the run.
     return parsed_all, True
 
 
@@ -595,8 +593,16 @@ def main() -> int:
         full_source_set = not selected or selected == configured_ids
         if all_sources_ok and full_source_set:
             diversity_cfg = cfg.get("filters", {}).get("diversity", cfg.get("diversity", {}))
+            reliable_cfg = cfg.get("reliable", {}) or {}
+            history_cfg = cfg.get("history", {}) or {}
             selected_for_publish = list(working)
-            txt_path, jsonl_path = publish_merged(data_dir, selected_for_publish, diversity_cfg)
+            txt_path, jsonl_path = publish_merged(
+                data_dir,
+                selected_for_publish,
+                diversity_cfg,
+                reliable_cfg=reliable_cfg,
+                history_cfg=history_cfg,
+            )
             write_jsonl(work / "12-published.jsonl", selected_for_publish)
 
             if args.resume_from is None:
