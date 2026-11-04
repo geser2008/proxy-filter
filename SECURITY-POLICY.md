@@ -68,7 +68,7 @@ The implementation must inspect all supported locations and aliases, not just th
 
 REALITY must not be silently converted into ordinary TLS or vice versa.
 
-**REALITY validation:** the required public key and short ID must be present in the appropriate parsed representation. Missing required REALITY parameters should be rejected by static validation rather than filled with guessed values. Accepted aliases include `pbk` / `public_key` / `public-key` and `sid` / `short_id` / `short-id`. HTML-escaped query separators must not cause these fields to be lost during parsing.
+**REALITY validation:** a nonempty server public key is required (`pbk` / `public_key` / `public-key`). A Short ID (`sid` / `short_id` / `short-id`) is **optional at the security stage**: both absence and an explicitly empty string are permitted, provided the server is configured to accept an empty Short ID. Do not invent a missing Short ID. A security PASS does not guarantee server compatibility or a successful handshake; later core/runtime checks retain that responsibility. HTML-escaped query separators must not hide these parameters during parsing.
 
 A fingerprint must not be invented or inserted automatically when it was absent from the source. Compatibility errors such as a missing uTLS fingerprint belong to the relevant validation/runtime stage unless the project explicitly adopts a stricter static requirement.
 
@@ -211,7 +211,7 @@ Every normative rule in this document must have unit tests. At minimum, tests sh
 - Missing UUID is rejected.
 - VLESS without TLS or REALITY is rejected.
 - SNI without TLS does not satisfy the TLS requirement.
-- REALITY without required public key or short ID is rejected.\n- REALITY public key and short ID following HTML-escaped query separators are parsed and validated.
+- REALITY without a nonempty public key is rejected.\n- REALITY without `sid`, with `sid=`, and with a supplied Short ID may pass static security screening; no Short ID is fabricated.\n- REALITY public key and any Short ID following HTML-escaped query separators are parsed and preserved.
 - Missing fingerprint is not silently populated by security screening.
 - Explicitly disabled certificate verification is rejected.
 
@@ -245,7 +245,7 @@ Every normative rule in this document must have unit tests. At minimum, tests sh
 The following items must be resolved before declaring the policy fully finalized:
 
 1. **Shadowsocks future methods:** periodically review new supported AEAD methods and add them to the classified set; unknown methods remain unverified until then.
-2. **REALITY required fields:** confirm the parser's canonical field names and all accepted source aliases for public key and short ID, then enforce their presence in security screening.
+2. **REALITY compatibility:** confirm that absent versus explicitly empty Short ID is accepted by the pinned sing-box backend and the selected remote server; the security stage deliberately does not reject either case.
 3. **Malformed certificate-verification values:** confirm every supported representation and implement fail-closed handling consistently.
 4. **Unknown-protocol setting:** reconcile `reject_unknown_protocols` with the ingest allowlist and remove any misleading or unused configuration.
 5. **VMess absent alterId:** confirm the effective default for extended sing-box parser mode before allowing missing `aid`; current policy requires explicit zero.
