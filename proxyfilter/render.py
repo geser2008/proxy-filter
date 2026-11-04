@@ -101,6 +101,17 @@ def _validate_semantic_source_fields(protocol: str, params: dict[str, Any]) -> N
     else:
         return
 
+    # Some subscription generators attach neutral defaults from a generic
+    # V2Ray-style URI template. Drop only the values known to be inapplicable
+    # or equivalent to the protocol's default; keep rejecting other values.
+    if protocol == "trojan" and params.get("encryption") == "none":
+        allowed.add("encryption")
+    if protocol in {"ss", "shadowsocks"}:
+        if params.get("type") == "tcp":
+            allowed.add("type")
+        if params.get("headerType") == "none":
+            allowed.add("headerType")
+
     unknown = sorted(str(key) for key in params if key not in allowed)
     if unknown:
         raise RenderError(
