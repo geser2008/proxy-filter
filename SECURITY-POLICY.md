@@ -74,37 +74,36 @@ A fingerprint must not be invented or inserted automatically when it was absent 
 
 ### 4.2 VMess
 
-A UUID is required.
+VMess payload encryption and VMess header authentication are different properties. Transport TLS provides a separate authenticated encrypted layer. This policy **does not mandate double encryption** when TLS certificate verification is effective.
 
-The project previously discussed and implemented a deliberate exception for VMess without transport TLS: it may pass the static security rule when its VMess payload-security value is one of the explicitly accepted AEAD values:
+**Modern VMess header authentication is required:** `alterId = 0` (accepted source aliases: `aid`, `alterId`, `alter_id`). Positive or malformed values are rejected. In the present implementation, a missing alterId is also rejected rather than silently replaced with zero. Before relaxing that rule, confirm the exact default applied by the pinned extended sing-box backend for every supported input format.
 
-- `auto`
-- `aes-128-gcm`
-- `chacha20-poly1305`
+A UUID is required. The permitted payload ciphers depend on transport:
 
-This exception distinguishes VMess payload encryption from transport TLS. These are different security properties; passing this rule does not mean that the connection has TLS transport protection.
+| Transport protection | VMess payload cipher | Decision |
+|---|---|---|
+| TLS enabled with certificate verification | `auto`, `aes-128-gcm`, `chacha20-poly1305` | PASS |
+| TLS enabled with certificate verification | `none` | PASS: TLS protects the channel |
+| TLS enabled | `zero`, unknown, missing, or legacy cipher | REJECT pending separate review |
+| No TLS | `auto`, `aes-128-gcm`, `chacha20-poly1305` | PASS (VMess payload AEAD, without TLS transport) |
+| No TLS | `none`, `zero`, unknown, missing, or legacy cipher | REJECT |
 
-The following are not accepted as a basis for allowing VMess without TLS:
+`auto` is a client/backend selection mode, not an independently specified cipher. Compatibility and the actual chosen cipher remain dependent on the pinned sing-box implementation.
 
-- `none`
-- unspecified or empty payload-security values
-- unknown values
-
-**Policy status:** preserve the previously agreed AEAD exception unless and until the project explicitly decides to remove it. Do not silently change the rule to require TLS for every VMess configuration. Any future change must update this section and the corresponding tests together.
+TLS and VMess payload encryption must not be confused: for VMess the `security` field can describe payload cipher; transport protection is represented separately.
 
 ### 4.3 Shadowsocks
 
-Known legacy / non-AEAD methods are rejected. The project has explicitly discussed rejecting methods including:
+A permanent hard-coded allowlist would obstruct future supported AEAD methods. The policy therefore maintains an **explicit classification**, not a claim that the current list is complete forever.
 
-- `aes-128-cfb`
-- `aes-256-cfb`
-- `rc4-md5`
+- Known insecure or legacy methods (including CFB, CTR, RC4, stream-cipher and `none` variants) are rejected as `legacy_shadowsocks_cipher`.
+- Currently reviewed AEAD methods pass:
+  `aes-128-gcm`, `aes-256-gcm`, `chacha20-ietf-poly1305`, `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, `2022-blake3-chacha20-poly1305`.
+- Unknown methods are rejected as `unknown_shadowsocks_cipher`, **not** labeled cryptographically weak. New methods can be added after confirming their security properties and compatibility with the pinned backend.
 
-The current implementation has used a denylist of legacy methods. A denylist is not equivalent to a strict allowlist: an unrecognized method must not automatically be treated as secure.
+This is deliberately fail-closed for unreviewed algorithms without treating them as necessarily unsafe. A method passing static security still needs the later core compatibility check.
 
-**Decision still required:** finalize the exact allowlist of accepted Shadowsocks AEAD methods, based on the methods supported by the project's pinned sing-box version and the project's security requirements. Until that list is agreed and implemented, unknown or unrecognized methods must not be described as verified secure.
-
-Do not add or rename cipher methods merely for convenience. Protocol aliases such as `shadowsocks` → `ss` are normalization, not a security decision.
+The protocol alias `shadowsocks` → `ss` is naming normalization, not a cryptographic change.
 
 ### 4.4 Trojan
 
@@ -183,15 +182,17 @@ Every normative rule in this document must have unit tests. At minimum, tests sh
 
 ### VMess
 - Missing UUID is rejected.
-- VMess without TLS using each previously accepted AEAD value follows the documented exception.
-- VMess without TLS using `none`, empty, unspecified, or unknown security values is rejected.
-- TLS-enabled VMess is evaluated according to the accepted payload-security policy.
-- Tests explicitly document the distinction between payload AEAD and transport TLS.
+- Explicit `alterId=0` is accepted; missing, malformed, and nonzero values are rejected.
+- Without TLS, `auto` and explicitly accepted AEAD ciphers are accepted.
+- Without TLS, `none`, `zero`, legacy, unknown, or unspecified ciphers are rejected.
+- With TLS, `none` is accepted because transport TLS protects the channel; `zero` remains rejected pending separate review.
+- Tests distinguish payload encryption from transport TLS.
 
 ### Shadowsocks
 - Each explicitly rejected legacy method is rejected.
-- Each method on the final allowlist is accepted.
-- Unknown and missing methods do not pass as secure by default.
+- Each currently reviewed AEAD method is accepted, including supported AEAD-2022 methods.
+- Unknown methods are rejected as unverified, not classified as weak; missing methods are rejected.
+- Adding new reviewed methods does not require redesigning the policy.
 - Supported plugin options are inspected for disabled certificate verification.
 
 ### Trojan / Hysteria2 / TUIC
@@ -208,10 +209,12 @@ Every normative rule in this document must have unit tests. At minimum, tests sh
 
 The following items must be resolved before declaring the policy fully finalized:
 
-1. **Shadowsocks allowlist:** agree the exact accepted AEAD methods against the pinned sing-box version. Until then, do not claim that a denylist provides strict allowlist-level assurance.
+1. **Shadowsocks future methods:** periodically review new supported AEAD methods and add them to the classified set; unknown methods remain unverified until then.
 2. **REALITY required fields:** confirm the parser's canonical field names and all accepted source aliases for public key and short ID, then enforce their presence in security screening.
 3. **Malformed certificate-verification values:** confirm every supported representation and implement fail-closed handling consistently.
 4. **Unknown-protocol setting:** reconcile `reject_unknown_protocols` with the ingest allowlist and remove any misleading or unused configuration.
+5. **VMess absent alterId:** confirm the effective default for extended sing-box parser mode before allowing missing `aid`; current policy requires explicit zero.
+6. **VMess auto:** verify the effective cipher selection of the pinned backend as part of compatibility review.
 
 These are policy/implementation closure items, not reasons to redesign the rest of the pipeline.
 
@@ -226,7 +229,7 @@ When changing a security rule:
 5. Run a complete laptop test pipeline and inspect both accepted and rejected security records.
 6. Do not use the number of surviving proxies as the acceptance criterion for a security change.
 
-A policy change must be explicit. Do not silently change previously agreed exceptions, especially the VMess AEAD exception.
+A policy change must be explicit. Do not silently change previously agreed exceptions, especially the VMess AEAD-without-TLS exception or the TLS-with-none allowance.
 
 ---
 
@@ -235,8 +238,8 @@ A policy change must be explicit. Do not silently change previously agreed excep
 | Protocol / property | Current documented rule |
 |---|---|
 | VLESS | UUID + explicit TLS or REALITY; no disabled certificate verification |
-| VMess | UUID; documented AEAD exception for VMess without TLS remains in force |
-| Shadowsocks | Reject known legacy methods; exact strict allowlist remains to be finalized |
+| VMess | UUID + explicit alterId=0; without TLS require auto/AEAD; with verified TLS allow none, but not zero |
+| Shadowsocks | Reject legacy; accept reviewed AEAD and AEAD-2022 methods; reject unknown as unverified pending review |
 | Trojan | Password required; preserve TLS and certificate verification |
 | Hysteria2 | Authentication required; preserve QUIC/TLS and certificate verification |
 | TUIC | UUID + password; preserve QUIC/TLS and certificate verification |
