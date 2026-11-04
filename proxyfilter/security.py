@@ -4,6 +4,9 @@ from .model import ProxyConfig
 from .semantics import INSECURE_ALIASES, tls_enabled
 
 
+VMESS_AEAD_CIPHERS = {"auto", "aes-128-gcm", "chacha20-poly1305"}
+
+
 LEGACY_SHADOWSOCKS_METHODS = {
     "table",
     "rc4",
@@ -80,17 +83,33 @@ def check_static_security(proxy: ProxyConfig, reject_allow_insecure: bool = True
         elif method in LEGACY_SHADOWSOCKS_METHODS:
             reasons.append("legacy_shadowsocks_cipher")
 
-    if p in {"vless", "vmess"}:
+    if p == "vless":
         try:
             enabled = tls_enabled(params)
         except ValueError:
             enabled = False
         if not enabled:
-            reasons.append(
-                "vless_without_tls_or_reality"
-                if p == "vless"
-                else "vmess_without_tls_or_reality"
+            reasons.append("vless_without_tls_or_reality")
+
+    if p == "vmess":
+        # VMess "security" describes the payload cipher, not the TLS transport.
+        # Do not accept security=tls as evidence of transport encryption.
+        transport_params = {key: value for key, value in params.items() if key != "security"}
+        try:
+            transport_protected = tls_enabled(transport_params)
+        except ValueError:
+            transport_protected = False
+        if not transport_protected:
+            # Use the same source-field precedence as the VMess semantic mapper.
+            # Unspecified ciphers are not assumed to be AEAD (fail closed).
+            cipher = next(
+                (str(params[key]).strip().lower()
+                 for key in ("security", "scy", "cipher")
+                 if key in params and params[key] is not None),
+                "",
             )
+            if cipher not in VMESS_AEAD_CIPHERS:
+                reasons.append("vmess_without_tls_or_safe_aead")
 
     ok = not reasons
     proxy.tests.security = {"status": "pass" if ok else "reject", "reasons": reasons}
