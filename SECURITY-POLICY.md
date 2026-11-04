@@ -54,7 +54,7 @@ Interpretation:
 - Missing value: does not by itself mean verification is disabled.
 - Unrecognized or malformed value: **REJECT** when it is supplied for a certificate-verification control. Do not silently coerce it to false.
 
-The implementation must inspect all supported locations and aliases, not just the top-level URI query.
+The implementation must inspect all supported locations and aliases, not just the top-level URI query. Alias matching is case-insensitive; underscore and hyphen variants are normalized. HTML-escaped URI separators such as `&amp;` must be decoded for parsing so subsequent security parameters are not swallowed into a single key. The original raw URI must remain preserved for auditability.
 
 ## 4. Protocol-specific policy
 
@@ -68,7 +68,7 @@ The implementation must inspect all supported locations and aliases, not just th
 
 REALITY must not be silently converted into ordinary TLS or vice versa.
 
-**REALITY validation:** the required public key and short ID must be present in the appropriate parsed representation. Missing required REALITY parameters should be rejected by static validation rather than filled with guessed values. The exact accepted field aliases must match the formats supported by the parser and sing-box backend.
+**REALITY validation:** the required public key and short ID must be present in the appropriate parsed representation. Missing required REALITY parameters should be rejected by static validation rather than filled with guessed values. Accepted aliases include `pbk` / `public_key` / `public-key` and `sid` / `short_id` / `short-id`. HTML-escaped query separators must not cause these fields to be lost during parsing.
 
 A fingerprint must not be invented or inserted automatically when it was absent from the source. Compatibility errors such as a missing uTLS fingerprint belong to the relevant validation/runtime stage unless the project explicitly adopts a stricter static requirement.
 
@@ -202,7 +202,7 @@ Keep security rejection reasons distinct from parser, core, latency, download, a
 Every normative rule in this document must have unit tests. At minimum, tests should cover:
 
 ### TLS verification
-- Every supported insecure alias with an explicit truthy value is rejected.
+- Every supported insecure alias, including case and underscore/hyphen variants, with an explicit truthy value is rejected.\n- HTML-escaped `&amp;` query separators are decoded for parsing; the original URI is preserved.\n- Malformed boolean values for certificate-verification controls are rejected.
 - Explicit false values are allowed by this rule.
 - Malformed values for certificate-verification controls are rejected.
 - Nested TLS and supported plugin representations are inspected.
@@ -211,7 +211,7 @@ Every normative rule in this document must have unit tests. At minimum, tests sh
 - Missing UUID is rejected.
 - VLESS without TLS or REALITY is rejected.
 - SNI without TLS does not satisfy the TLS requirement.
-- REALITY without required public key or short ID is rejected.
+- REALITY without required public key or short ID is rejected.\n- REALITY public key and short ID following HTML-escaped query separators are parsed and validated.
 - Missing fingerprint is not silently populated by security screening.
 - Explicitly disabled certificate verification is rejected.
 
