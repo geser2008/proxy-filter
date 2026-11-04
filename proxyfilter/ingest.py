@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import html
 import binascii
 import json
 import re
@@ -169,9 +168,10 @@ def _parse_unique_query(query: str, protocol: str) -> dict[str, str]:
 
 
 def parse_uri(uri: str, source: SourceInfo) -> ProxyConfig:
-    # Some feeds HTML-escape query separators as &amp;. Decode entities for
-    # parsing only; preserve the exact source string in original_raw.
-    parse_uri_text = html.unescape(uri)
+    # Decode only HTML-escaped ampersand query separators. html.unescape()
+    # is unsafe here: '&note=' starts with the legacy '&not' HTML entity,
+    # so it can corrupt an opaque URI query key. Preserve all other content.
+    parse_uri_text = uri.replace("&amp;", "&")
     scheme = parse_uri_text.split(":", 1)[0].lower()
     if scheme not in SUPPORTED_SCHEMES:
         raise ValueError(f"unsupported protocol: {scheme}")
