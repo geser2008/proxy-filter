@@ -5,6 +5,17 @@ from .semantics import INSECURE_ALIASES, tls_enabled
 
 
 VMESS_AEAD_CIPHERS = {"auto", "aes-128-gcm", "chacha20-poly1305"}
+VMESS_TLS_CIPHERS = VMESS_AEAD_CIPHERS | {"none"}
+
+# Explicitly classified modern methods. New methods require security review.
+SHADOWSOCKS_AEAD_METHODS = {
+    "aes-128-gcm",
+    "aes-256-gcm",
+    "chacha20-ietf-poly1305",
+    "2022-blake3-aes-128-gcm",
+    "2022-blake3-aes-256-gcm",
+    "2022-blake3-chacha20-poly1305",
+}
 
 
 LEGACY_SHADOWSOCKS_METHODS = {
@@ -82,6 +93,8 @@ def check_static_security(proxy: ProxyConfig, reject_allow_insecure: bool = True
             reasons.append("missing_shadowsocks_credentials")
         elif method in LEGACY_SHADOWSOCKS_METHODS:
             reasons.append("legacy_shadowsocks_cipher")
+        elif method not in SHADOWSOCKS_AEAD_METHODS:
+            reasons.append("unknown_shadowsocks_cipher")
 
     if p == "vless":
         try:
@@ -92,24 +105,38 @@ def check_static_security(proxy: ProxyConfig, reject_allow_insecure: bool = True
             reasons.append("vless_without_tls_or_reality")
 
     if p == "vmess":
-        # VMess "security" describes the payload cipher, not the TLS transport.
-        # Do not accept security=tls as evidence of transport encryption.
+        # VMess payload cipher is independent of transport TLS.
         transport_params = {key: value for key, value in params.items() if key != "security"}
         try:
             transport_protected = tls_enabled(transport_params)
         except ValueError:
             transport_protected = False
-        if not transport_protected:
-            # Use the same source-field precedence as the VMess semantic mapper.
-            # Unspecified ciphers are not assumed to be AEAD (fail closed).
-            cipher = next(
-                (str(params[key]).strip().lower()
-                 for key in ("security", "scy", "cipher")
-                 if key in params and params[key] is not None),
-                "",
+        cipher = next(
+            (str(params[key]).strip().lower()
+             for key in ("security", "scy", "cipher")
+             if key in params and params[key] is not None),
+            "",
+        )
+        accepted = VMESS_TLS_CIPHERS if transport_protected else VMESS_AEAD_CIPHERS
+        if cipher not in accepted:
+            reasons.append(
+                "unsafe_vmess_cipher" if transport_protected
+                else "vmess_without_tls_or_safe_aead"
             )
-            if cipher not in VMESS_AEAD_CIPHERS:
-                reasons.append("vmess_without_tls_or_safe_aead")
+
+        # Explicit modern VMess header AEAD; never silently fill absent alterId.
+        alter_id = next(
+            (params[key] for key in ("alter_id", "alterId", "aid") if key in params),
+            None,
+        )
+        if alter_id is None or str(alter_id).strip() == "":
+            reasons.append("missing_vmess_alter_id")
+        else:
+            raw_id = str(alter_id).strip()
+            if isinstance(alter_id, bool) or not raw_id.isdecimal():
+                reasons.append("invalid_vmess_alter_id")
+            elif int(raw_id) != 0:
+                reasons.append("legacy_vmess_alter_id")
 
     ok = not reasons
     proxy.tests.security = {"status": "pass" if ok else "reject", "reasons": reasons}
