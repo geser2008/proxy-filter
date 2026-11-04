@@ -23,7 +23,7 @@ from proxyfilter.model import ProxyConfig, TestState
 from proxyfilter.output_policy import render_proxies as render_proxies_with_reliability
 from proxyfilter.probes import check_latency_many
 from proxyfilter.publish import publish_merged, publish_source
-from proxyfilter.resume import STAGE_ORDER, load_stage, stage_index, stage_should_run, validate_resume_range
+from proxyfilter.resume import STAGE_ORDER, cleanup_diagnostic_outputs, load_stage, stage_index, stage_should_run, validate_resume_range
 from proxyfilter.security import check_static_security
 from proxyfilter.singbox_auto import SingBoxBackend
 from proxyfilter.source_status import (
@@ -497,6 +497,17 @@ def main() -> int:
         else:
             print(f"[debug] error={result.get('error')}")
         return 0
+
+    # Fresh runs must not expose stale skipped diagnostic stages as current data.
+    # Resume runs retain checkpoints used to continue the pipeline.
+    removed_diagnostics = cleanup_diagnostic_outputs(
+        data_dir, resume_from=args.resume_from
+    )
+    if removed_diagnostics:
+        print(
+            "[all] stale_diagnostic_files_removed="
+            + ",".join(path.name for path in removed_diagnostics)
+        )
 
     start_index = stage_index(args.resume_from) + 1 if args.resume_from else 0
     end_index = stage_index(args.until)
