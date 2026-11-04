@@ -42,59 +42,75 @@ class SecurityPolicyTests(unittest.TestCase):
             "vless_without_tls_or_reality",
         )
 
+    def _vmess_params(self, **kwargs):
+        return {"uuid": "11111111-1111-1111-1111-111111111111", "aid": 0, **kwargs}
+
     def test_vmess_requires_uuid(self):
+        self.assert_rejected("vmess", {"security": "auto", "aid": 0}, "missing_uuid")
+
+    def test_vmess_requires_explicit_alter_id(self):
         self.assert_rejected(
             "vmess",
-            {"security": "tls"},
-            "missing_uuid",
+            {"uuid": "11111111-1111-1111-1111-111111111111", "scy": "auto"},
+            "missing_vmess_alter_id",
         )
 
-    def test_vmess_unspecified_cipher_without_tls_is_rejected(self):
-        self.assert_rejected(
-            "vmess",
-            {"uuid": "11111111-1111-1111-1111-111111111111", "tls": ""},
-            "vmess_without_tls_or_safe_aead",
-        )
-
-    def test_vmess_none_cipher_without_tls_is_rejected(self):
-        self.assert_rejected(
-            "vmess",
-            {"uuid": "11111111-1111-1111-1111-111111111111", "scy": "none", "tls": ""},
-            "vmess_without_tls_or_safe_aead",
-        )
-
-    def test_vmess_legacy_cipher_without_tls_is_rejected(self):
-        self.assert_rejected(
-            "vmess",
-            {"uuid": "11111111-1111-1111-1111-111111111111", "scy": "aes-128-ctr"},
-            "vmess_without_tls_or_safe_aead",
-        )
-
-    def test_vmess_auto_without_tls_passes(self):
-        self.assert_passes(
-            "vmess",
-            {"uuid": "11111111-1111-1111-1111-111111111111", "scy": "auto", "tls": ""},
-        )
-
-    def test_vmess_aead_without_tls_passes(self):
-        for cipher in ("aes-128-gcm", "chacha20-poly1305"):
-            with self.subTest(cipher=cipher):
-                self.assert_passes(
-                    "vmess",
-                    {"uuid": "11111111-1111-1111-1111-111111111111", "scy": cipher, "tls": ""},
+    def test_vmess_rejects_legacy_alter_id(self):
+        for value in (1, 16, "2"):
+            with self.subTest(value=value):
+                self.assert_rejected(
+                    "vmess", self._vmess_params(aid=value, scy="auto"),
+                    "legacy_vmess_alter_id",
                 )
 
-    def test_vmess_tls_passes_with_unspecified_cipher(self):
-        self.assert_passes(
-            "vmess",
-            {"uuid": "11111111-1111-1111-1111-111111111111", "tls": "tls"},
+    def test_vmess_rejects_invalid_alter_id(self):
+        for value in ("invalid", -1, True):
+            with self.subTest(value=value):
+                self.assert_rejected(
+                    "vmess", self._vmess_params(aid=value, scy="auto"),
+                    "invalid_vmess_alter_id",
+                )
+
+    def test_vmess_without_tls_requires_aead(self):
+        for value in ("none", "zero", "aes-128-ctr", "unspecified"):
+            with self.subTest(value=value):
+                self.assert_rejected(
+                    "vmess", self._vmess_params(scy=value, tls=""),
+                    "vmess_without_tls_or_safe_aead",
+                )
+
+    def test_vmess_auto_and_aead_without_tls_pass(self):
+        for cipher in ("auto", "aes-128-gcm", "chacha20-poly1305"):
+            with self.subTest(cipher=cipher):
+                self.assert_passes(
+                    "vmess", self._vmess_params(scy=cipher, tls=""),
+                )
+
+    def test_vmess_with_tls_accepts_none_but_not_zero(self):
+        self.assert_passes("vmess", self._vmess_params(scy="none", tls="tls"))
+        self.assert_rejected(
+            "vmess", self._vmess_params(scy="zero", tls="tls"),
+            "unsafe_vmess_cipher",
         )
 
-    def test_vmess_cipher_security_field_does_not_enable_tls(self):
+    def test_vmess_with_tls_rejects_unknown_cipher(self):
+        for cipher in ("unknown", "aes-128-ctr"):
+            with self.subTest(cipher=cipher):
+                self.assert_rejected(
+                    "vmess", self._vmess_params(scy=cipher, tls="tls"),
+                    "unsafe_vmess_cipher",
+                )
         self.assert_rejected(
-            "vmess",
-            {"uuid": "11111111-1111-1111-1111-111111111111", "security": "none"},
+            "vmess", self._vmess_params(tls="tls"), "unsafe_vmess_cipher"
+        )
+
+    def test_vmess_security_field_is_payload_cipher_not_transport(self):
+        self.assert_rejected(
+            "vmess", self._vmess_params(security="none"),
             "vmess_without_tls_or_safe_aead",
+        )
+        self.assert_passes(
+            "vmess", self._vmess_params(security="auto", tls="tls"),
         )
 
     def test_trojan_requires_password(self):
@@ -147,6 +163,23 @@ class SecurityPolicyTests(unittest.TestCase):
 
     def test_shadowsocks_aes_256_gcm_passes(self):
         self.assert_passes("ss", {"method": "aes-256-gcm", "password": "secret"})
+
+    def test_shadowsocks_unrecognized_method_rejected(self):
+        self.assert_rejected(
+            "ss", {"method": "future-unknown-cipher", "password": "secret"},
+            "unknown_shadowsocks_cipher",
+        )
+
+    def test_shadowsocks_2022_aead_passes(self):
+        for method in (
+            "2022-blake3-aes-128-gcm",
+            "2022-blake3-aes-256-gcm",
+            "2022-blake3-chacha20-poly1305",
+        ):
+            with self.subTest(method=method):
+                self.assert_passes(
+                    "ss", {"method": method, "password": "secret"},
+                )
 
     def test_shadowsocks_chacha20_poly1305_passes(self):
         self.assert_passes(
