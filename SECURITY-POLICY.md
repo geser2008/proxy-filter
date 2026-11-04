@@ -92,6 +92,41 @@ A UUID is required. The permitted payload ciphers depend on transport:
 
 TLS and VMess payload encryption must not be confused: for VMess the `security` field can describe payload cipher; transport protection is represented separately.
 
+### 4.2.1 Encryption layers and trust boundaries (rationale, not an additional filter)
+
+For HTTPS browsing through VMess, up to **three distinct cryptographic layers** may be involved:
+
+1. **Destination HTTPS (client ↔ website):** the browser or application authenticates the destination website and encrypts its own HTTPS session end to end, including across the proxy server.
+2. **VMess payload AEAD (client ↔ VMess server):** when `auto`, `aes-128-gcm`, or `chacha20-poly1305` is used, VMess encrypts and authenticates the tunneled payload independently of the destination protocol.
+3. **Transport TLS (client ↔ VMess server):** when enabled, TLS authenticates the proxy endpoint (subject to certificate verification) and protects the entire VMess transport on that hop.
+
+Layers 2 and 3 are both between client and proxy; layer 1 normally terminates at the **destination website**, not at the proxy. The proxy's TLS certificate is **not** the destination website's HTTPS certificate. HTTP websites and some non-browser traffic do not provide layer 1.
+
+These layers may be nested, but do not imply that three layers are mandatory. In particular, **verified TLS to the proxy makes additional VMess payload encryption unnecessary as a baseline requirement for confidentiality and integrity on the client-to-proxy hop**. This does not prove that all other protocol properties are equivalent, nor does it extend the proxy's TLS protection past the proxy server.
+
+### 4.2.2 Why `none` and `zero` without TLS remain rejected
+
+The prevalence of HTTPS does not make a universal proxy tunnel safe when its own payload protection is disabled:
+
+- HTTPS protects HTTPS application data, but not arbitrary HTTP, plaintext DNS, or other traffic lacking its own end-to-end encryption.
+- The client-to-proxy hop has no independent confidentiality and integrity protection for arbitrary payloads when both transport TLS and VMess payload encryption are absent.
+- Destination metadata and traffic characteristics may be exposed; actual visibility depends on the VMess framing, encrypted header, destination protocol, and network observer. Do **not** claim that the destination address in a modern protected VMess header is automatically readable.
+
+`none` omits VMess payload encryption but may retain VMess framing; `zero` omits payload encryption and uses less framing/overhead. These are distinct modes; neither supplies equivalent AEAD protection for arbitrary payloads without transport TLS. VMess header authentication must be considered separately from payload encryption.
+
+**Current decision:** without transport TLS, both `none` and `zero` remain **REJECT**, regardless of whether many end destinations use HTTPS.
+
+### 4.2.3 DPI detectability is a separate threat dimension
+
+Encryption strength, transport authentication, and DPI resistance are **not interchangeable**:
+
+- Without TLS, a DPI observer can analyze VMess-specific external protocol behavior even if payload AEAD is enabled. Encryption alone does not make the traffic indistinguishable from ordinary HTTPS.
+- With TLS, passive network observers cannot directly read the VMess cipher choice or payload inside properly established TLS. Additional VMess AEAD may nevertheless alter record sizes, framing, timing, and overhead, which can affect statistical fingerprints.
+- Omitting extra VMess encryption is **not proven** to reduce detectability in every deployment. Conversely, requiring double encryption solely to improve DPI resistance is also unjustified.
+- The transport TLS fingerprint, traffic shape, endpoint reputation, active probing, and network conditions may all matter. These are effectiveness/anti-censorship considerations, not proof that a cryptographic configuration is safe.
+
+**Current decision — unchanged:** retain the VMess acceptance matrix in §4.2. In particular, verified TLS + `none` remains **PASS**, TLS + `zero` remains **REJECT pending a separate compatibility/security decision**, and no TLS + `none`/`zero` remains **REJECT**. The discussion of DPI and the possibility of safely using `zero` over verified TLS are documented here as rationale and future-review topics **only**. Do not change the implementation or test expectations without an explicit policy decision.
+
 ### 4.3 Shadowsocks
 
 A permanent hard-coded allowlist would obstruct future supported AEAD methods. The policy therefore maintains an **explicit classification**, not a claim that the current list is complete forever.
@@ -215,6 +250,7 @@ The following items must be resolved before declaring the policy fully finalized
 4. **Unknown-protocol setting:** reconcile `reject_unknown_protocols` with the ingest allowlist and remove any misleading or unused configuration.
 5. **VMess absent alterId:** confirm the effective default for extended sing-box parser mode before allowing missing `aid`; current policy requires explicit zero.
 6. **VMess auto:** verify the effective cipher selection of the pinned backend as part of compatibility review.
+7. **VMess `zero` with verified TLS:** assess protocol semantics, backend support, and DPI implications separately; the current rejection remains in force until an explicit decision.
 
 These are policy/implementation closure items, not reasons to redesign the rest of the pipeline.
 
