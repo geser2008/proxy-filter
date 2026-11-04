@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .model import ProxyConfig
-from .semantics import INSECURE_ALIASES, tls_enabled
+from .semantics import parse_bool, tls_enabled
 
 
 VMESS_AEAD_CIPHERS = {"auto", "aes-128-gcm", "chacha20-poly1305"}
@@ -50,27 +50,57 @@ def check_static_security(proxy: ProxyConfig, reject_allow_insecure: bool = True
     params = proxy.params
     reasons: list[str] = []
 
-    def truthy(value) -> bool:
-        if isinstance(value, bool):
-            return value
-        if value is None:
-            return False
-        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+    def canonical_key(key: object) -> str:
+        value = str(key).strip().lower()
+        while value.startswith("amp;"):
+            value = value[4:]
+        return value.replace("_", "-")
+
+    normalized: dict[str, list[object]] = {}
+    for key, value in params.items():
+        normalized.setdefault(canonical_key(key), []).append(value)
+
+    def first_value(*keys: str):
+        for key in keys:
+            values = normalized.get(canonical_key(key), [])
+            if values:
+                return values[0]
+        return None
 
     if reject_allow_insecure:
-        for key in INSECURE_ALIASES:
-            if truthy(params.get(key)):
-                reasons.append("certificate_verification_disabled")
+        insecure_keys = {"allowinsecure", "skip-cert-verify", "insecure"}
+        for key, values in normalized.items():
+            if key not in insecure_keys:
+                continue
+            for value in values:
+                try:
+                    enabled = parse_bool(value, key)
+                except ValueError:
+                    reasons.append("invalid_certificate_verification_setting")
+                    break
+                if enabled:
+                    reasons.append("certificate_verification_disabled")
+                    break
+            if reasons and reasons[-1] in {
+                "certificate_verification_disabled",
+                "invalid_certificate_verification_setting",
+            }:
                 break
 
-        tls = params.get("tls")
-        if isinstance(tls, dict) and truthy(tls.get("insecure")):
-            reasons.append("certificate_verification_disabled")
+        tls = first_value("tls")
+        if isinstance(tls, dict):
+            for key, value in tls.items():
+                if canonical_key(key) == "insecure":
+                    try:
+                        enabled = parse_bool(value, "tls.insecure")
+                    except ValueError:
+                        reasons.append("invalid_certificate_verification_setting")
+                    else:
+                        if enabled:
+                            reasons.append("certificate_verification_disabled")
+                    break
 
-        # SIP002 plugin options may carry their own TLS policy, e.g.
-        # v2ray-plugin;tls;skip-cert-verify=true. Treat this exactly like the
-        # top-level insecure flags instead of letting it bypass static policy.
-        plugin_opts = str(params.get("plugin_opts") or params.get("plugin-opts") or "").lower()
+        plugin_opts = str(first_value("plugin_opts", "plugin-opts") or "").lower()
         if re_search_insecure_plugin_option(plugin_opts):
             reasons.append("certificate_verification_disabled")
 
@@ -103,6 +133,22 @@ def check_static_security(proxy: ProxyConfig, reject_allow_insecure: bool = True
             enabled = False
         if not enabled:
             reasons.append("vless_without_tls_or_reality")
+        else:
+            security_mode = str(first_value("security") or "").strip().lower()
+            tls_value = first_value("tls")
+            is_reality = (
+                security_mode == "reality"
+                or str(tls_value or "").strip().lower() == "reality"
+                or isinstance(first_value("reality-opts"), dict)
+                or (isinstance(tls_value, dict) and isinstance(tls_value.get("reality"), dict))
+            )
+            if is_reality:
+                public_key = first_value("pbk", "public_key", "public-key")
+                short_id = first_value("sid", "short_id", "short-id")
+                if not isinstance(public_key, str) or not public_key.strip():
+                    reasons.append("missing_reality_public_key")
+                if not isinstance(short_id, str) or not short_id.strip():
+                    reasons.append("missing_reality_short_id")
 
     if p == "vmess":
         # VMess payload cipher is independent of transport TLS.
