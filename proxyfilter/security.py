@@ -144,11 +144,11 @@ def check_static_security(proxy: ProxyConfig, reject_allow_insecure: bool = True
             )
             if is_reality:
                 public_key = first_value("pbk", "public_key", "public-key")
-                short_id = first_value("sid", "short_id", "short-id")
+                # REALITY short_id is optional for static security screening.
+                # An omitted or empty SID is valid when the server allows the
+                # empty short ID; do not invent a value or reject it here.
                 if not isinstance(public_key, str) or not public_key.strip():
                     reasons.append("missing_reality_public_key")
-                if not isinstance(short_id, str) or not short_id.strip():
-                    reasons.append("missing_reality_short_id")
 
     if p == "vmess":
         # VMess payload cipher is independent of transport TLS.
