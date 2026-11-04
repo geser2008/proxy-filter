@@ -28,6 +28,71 @@ class SecurityHardeningRegressionTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("invalid_certificate_verification_setting", reasons)
 
+    def test_empty_insecure_is_unspecified_not_disabled(self):
+        # Local TLS handshake with sing-box 1.14.3-extended-2.7.3-lite
+        # rejected an untrusted certificate for insecure="".
+        from proxyfilter.model import ProxyConfig
+        common = {"uuid": "11111111-1111-1111-1111-111111111111",
+                  "aid": 0, "scy": "auto", "tls": "tls"}
+        for params in (
+            {**common, "insecure": ""},
+            {**common, "insecure": "0"},
+            {**common, "insecure": False},
+            {**common, "tls": {"enabled": True, "insecure": ""}},
+        ):
+            with self.subTest(params=params):
+                proxy = ProxyConfig(
+                    SourceInfo("test", "Test"), "vmess", "example.com", 443,
+                    params=params,
+                )
+                ok, reasons = check_static_security(proxy)
+                self.assertTrue(ok, reasons)
+
+    def test_insecure_true_and_malformed_remain_rejected(self):
+        from proxyfilter.model import ProxyConfig
+        common = {"uuid": "11111111-1111-1111-1111-111111111111",
+                  "aid": 0, "scy": "auto", "tls": "tls"}
+        for value, reason in (
+            ("1", "certificate_verification_disabled"),
+            ("true", "certificate_verification_disabled"),
+            ("maybe", "invalid_certificate_verification_setting"),
+            (" ", "invalid_certificate_verification_setting"),
+        ):
+            with self.subTest(value=value):
+                proxy = ProxyConfig(
+                    SourceInfo("test", "Test"), "vmess", "example.com", 443,
+                    params={**common, "insecure": value},
+                )
+                ok, reasons = check_static_security(proxy)
+                self.assertFalse(ok)
+                self.assertIn(reason, reasons)
+
+    def test_empty_other_certificate_verification_alias_not_exempted(self):
+        from proxyfilter.model import ProxyConfig
+        common = {"uuid": "11111111-1111-1111-1111-111111111111",
+                  "aid": 0, "scy": "auto", "tls": "tls"}
+        for alias in ("allowInsecure", "skip-cert-verify"):
+            with self.subTest(alias=alias):
+                proxy = ProxyConfig(
+                    SourceInfo("test", "Test"), "vmess", "example.com", 443,
+                    params={**common, alias: ""},
+                )
+                ok, reasons = check_static_security(proxy)
+                self.assertFalse(ok)
+                self.assertIn("invalid_certificate_verification_setting", reasons)
+
+    def test_empty_insecure_cannot_mask_true_alias(self):
+        from proxyfilter.model import ProxyConfig
+        proxy = ProxyConfig(
+            SourceInfo("test", "Test"), "vmess", "example.com", 443,
+            params={"uuid": "11111111-1111-1111-1111-111111111111",
+                    "aid": 0, "scy": "auto", "tls": "tls",
+                    "insecure": "", "allowInsecure": "1"},
+        )
+        ok, reasons = check_static_security(proxy)
+        self.assertFalse(ok)
+        self.assertIn("certificate_verification_disabled", reasons)
+
     def test_html_escaped_query_separators_are_decoded_for_parsing(self):
         uri = (
             "trojan://secret@example.com:443?security=tls&amp;"
