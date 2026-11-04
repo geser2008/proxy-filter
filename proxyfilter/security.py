@@ -73,6 +73,11 @@ def check_static_security(proxy: ProxyConfig, reject_allow_insecure: bool = True
             if key not in insecure_keys:
                 continue
             for value in values:
+                # Verified against sing-box 1.14.3-extended-2.7.3-lite:
+                # an explicitly empty 'insecure' does not disable TLS
+                # certificate verification. Do not extend to other aliases.
+                if key == "insecure" and value == "":
+                    continue
                 try:
                     enabled = parse_bool(value, key)
                 except ValueError:
@@ -91,6 +96,8 @@ def check_static_security(proxy: ProxyConfig, reject_allow_insecure: bool = True
         if isinstance(tls, dict):
             for key, value in tls.items():
                 if canonical_key(key) == "insecure":
+                    if value == "":
+                        continue
                     try:
                         enabled = parse_bool(value, "tls.insecure")
                     except ValueError:
