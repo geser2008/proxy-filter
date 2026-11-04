@@ -375,7 +375,7 @@ class RenderTests(unittest.TestCase):
         for protocol, params in cases:
             with self.subTest(protocol=protocol, params=params):
                 proxy = ProxyConfig(SOURCE, protocol, "203.0.113.50", 443, "old", params)
-                result = render_proxy(proxy)
+                result = render_proxy(proxy, rename_template="{flag} {country_code}")
                 self.assertFalse(result.ok)
                 self.assertIn("unsupported source field", result.error or "")
 
