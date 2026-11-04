@@ -52,7 +52,10 @@ Interpretation:
 - Explicit `true`, `1`, `yes`, or `on`: **REJECT**.
 - Explicit `false`, `0`, `no`, or `off`: allowed by this rule.
 - Missing value: does not by itself mean verification is disabled.
-- Unrecognized or malformed value: **REJECT** when it is supplied for a certificate-verification control. Do not silently coerce it to false.
+- **Narrow exception for `insecure=""`:** an exact empty string in the top-level `insecure` field or nested `tls.insecure` is treated as *unspecified* by the static security check, not as an explicit request to disable verification. The input is preserved; it is not rewritten to `false` or removed.
+- Unrecognized or malformed **nonempty** value: **REJECT** when it is supplied for a certificate-verification control. Do not silently coerce it to false. Whitespace-only values, `null`, and empty strings in other aliases such as `allowInsecure` and `skip-cert-verify` are **not** covered by the exception.
+
+**Validation evidence (2026-11-04):** a local VMess TLS-handshake test against a self-signed, untrusted certificate using `sing-box 1.14.3-extended-2.7.3-lite` showed certificate rejection for absent `insecure`, `insecure=""`, and `insecure="0"`; `insecure="1"` accepted that certificate. `insecure="maybe"` also rejected the certificate in this test, but remains invalid under the fail-closed policy. A `sing-box check` alone was not sufficient to establish TLS verification behavior. These observations validate the empty-string exception for the tested extended parser, not every possible backend or future release. Standard-mode compatibility and downstream core checks remain separate.
 
 The implementation must inspect all supported locations and aliases, not just the top-level URI query. Alias matching is case-insensitive; underscore and hyphen variants are normalized. HTML-escaped URI separators such as `&amp;` must be decoded for parsing so subsequent security parameters are not swallowed into a single key. The original raw URI must remain preserved for auditability.
 
@@ -204,7 +207,8 @@ Every normative rule in this document must have unit tests. At minimum, tests sh
 ### TLS verification
 - Every supported insecure alias, including case and underscore/hyphen variants, with an explicit truthy value is rejected.\n- HTML-escaped `&amp;` query separators are decoded for parsing; the original URI is preserved.\n- Malformed boolean values for certificate-verification controls are rejected.
 - Explicit false values are allowed by this rule.
-- Malformed values for certificate-verification controls are rejected.
+- Exact `insecure=""` at top level and `tls.insecure=""` are accepted; other empty aliases, whitespace-only values and malformed values are rejected.
+- An empty `insecure` alongside any truthy alias still triggers rejection.
 - Nested TLS and supported plugin representations are inspected.
 
 ### VLESS / REALITY
@@ -279,7 +283,7 @@ A policy change must be explicit. Do not silently change previously agreed excep
 | Trojan | Password required; preserve TLS and certificate verification |
 | Hysteria2 | Authentication required; preserve QUIC/TLS and certificate verification |
 | TUIC | UUID + password; preserve QUIC/TLS and certificate verification |
-| Certificate verification | Explicitly disabled or malformed security-control values are rejected |
+| Certificate verification | Explicitly disabled or malformed security-control values are rejected; exact empty `insecure=""` is an evidence-backed, narrow exception |
 | Unknown protocols | Rejected at ingest; defensive security check and config wiring must be reconciled |
 
 **This document records the project's current decisions and explicitly labels unresolved items. It does not claim that every item is already implemented or tested.**
