@@ -49,17 +49,52 @@ class SecurityPolicyTests(unittest.TestCase):
             "missing_uuid",
         )
 
-    def test_vmess_requires_tls_or_reality(self):
+    def test_vmess_unspecified_cipher_without_tls_is_rejected(self):
         self.assert_rejected(
             "vmess",
-            {"uuid": "11111111-1111-1111-1111-111111111111"},
-            "vmess_without_tls_or_reality",
+            {"uuid": "11111111-1111-1111-1111-111111111111", "tls": ""},
+            "vmess_without_tls_or_safe_aead",
         )
 
-    def test_vmess_tls_passes(self):
+    def test_vmess_none_cipher_without_tls_is_rejected(self):
+        self.assert_rejected(
+            "vmess",
+            {"uuid": "11111111-1111-1111-1111-111111111111", "scy": "none", "tls": ""},
+            "vmess_without_tls_or_safe_aead",
+        )
+
+    def test_vmess_legacy_cipher_without_tls_is_rejected(self):
+        self.assert_rejected(
+            "vmess",
+            {"uuid": "11111111-1111-1111-1111-111111111111", "scy": "aes-128-ctr"},
+            "vmess_without_tls_or_safe_aead",
+        )
+
+    def test_vmess_auto_without_tls_passes(self):
         self.assert_passes(
             "vmess",
-            {"uuid": "11111111-1111-1111-1111-111111111111", "security": "tls"},
+            {"uuid": "11111111-1111-1111-1111-111111111111", "scy": "auto", "tls": ""},
+        )
+
+    def test_vmess_aead_without_tls_passes(self):
+        for cipher in ("aes-128-gcm", "chacha20-poly1305"):
+            with self.subTest(cipher=cipher):
+                self.assert_passes(
+                    "vmess",
+                    {"uuid": "11111111-1111-1111-1111-111111111111", "scy": cipher, "tls": ""},
+                )
+
+    def test_vmess_tls_passes_with_unspecified_cipher(self):
+        self.assert_passes(
+            "vmess",
+            {"uuid": "11111111-1111-1111-1111-111111111111", "tls": "tls"},
+        )
+
+    def test_vmess_cipher_security_field_does_not_enable_tls(self):
+        self.assert_rejected(
+            "vmess",
+            {"uuid": "11111111-1111-1111-1111-111111111111", "security": "none"},
+            "vmess_without_tls_or_safe_aead",
         )
 
     def test_trojan_requires_password(self):
