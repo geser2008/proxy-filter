@@ -68,7 +68,7 @@ def check_static_security(proxy: ProxyConfig, reject_allow_insecure: bool = True
         return None
 
     if reject_allow_insecure:
-        insecure_keys = {"allowinsecure", "skip-cert-verify", "insecure"}
+        insecure_keys = {"allowinsecure", "allow-insecure", "skip-cert-verify", "insecure"}
         for key, values in normalized.items():
             if key not in insecure_keys:
                 continue
