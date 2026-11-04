@@ -41,6 +41,18 @@ class SecurityHardeningRegressionTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("certificate_verification_disabled", reasons)
 
+    def test_html_entity_prefix_in_opaque_query_key_is_not_decoded(self):
+        uri = (
+            "vless://11111111-1111-1111-1111-111111111111@example.com:443"
+            "?security=tls&note=%40FreeOnlineVPN&amp;allowInsecure=0"
+        )
+        proxy = self.parse(uri)
+        self.assertEqual(proxy.params["note"], "@FreeOnlineVPN")
+        self.assertEqual(proxy.params["allowInsecure"], "0")
+        self.assertEqual(proxy.original_raw, uri)
+        ok, reasons = check_static_security(proxy)
+        self.assertTrue(ok, reasons)
+
     def test_html_escaped_reality_parameters_are_preserved(self):
         uri = (
             "vless://11111111-1111-1111-1111-111111111111@example.com:443"
