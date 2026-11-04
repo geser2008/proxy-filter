@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import html
 import binascii
 import json
 import re
@@ -168,16 +169,19 @@ def _parse_unique_query(query: str, protocol: str) -> dict[str, str]:
 
 
 def parse_uri(uri: str, source: SourceInfo) -> ProxyConfig:
-    scheme = uri.split(":", 1)[0].lower()
+    # Some feeds HTML-escape query separators as &amp;. Decode entities for
+    # parsing only; preserve the exact source string in original_raw.
+    parse_uri_text = html.unescape(uri)
+    scheme = parse_uri_text.split(":", 1)[0].lower()
     if scheme not in SUPPORTED_SCHEMES:
         raise ValueError(f"unsupported protocol: {scheme}")
-    _validate_percent_escapes(uri)
+    _validate_percent_escapes(parse_uri_text)
     if scheme == "vmess":
-        return _parse_vmess_uri(uri, source)
+        return _parse_vmess_uri(parse_uri_text, source, original_uri=uri)
     if scheme == "ss":
-        return _parse_ss_uri(uri, source)
+        return _parse_ss_uri(parse_uri_text, source, original_uri=uri)
 
-    parts = urlsplit(uri)
+    parts = urlsplit(parse_uri_text)
     if not parts.hostname or parts.port is None:
         raise ValueError("missing server or port")
     params = _parse_unique_query(parts.query, scheme)
@@ -192,7 +196,7 @@ def parse_uri(uri: str, source: SourceInfo) -> ProxyConfig:
     return proxy
 
 
-def _parse_vmess_uri(uri: str, source: SourceInfo) -> ProxyConfig:
+def _parse_vmess_uri(uri: str, source: SourceInfo, *, original_uri: str | None = None) -> ProxyConfig:
     payload = uri[len("vmess://"):].split("#", 1)[0].strip()
     padded = payload + "=" * ((4 - len(payload) % 4) % 4)
     data = json.loads(base64.b64decode(padded).decode("utf-8"))
@@ -203,7 +207,7 @@ def _parse_vmess_uri(uri: str, source: SourceInfo) -> ProxyConfig:
     name = str(data.get("ps") or "")
     params = {k: v for k, v in data.items() if k not in {"add", "port", "ps"}}
     params = _normalize_uri_params("vmess", params)
-    proxy = ProxyConfig(source, "vmess", str(server), port, name, params, "vmess-uri", uri)
+    proxy = ProxyConfig(source, "vmess", str(server), port, name, params, "vmess-uri", original_uri if original_uri is not None else uri)
     proxy.ensure_id()
     return proxy
 
@@ -219,7 +223,7 @@ def _normalize_ss_query(query: str) -> dict[str, str]:
     return params
 
 
-def _parse_ss_uri(uri: str, source: SourceInfo) -> ProxyConfig:
+def _parse_ss_uri(uri: str, source: SourceInfo, *, original_uri: str | None = None) -> ProxyConfig:
     # SIP002 supports both base64 userinfo and plain method:password userinfo.
     parts = urlsplit(uri)
     name = unquote(parts.fragment or "")
@@ -242,7 +246,7 @@ def _parse_ss_uri(uri: str, source: SourceInfo) -> ProxyConfig:
             raise ValueError("invalid shadowsocks method: ss")
         params = {"method": method, "password": password}
         params.update(_normalize_ss_query(parts.query))
-        proxy = ProxyConfig(source, "ss", parts.hostname, parts.port, name, params, "ss-uri", uri)
+        proxy = ProxyConfig(source, "ss", parts.hostname, parts.port, name, params, "ss-uri", original_uri if original_uri is not None else uri)
         proxy.ensure_id()
         return proxy
 
@@ -258,7 +262,7 @@ def _parse_ss_uri(uri: str, source: SourceInfo) -> ProxyConfig:
     original_query = urlsplit(uri).query
     if original_query:
         params.update(_normalize_ss_query(original_query))
-    proxy = ProxyConfig(source, "ss", reparsed.hostname, reparsed.port, name, params, "ss-uri", uri)
+    proxy = ProxyConfig(source, "ss", reparsed.hostname, reparsed.port, name, params, "ss-uri", original_uri if original_uri is not None else uri)
     proxy.ensure_id()
     return proxy
 
