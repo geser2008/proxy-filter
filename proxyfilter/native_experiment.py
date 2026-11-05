@@ -205,6 +205,12 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
     )
     mapped = {key: value for key, value in params.items() if key in known}
     if protocol == "vmess":
+        # sing-box-extended parser/link/vmess.go enables insecure only for
+        # literal "1" or "true"; an empty URI value leaves it false.
+        # The native mapper rejects "", so omit it ONLY in the temporary
+        # copy. This preserves TLS verification and the original URI.
+        if mapped.get("insecure") == "":
+            mapped.pop("insecure")
         # Marker "none" is a known explicit neutral VMess header setting.
         # Removing it prevents the shared mapper from interpreting it as a
         # different transport when "net" is absent.
