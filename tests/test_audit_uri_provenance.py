@@ -27,6 +27,22 @@ class UriProvenanceAuditTests(unittest.TestCase):
         self.assertEqual(self.registry["ss"]["plugin"]["classes"], ["SPEC"])
         self.assertIn("OBSERVED", self.registry["tuic"]["congestion_control"]["classes"])
 
+    def test_nonproduction_scheme_is_not_a_field(self):
+        self.assertNotIn("hysteria2+realm", self.registry["hysteria2"])
+        self.assertNotIn("hy2", self.registry["hysteria2"])
+        self.assertIn("pinSHA256", self.registry["hysteria2"])
+
+    def test_nonproduction_scheme_with_qualified_class_is_ignored(self):
+        matrix = DEFAULT_MATRIX.read_text(encoding="utf-8")
+        self.assertIn("SPEC, вне production", matrix)
+        # The scheme-level row must not be fed to the field-class parser.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "matrix.md"
+            path.write_text(matrix, encoding="utf-8")
+            registry = load_matrix(path)
+        self.assertEqual(registry["hysteria2"]["pinSHA256"]["classes"],
+                         ["SPEC"])
+
     def test_credential_names_from_uri_are_classified(self):
         self.assertIn("uuid", self.registry["vless"])
         self.assertIn("uuid", self.registry["tuic"])
