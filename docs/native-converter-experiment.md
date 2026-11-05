@@ -190,3 +190,17 @@ without needing to disclose proxy URIs. It will not automatically explain
 unknown mapper/core messages remains deliberately conservative. Do not
 interpret a `pass` as a real network connection, or ignore source fields
 merely because `sing-box check` accepts the generated JSON.
+
+### Additional classification of reused mapper errors
+
+The A/B runner also recognizes a limited set of literal error prefixes from
+the existing `singbox_backend.py`: unsupported TCP header, unsupported V2Ray
+transport, invalid boolean, invalid XHTTP JSON, unsupported XHTTP field,
+invalid transport headers/multiplex, and unsupported network. These become
+fixed `backend_*` diagnostic codes. Unknown messages remain
+`backend_mapping_error`; the tool never copies the original message or
+parameter value into the report.
+
+This change does **not** alter URI parsing or the native outbound mapping.
+The earlier full report remains valid as the *baseline*; updated failure
+breakdowns require a new A/B run.
