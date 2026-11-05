@@ -234,7 +234,7 @@ VMess JSON/nested extra), `origin_class`, `source_ref`, `value_type`,
 | `plugin_opts`, `plugin-opts` | query | OBSERVED | Не отдельные нормативные параметры SIP002 |
 | `network`, `udp_over_tcp`, `multiplex` | query | OBSERVED | Не определены SIP002; схема native JSON этого не меняет |
 | `type`, `headerType` | query | OBSERVED | Не часть SIP002; SS transport нельзя заимствовать из VLESS |
-| `note` | config.params после ingest | META | Подтверждено как поле заметки по названию; не часть SIP002, проверить источник ingest при дальнейшем аудите |
+| `note` | config.params после ingest | OBSERVED | По имени похоже на заметку, но источник и безопасность исключения ещё не подтверждены; не часть SIP002 |
 
 #### Hysteria2 / hy2 — официальный share URI
 
