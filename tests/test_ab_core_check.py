@@ -99,6 +99,42 @@ class ABCheckTests(unittest.TestCase):
         self.assertNotIn("sensitive-content", json.dumps(report))
         self.assertNotIn(p.original_raw, json.dumps(report))
 
+    def test_unsupported_fields_are_reported_without_values(self):
+        p = valid_proxy()
+        p.params["fm"] = "redacted-sensitive-value"
+        p.params["spx"] = "/potential-secret-path"
+        with patch("tools.ab_core_check._safe_check", return_value=("pass", None)):
+            row = compare_one(p, "extended", "native")
+        self.assertEqual(row["conversion_fields"], ["fm", "spx"])
+        self.assertEqual(row["conversion_reason"], "unsupported_connection_field")
+        text = json.dumps(row)
+        self.assertNotIn("redacted-sensitive-value", text)
+        self.assertNotIn("/potential-secret-path", text)
+
+    def test_transport_specific_field_names_are_reported(self):
+        p = valid_proxy()
+        p.params.update({"type": "tcp", "host": "private.example.org",
+                         "path": "/sensitive"})
+        with patch("tools.ab_core_check._safe_check", return_value=("pass", None)):
+            row = compare_one(p, "extended", "native")
+        self.assertEqual(row["conversion_fields"], ["host", "path"])
+        self.assertEqual(row["conversion_reason"], "transport_fields_on_tcp")
+        self.assertNotIn("private.example.org", json.dumps(row))
+        self.assertNotIn("/sensitive", json.dumps(row))
+
+    def test_arbitrary_unknown_field_name_cannot_leak_via_report(self):
+        p = valid_proxy()
+        p.params["secret-credential-as-key"] = "sensitive"
+        with patch("tools.ab_core_check._safe_check", return_value=("pass", None)):
+            row = compare_one(p, "extended", "native")
+        self.assertEqual(row["conversion"], "mapped")
+        self.assertEqual(row["dropped_fields"],
+                         [{"name": "<other_field>", "reason": "unclassified"}])
+        self.assertFalse(row["no_unclassified_loss"])
+        text = json.dumps(row)
+        self.assertNotIn("secret-credential-as-key", text)
+        self.assertNotIn("sensitive", text)
+
     def test_core_failure_is_classified_without_echoing_sensitive_values(self):
         sensitive = "user:secret@example.org"
         self.assertEqual(
@@ -125,6 +161,8 @@ class ABCheckTests(unittest.TestCase):
             self.assertEqual(report["native_reason"], "unknown_json_field")
             self.assertEqual(run.last_summary["native_check_reasons"],
                              {"unknown_json_field": 1})
+            self.assertEqual(run.last_summary["by_protocol_outcome"],
+                             {"vless:mapped:pass:check_failed": 1})
 
     def test_only_safe_checkpoint_accepted(self):
         with tempfile.TemporaryDirectory() as tmp:
