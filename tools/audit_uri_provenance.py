@@ -29,9 +29,6 @@ KNOWN_CLASSES = {"SPEC", "EXT", "LEGACY", "OBSERVED", "META"}
 FIELD_PATTERN = re.compile(r"`([^`]+)`")
 SOURCE_PATTERN = re.compile(r"\b(?:V[12]|M1|T1|S1|H1|U[12])\b")
 FIELD_NAME = re.compile(r"[a-zA-Z][a-zA-Z0-9_-]*\Z")
-# These are not entries in config.params, even where the matrix lists them.
-NON_PARAM_NAMES = {"host", "port", "tag"}  # handled below only in URI-authority/fragment rows
-
 
 def load_matrix(path: Path) -> dict[str, dict[str, dict[str, Any]]]:
     """Extract per-field records from the 'Поимённая инвентаризация' tables.
@@ -51,7 +48,6 @@ def load_matrix(path: Path) -> dict[str, dict[str, dict[str, Any]]]:
         protocol: {} for protocol in HEADINGS.values()
     }
     proto = None
-    counts = Counter()
     for line in inventory.splitlines():
         if line.startswith("#### "):
             heading = line[5:].strip()
@@ -86,7 +82,6 @@ def load_matrix(path: Path) -> dict[str, dict[str, dict[str, Any]]]:
                 item["source_refs"] = sorted(set(field["source_refs"] + item["source_refs"]))
                 item["location"] = "multiple"
             registry[proto][token] = item
-            counts[proto] += 1
     if any(not registry[name] for name in HEADINGS.values()):
         raise ValueError("missing per-protocol field inventory in matrix")
     return registry
