@@ -235,3 +235,12 @@ python3 tools/ab_core_check.py --limit 0 \
 
 Do not publish the source `03-safe.jsonl`; the JSONL report contains only
 bounded diagnostic names and status codes.
+
+### Certificate fingerprint semantic guard
+
+The experiment rejects `hysteria2`/`hy2` and `tuic` profiles with an
+explicit `fingerprint` certificate pin, including profiles also specifying
+`fp` for uTLS. The reused backend previously rejected one combination but
+could otherwise omit the pin. The refusal code is
+`unsupported_certificate_fingerprint`. A successful `sing-box check`
+does not prove that omitted certificate pins are harmless.
