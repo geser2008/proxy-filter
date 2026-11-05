@@ -64,7 +64,7 @@ def load_fixtures(path: Path) -> list[dict]:
     return items
 
 
-def native_result(item: dict) -> dict:
+def native_result(item: dict, *, profile: str = "extended") -> dict:
     # Fixtures intentionally use a known synthetic endpoint. Never fetch or
     # validate URI values by network and never mutate the fixture.
     p = ProxyConfig(
@@ -72,7 +72,7 @@ def native_result(item: dict) -> dict:
         dict(item["params"]), item["protocol"] + "-uri", item["uri"],
     )
     try:
-        output = convert_uri_to_native(p)
+        output = convert_uri_to_native(p, profile=profile)
     except NativeMappingError as exc:
         return {"status": "rejected", "reason": exc.code}
     except (EngineError, ValueError, TypeError) as exc:
@@ -140,11 +140,14 @@ def compare(one: dict, two: dict) -> str:
 
 
 def run(fixtures: list[dict], target: dict | None = None,
-        podkop_binary: str | None = None) -> dict:
+        podkop_binary: str | None = None,
+        native_profile: str = "extended") -> dict:
+    if native_profile not in {"extended", "podkop-engine"}:
+        raise ValueError("unsupported native profile")
     target = target or {}
     entries = []
     for item in fixtures:
-        native = native_result(item)
+        native = native_result(item, profile=native_profile)
         oracle = target.get(item["id"], {"status": "unavailable"})
         podkop = (capture_podkop_engine(item["uri"], podkop_binary)
                   if podkop_binary else {"status": "unavailable"})
@@ -160,6 +163,7 @@ def run(fixtures: list[dict], target: dict | None = None,
         })
     return {
         "schema": "native-differential-v1",
+        "native_profile": native_profile,
         "notice": "Synthetic fixtures only. No network oracle and no semantic equivalence assertion.",
         "fixtures": len(entries),
         "expected_native_passed": sum(e["expected_native_match"] for e in entries),
@@ -175,11 +179,13 @@ def main() -> None:
     p.add_argument("--target-oracle", type=Path,
                    help="Pre-captured target sing-box-extended URI parser outputs")
     p.add_argument("--podkop-binary", help="Local path to installed podkop-engine executable")
+    p.add_argument("--native-profile", choices=("extended", "podkop-engine"),
+                   default="extended", help="Opt-in XHTTP parsing reference profile")
     p.add_argument("--output", type=Path, default=Path("/tmp/proxyfilter-native-differential.json"))
     a = p.parse_args()
     fixtures = load_fixtures(a.fixtures)
     target = load_oracle(a.target_oracle, {item["id"] for item in fixtures})
-    report = run(fixtures, target, a.podkop_binary)
+    report = run(fixtures, target, a.podkop_binary, a.native_profile)
     a.output.parent.mkdir(parents=True, exist_ok=True)
     a.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(f"report: {a.output}; fixtures={report['fixtures']} "
