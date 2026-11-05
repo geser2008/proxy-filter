@@ -110,7 +110,7 @@
   {
     "id": "vmess-cs-empty",
     "protocol": "vmess",
-    "uri": "vmess://eyJpZCI6ImZpeHR1cmUifQ?net=ws&tls=tls&cs=",
+    "uri": "vmess://eyJ2IjoiMiIsInBzIjoidm1lc3MtY3MtZW1wdHkiLCJhZGQiOiJleGFtcGxlLm9yZyIsInBvcnQiOiI0NDMiLCJpZCI6IjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMSIsImFpZCI6IjAiLCJuZXQiOiJ3cyIsInNjeSI6ImF1dG8iLCJ0bHMiOiJ0bHMiLCJ0eXBlIjoibm9uZSIsImNzIjoiIn0",
     "params": {
       "id": "00000000-0000-0000-0000-000000000001",
       "net": "ws",
@@ -122,7 +122,7 @@
   {
     "id": "vmess-tcp-http-header",
     "protocol": "vmess",
-    "uri": "vmess://eyJpZCI6ImZpeHR1cmUifQ?net=tcp&type=http&scy=auto",
+    "uri": "vmess://eyJ2IjoiMiIsInBzIjoidm1lc3MtdGNwLWh0dHAtaGVhZGVyIiwiYWRkIjoiZXhhbXBsZS5vcmciLCJwb3J0IjoiNDQzIiwiaWQiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJhaWQiOiIwIiwibmV0IjoidGNwIiwic2N5IjoiYXV0byIsInRscyI6IiIsInR5cGUiOiJodHRwIiwiY3MiOiIifQ",
     "params": {
       "id": "00000000-0000-0000-0000-000000000001",
       "net": "tcp",
