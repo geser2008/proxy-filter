@@ -222,7 +222,7 @@ VMess JSON/nested extra), `origin_class`, `source_ref`, `value_type`,
 | `pbk`, `sid`, `ech` | query | EXT | [T1], REALITY/ECH клиентские расширения |
 | `extra`, `mode`, `pcs`, `fm` | query | OBSERVED | Не подтверждены ссылкой [T1] как универсальные поля Trojan URI |
 | `headerType`, `headers`, `authority`, `net`, `network` | query | OBSERVED | Нужна точная спецификация транспортного расширения |
-| `cs` | query | OBSERVED | TLS cipher suites; наблюдается в 2 Trojan URI. Вариант расширения экспортёров [C2], не универсальный Trojan URI стандарт |
+| `cs` | query | OBSERVED | TLS cipher suites; наблюдается в 2 Trojan URI. [C1] описывает семантику Xray `cipherSuites`, [C2] — конвенцию экспорта `cs`; это не универсальный Trojan URI стандарт |
 | `insecure`, `allow_insecure`, `allowinsecure`, `spx`, `flow`, `encryption`, `ed`, `eh`, `ws`, `Host`, `note` | query / config.params | OBSERVED | По аудиту 8 848; `insecure` — 466 конфигураций; распознавание не устанавливает допустимые значения и эквивалентность; `note` кандидат META |
 
 #### Shadowsocks — SIP002 и legacy
