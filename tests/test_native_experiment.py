@@ -238,6 +238,73 @@ class NativeExperimentTests(unittest.TestCase):
         self.assertTrue(output["tls"]["enabled"])
         self.assertNotIn("cipher_suites", output["tls"])
 
+    def test_vmess_tcp_http_disguise_maps_to_native_transport(self):
+        p = proxy("vmess", {
+            "id": UUID, "net": "tcp", "type": "http",
+            "host": "cover.example", "path": "/cover", "method": "GET",
+        })
+        original = dict(p.params)
+        result = convert_uri_to_native(p)
+        self.assertEqual(result.outbound["transport"], {
+            "type": "http", "host": ["cover.example"],
+            "path": "/cover", "method": "GET",
+        })
+        self.assertTrue(result.no_unclassified_loss)
+        self.assertEqual(result.dropped_fields, ())
+        self.assertEqual(p.params, original)
+        self.assertEqual(p.original_raw, "vmess://redacted")
+
+    def test_vmess_tcp_http_without_optional_fields(self):
+        result = convert_uri_to_native(proxy("vmess", {
+            "id": UUID, "net": "tcp", "type": "http",
+        }))
+        self.assertEqual(result.outbound["transport"], {"type": "http"})
+
+    def test_vmess_tcp_http_ambiguous_hosts_are_not_guessed(self):
+        p = proxy("vmess", {
+            "id": UUID, "net": "tcp", "type": "http",
+            "host": "one.example,two.example",
+        })
+        with self.assertRaises(NativeMappingError) as exc:
+            convert_uri_to_native(p)
+        self.assertEqual(exc.exception.code, "ambiguous_vmess_http_hosts")
+
+    def test_vmess_tcp_http_headers_not_dropped(self):
+        p = proxy("vmess", {
+            "id": UUID, "net": "tcp", "type": "http",
+            "headers": '{"X-Test":["opaque"]}',
+        })
+        with self.assertRaises(NativeMappingError) as exc:
+            convert_uri_to_native(p)
+        self.assertEqual(exc.exception.code, "unmapped_transport_headers")
+
+    def test_vmess_tcp_http_requires_explicit_tcp(self):
+        for net in (None, "ws", "grpc", "raw"):
+            with self.subTest(net=net):
+                params = {"id": UUID, "type": "http"}
+                if net is not None:
+                    params["net"] = net
+                with self.assertRaises(NativeMappingError) as exc:
+                    convert_uri_to_native(proxy("vmess", params))
+                self.assertEqual(exc.exception.code, "unsupported_vmess_header")
+
+    def test_vmess_http_method_not_silently_dropped_outside_disguise(self):
+        p = proxy("vmess", {
+            "id": UUID, "net": "tcp", "type": "none", "method": "GET",
+        })
+        with self.assertRaises(NativeMappingError) as exc:
+            convert_uri_to_native(p)
+        self.assertEqual(exc.exception.code, "unmapped_vmess_http_method")
+
+    def test_vmess_tcp_http_rejects_non_string_fields(self):
+        for field in ("host", "path", "method"):
+            with self.subTest(field=field):
+                with self.assertRaises(NativeMappingError) as exc:
+                    convert_uri_to_native(proxy("vmess", {
+                        "id": UUID, "net": "tcp", "type": "http", field: None,
+                    }))
+                self.assertEqual(exc.exception.code, "invalid_vmess_http_field")
+
     def test_vmess_nontrivial_tcp_header_rejected(self):
         p = proxy("vmess", {"id": UUID, "net": "tcp", "type": "http"})
         with self.assertRaisesRegex(EngineError, "unsupported_vmess_header"):
