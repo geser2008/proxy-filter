@@ -204,3 +204,34 @@ parameter value into the report.
 This change does **not** alter URI parsing or the native outbound mapping.
 The earlier full report remains valid as the *baseline*; updated failure
 breakdowns require a new A/B run.
+
+## Phase 4d: conservative field-loss gate and boolean diagnostics
+
+On the observed full dataset, VMess had 80 `backend_invalid_boolean`
+conversion refusals. The new A/B output may include the *field name* for
+source-reviewed mapper messages of the form
+`invalid boolean value for <known-field>:`. It never includes the
+offending value. Messages without a known field remain classified only at
+the error-code level.
+
+Native conversion now rejects a bounded registry of unimplemented
+connection-relevant URI keys (e.g. `peer` on Trojan,
+`security` on Hysteria2, `type` on Shadowsocks) instead of treating them
+as harmless unknown fields. The refusal code is
+`unmapped_connection_field`; the original source is not changed.
+
+This intentionally can **increase** the number of native mapper rejections.
+Higher pass rates are not evidence of correctness when achieved by silently
+losing configuration. Unsupported `pcs`, `spx`, `ech` and other
+connection-defining fields remain rejected.
+
+Run after fetching the updated branch:
+
+```bash
+python3 -m unittest tests.test_native_experiment tests.test_ab_core_check -v
+python3 tools/ab_core_check.py --limit 0 \
+  --output /tmp/proxyfilter-ab-core-phase4d.jsonl
+```
+
+Do not publish the source `03-safe.jsonl`; the JSONL report contains only
+bounded diagnostic names and status codes.
