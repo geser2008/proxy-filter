@@ -212,6 +212,44 @@ def safe_field_name(name: str) -> str:
     return name if name in _SAFE_FIELD_NAMES else "<other_field>"
 
 
+# Transport metadata is derived from the generated native outbound, not
+# arbitrary source URI values. Unknown types/keys are collapsed to fixed labels.
+_NATIVE_TRANSPORT_TYPES = frozenset((
+    "none", "ws", "grpc", "http", "httpupgrade", "xhttp",
+))
+_NATIVE_TRANSPORT_FIELDS = frozenset((
+    "path", "host", "headers", "service_name", "idle_timeout",
+    "ping_timeout", "permit_without_stream", "max_early_data",
+    "early_data_header_name", "mode", "x_padding_bytes",
+    "no_grpc_header", "no_sse_header", "sc_max_each_post_bytes",
+    "sc_min_posts_interval_ms", "sc_max_buffered_posts",
+    "sc_stream_up_server_secs", "server_max_header_bytes",
+    "trusted_x_forwarded_for", "x_padding_obfs_mode", "x_padding_key",
+    "x_padding_header", "x_padding_placement", "x_padding_method",
+    "uplink_http_method", "session_placement", "session_key",
+    "seq_placement", "seq_key", "uplink_data_placement",
+    "uplink_data_key", "uplink_chunk_size", "session_id_table",
+    "session_id_length", "congestion_controller", "cwnd", "xmux",
+))
+
+
+def native_outbound_shape(outbound: dict[str, Any]) -> dict[str, Any]:
+    """Report fixed-vocabulary native config structure, never any values."""
+    transport = outbound.get("transport")
+    if not isinstance(transport, dict):
+        return {"native_transport": "none", "native_transport_fields": []}
+    kind = transport.get("type")
+    label = kind if isinstance(kind, str) and kind in _NATIVE_TRANSPORT_TYPES else "other"
+    keys = [
+        name if name in _NATIVE_TRANSPORT_FIELDS else "other"
+        for name in transport if name != "type"
+    ]
+    return {
+        "native_transport": label,
+        "native_transport_fields": sorted(set(keys)),
+    }
+
+
 def compare_one(proxy: ProxyConfig, extended_binary: str, native_binary: str,
                 timeout: float = 20.0) -> dict[str, Any]:
     """A/B check without changing persistent ProxyConfig history or identity."""
@@ -269,6 +307,7 @@ def compare_one(proxy: ProxyConfig, extended_binary: str, native_binary: str,
         for item in converted.dropped_fields
     ]
     result["no_unclassified_loss"] = converted.no_unclassified_loss
+    result.update(native_outbound_shape(converted.outbound))
     native_config = dict(base)
     native_config["outbounds"] = [converted.outbound]
     result["native"], native_reason = _safe_check(native_binary, native_config, timeout)
@@ -318,6 +357,8 @@ def run(checkpoint: Path, output: Path, extended_binary: str, native_binary: str
     by_protocol_conversion_field: Counter[str] = Counter()
     by_dropped_field: Counter[str] = Counter()
     by_native_check_reason: Counter[str] = Counter()
+    by_native_transport_result: Counter[str] = Counter()
+    by_native_transport_reason: Counter[str] = Counter()
     output.parent.mkdir(parents=True, exist_ok=True)
     with checkpoint.open(encoding="utf-8") as source, output.open("w", encoding="utf-8") as sink:
         for lineno, line in enumerate(source, 1):
@@ -359,6 +400,15 @@ def run(checkpoint: Path, output: Path, extended_binary: str, native_binary: str
                 by_protocol_conversion_field[f"{protocol_name}:{field}"] += 1
             for dropped in report.get("dropped_fields", []):
                 by_dropped_field[dropped["name"]] += 1
+            if report.get("native_transport"):
+                transport = report["native_transport"]
+                by_native_transport_result[
+                    f"{protocol_name}:{transport}:{report.get('native', 'not_run')}"
+                ] += 1
+                if report.get("native_reason"):
+                    by_native_transport_reason[
+                        f"{protocol_name}:{transport}:{report['native_reason']}"
+                    ] += 1
             if report.get("native_reason"):
                 by_native_check_reason[str(report["native_reason"])] += 1
     run.last_summary = {
@@ -372,6 +422,8 @@ def run(checkpoint: Path, output: Path, extended_binary: str, native_binary: str
         "by_protocol_conversion_field": dict(sorted(by_protocol_conversion_field.items())),
         "dropped_fields": dict(sorted(by_dropped_field.items())),
         "native_check_reasons": dict(sorted(by_native_check_reason.items())),
+        "native_transport_results": dict(sorted(by_native_transport_result.items())),
+        "native_transport_reasons": dict(sorted(by_native_transport_reason.items())),
     }
     return dict(sorted(counts.items()))
 
