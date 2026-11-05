@@ -42,7 +42,7 @@ From the repository root on the laptop:
 python3 -m unittest tests.test_native_experiment -v
 python3 -m unittest discover -s tests -p 'test_backend*.py' -v
 python3 tools/audit_uri_fields.py \
-  --work data/work \
+  --work ../data/work \
   --output /tmp/proxy-filter-uri-field-inventory.json
 ```
 
@@ -74,7 +74,7 @@ From the repository root, after fetching the branch:
 ```bash
 python3 -m unittest tests.test_native_experiment tests.test_ab_core_check -v
 python3 tools/ab_core_check.py \
-  --checkpoint data/work/03-safe.jsonl \
+  --checkpoint ../data/work/03-safe.jsonl \
   --extended-bin /path/to/sing-box-extended \
   --native-bin /path/to/sing-box \
   --limit 100 \
@@ -117,7 +117,7 @@ URI parsing from JSON mapping rather than comparing different core builds.
 
 ```bash
 python3 tools/ab_core_check.py \
-  --checkpoint data/work/03-safe.jsonl \
+  --checkpoint ../data/work/03-safe.jsonl \
   --extended-bin "$(command -v sing-box)" \
   --native-bin "$(command -v sing-box)" \
   --limit 100 \
@@ -134,3 +134,9 @@ Run the dedicated regression tests:
 ```bash
 python3 -m unittest tests.test_ab_core_check -v
 ```
+
+The A/B checkpoint default is anchored to the repository layout:
+`<project>/data/work/03-safe.jsonl`, with the Python package and tools under
+`<project>/app/`. The default does not depend on the current working directory.
+For a custom path, pass `--checkpoint`; nonexistent inputs fail before
+creating or truncating the report file.
