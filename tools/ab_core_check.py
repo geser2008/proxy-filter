@@ -110,6 +110,24 @@ def _safe_check(binary: str, config: dict[str, Any],
     return _check_details(binary, config, timeout)
 
 
+# URI parameter names may themselves contain arbitrary user text. This
+# allowlist is diagnostic-only: unlisted names are never copied to reports.
+_SAFE_FIELD_NAMES = frozenset((
+    "fm", "final_mask", "pcs", "pinnedPeerCertSha256",
+    "peer_certificate_sha256", "ech", "echConfigList", "spx",
+    "spider_x", "smux", "pinSHA256", "pin_sha256", "fastopen",
+    "realm-opts", "token", "authority", "headers", "host", "path",
+    "serviceName", "service_name", "security", "allowinsecure",
+    "peer", "type", "encryption", "ws", "wspath", "headerType",
+    "headertype", "pbk", "sid", "pool", "prefix", "udp", "v",
+    "ps", "name", "tag", "note", "network",
+))
+
+
+def safe_field_name(name: str) -> str:
+    return name if name in _SAFE_FIELD_NAMES else "<other_field>"
+
+
 def compare_one(proxy: ProxyConfig, extended_binary: str, native_binary: str,
                 timeout: float = 20.0) -> dict[str, Any]:
     """A/B check without changing persistent ProxyConfig history or identity."""
@@ -145,6 +163,7 @@ def compare_one(proxy: ProxyConfig, extended_binary: str, native_binary: str,
     except NativeMappingError as exc:
         result["conversion"] = "rejected"
         result["conversion_reason"] = exc.code
+        result["conversion_fields"] = [safe_field_name(name) for name in exc.fields]
         result["conversion_error_type"] = type(exc).__name__
         return result
     except Exception as exc:
@@ -157,7 +176,7 @@ def compare_one(proxy: ProxyConfig, extended_binary: str, native_binary: str,
 
     result["conversion"] = "mapped"
     result["dropped_fields"] = [
-        {"name": item.name, "reason": item.reason}
+        {"name": safe_field_name(item.name), "reason": item.reason}
         for item in converted.dropped_fields
     ]
     result["no_unclassified_loss"] = converted.no_unclassified_loss
@@ -183,6 +202,9 @@ def run(checkpoint: Path, output: Path, extended_binary: str, native_binary: str
     by_protocol_outcome: Counter[str] = Counter()
     by_conversion_reason: Counter[str] = Counter()
     by_protocol_reason: Counter[str] = Counter()
+    by_conversion_field: Counter[str] = Counter()
+    by_protocol_conversion_field: Counter[str] = Counter()
+    by_dropped_field: Counter[str] = Counter()
     by_native_check_reason: Counter[str] = Counter()
     output.parent.mkdir(parents=True, exist_ok=True)
     with checkpoint.open(encoding="utf-8") as source, output.open("w", encoding="utf-8") as sink:
@@ -208,6 +230,11 @@ def run(checkpoint: Path, output: Path, extended_binary: str, native_binary: str
             if report.get("conversion_reason"):
                 by_conversion_reason[str(report["conversion_reason"])] += 1
                 by_protocol_reason[f"{protocol_name}:{report['conversion_reason']}"] += 1
+            for field in report.get("conversion_fields", []):
+                by_conversion_field[field] += 1
+                by_protocol_conversion_field[f"{protocol_name}:{field}"] += 1
+            for dropped in report.get("dropped_fields", []):
+                by_dropped_field[dropped["name"]] += 1
             if report.get("native_reason"):
                 by_native_check_reason[str(report["native_reason"])] += 1
     run.last_summary = {
@@ -216,6 +243,9 @@ def run(checkpoint: Path, output: Path, extended_binary: str, native_binary: str
         "by_protocol_outcome": dict(sorted(by_protocol_outcome.items())),
         "conversion_reasons": dict(sorted(by_conversion_reason.items())),
         "by_protocol_reason": dict(sorted(by_protocol_reason.items())),
+        "conversion_fields": dict(sorted(by_conversion_field.items())),
+        "by_protocol_conversion_field": dict(sorted(by_protocol_conversion_field.items())),
+        "dropped_fields": dict(sorted(by_dropped_field.items())),
         "native_check_reasons": dict(sorted(by_native_check_reason.items())),
     }
     return dict(sorted(counts.items()))
