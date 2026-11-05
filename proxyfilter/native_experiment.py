@@ -85,8 +85,11 @@ _ALIASES = (
 class NativeMappingError(EngineError):
     """Safe diagnostic with a stable, non-secret reason code."""
 
-    def __init__(self, code: str):
+    def __init__(self, code: str, fields: tuple[str, ...] = ()):
         self.code = code
+        # Only explicit, statically registered names are included. Never
+        # include arbitrary URI keys or values in diagnostic fields.
+        self.fields = tuple(sorted(set(fields)))
         super().__init__(code)
 
 
@@ -130,7 +133,7 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
                 raise NativeMappingError("conflicting_aliases")
     unsupported = sorted(set(params) & _UNSUPPORTED)
     if unsupported:
-        raise NativeMappingError("unsupported_connection_field")
+        raise NativeMappingError("unsupported_connection_field", tuple(unsupported))
 
     if protocol == "vless" and "encryption" in params and params["encryption"] != "none":
         raise NativeMappingError("unsupported_vless_encryption")
@@ -163,13 +166,14 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
                             "http", "h2", "httpupgrade", "http-upgrade", "xhttp"}:
             raise NativeMappingError("unsupported_transport")
         if "authority" in params:
-            raise NativeMappingError("unsupported_authority")
-        if selector in {"", "tcp", "raw"} and any(
-            key in params for key in ("host", "path", "headers", "serviceName", "service_name")
-        ):
-            raise NativeMappingError("transport_fields_on_tcp")
+            raise NativeMappingError("unsupported_authority", ("authority",))
+        tcp_fields = ("host", "path", "headers", "serviceName", "service_name")
+        if selector in {"", "tcp", "raw"}:
+            present_tcp_fields = tuple(key for key in tcp_fields if key in params)
+            if present_tcp_fields:
+                raise NativeMappingError("transport_fields_on_tcp", present_tcp_fields)
         if selector in {"ws", "websocket", "grpc", "xhttp"} and "headers" in params:
-            raise NativeMappingError("unmapped_transport_headers")
+            raise NativeMappingError("unmapped_transport_headers", ("headers",))
 
     # The mapper currently does not consume security=none for VLESS, but the
     # explicit value is checked above for encryption, not inferred.
