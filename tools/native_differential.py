@@ -16,6 +16,10 @@ from pathlib import Path
 import subprocess
 from typing import Any
 
+# Support direct invocation: python3 tools/native_differential.py from app/.
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from proxyfilter.model import ProxyConfig, SourceInfo
 from proxyfilter.native_experiment import NativeMappingError, convert_uri_to_native
 from proxyfilter.engine import EngineError
@@ -131,7 +135,7 @@ def compare(one: dict, two: dict) -> str:
     # Exact structural equality is deliberately stricter than semantic
     # equivalence: defaults and aliases are NOT silently normalized.
     if _fingerprint(one["outbound"]) == _fingerprint(two["outbound"]):
-        return "structural_equal"
+        return "structural_equal_unverified"
     return "structural_difference"
 
 
