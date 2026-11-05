@@ -122,6 +122,25 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
     if protocol == "vless" and "encryption" in params and params["encryption"] != "none":
         raise EngineError("unsupported VLESS encryption (expected explicit 'none')")
 
+    if protocol in {"vless", "trojan"} and "security" in params:
+        if params["security"] not in {"", "none", "tls", "reality"}:
+            raise EngineError("unsupported TLS security selector")
+    # Do not turn an unknown transport into an unintentional TCP outbound.
+    if protocol in {"vless", "vmess", "trojan"}:
+        selector = next((params[key] for key in ("network", "net", "type")
+                         if key in params), "")
+        if selector not in {"", "tcp", "raw", "ws", "websocket", "grpc",
+                            "http", "h2", "httpupgrade", "http-upgrade", "xhttp"}:
+            raise EngineError(f"unsupported transport selector: {selector!r}")
+        if "authority" in params:
+            raise EngineError("unsupported connection-relevant URI field: authority")
+        if selector in {"", "tcp", "raw"} and any(
+            key in params for key in ("host", "path", "headers", "serviceName", "service_name")
+        ):
+            raise EngineError("transport-specific fields on TCP cannot be mapped losslessly")
+        if selector in {"ws", "websocket", "grpc", "xhttp"} and "headers" in params:
+            raise EngineError("unmapped generic headers on selected transport")
+
     # The mapper currently does not consume security=none for VLESS, but the
     # explicit value is checked above for encryption, not inferred.
     known = _PROTOCOL_FIELDS[protocol]
