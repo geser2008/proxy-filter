@@ -268,6 +268,49 @@ class NativeExperimentTests(unittest.TestCase):
         result = convert_uri_to_native(p)
         self.assertNotIn("x_padding_bytes", result.outbound["transport"])
 
+    def test_podkop_engine_vless_xhttp_json_text_is_opt_in(self):
+        extra = '{"xPaddingBytes":"12-24","xmux":{"maxConcurrency":"4-8"}}'
+        p = proxy("vless", {"uuid": UUID, "type": "xhttp",
+                            "path": "/x", "extra": extra})
+        original = dict(p.params)
+        with self.assertRaisesRegex(EngineError, "invalid_xhttp_extra_encoding"):
+            convert_uri_to_native(p)
+        result = convert_uri_to_native(p, profile="podkop-engine")
+        self.assertEqual(result.outbound["transport"]["x_padding_bytes"], "12-24")
+        self.assertEqual(result.outbound["transport"]["xmux"]["max_concurrency"], "4-8")
+        self.assertEqual(p.params, original)
+        self.assertEqual(p.original_raw, "vless://redacted")
+
+    def test_podkop_engine_extra_is_not_repaired_or_guessed(self):
+        cases = (
+            ('{"xPaddingBytes":', "invalid_xhttp_extra_json"),
+            ("{'xPaddingBytes': True}", "invalid_xhttp_extra_json"),
+            ("null", "invalid_xhttp_extra_type"),
+            ('{"downloadSettings":{"address":"example.org"}}', "backend_reject"),
+        )
+        for extra, expected in cases:
+            with self.subTest(extra=extra):
+                p = proxy("vless", {"uuid": UUID, "type": "xhttp", "extra": extra})
+                if expected == "backend_reject":
+                    with self.assertRaises(EngineError):
+                        convert_uri_to_native(p, profile="podkop-engine")
+                else:
+                    with self.assertRaises(NativeMappingError) as caught:
+                        convert_uri_to_native(p, profile="podkop-engine")
+                    self.assertEqual(caught.exception.code, expected)
+
+    def test_podkop_profile_rejects_unverified_protocols(self):
+        p = proxy("trojan", {"password": "secret", "type": "xhttp"})
+        with self.assertRaises(NativeMappingError) as caught:
+            convert_uri_to_native(p, profile="podkop-engine")
+        self.assertEqual(caught.exception.code, "unverified_parser_profile_protocol")
+
+    def test_unknown_profile_fails_closed(self):
+        p = proxy("vless", {"uuid": UUID, "type": "xhttp"})
+        with self.assertRaises(NativeMappingError) as caught:
+            convert_uri_to_native(p, profile="throne")
+        self.assertEqual(caught.exception.code, "unknown_parser_profile")
+
     def test_xhttp_plain_json_in_share_uri_is_not_base64url(self):
         p = proxy("vless", {"uuid": UUID, "type": "xhttp",
                              "extra": '{"mode":"auto"}'})
