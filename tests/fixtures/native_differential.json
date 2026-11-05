@@ -9,7 +9,10 @@
       "type": "ws",
       "path": "/ws"
     },
-    "expected_native": "ok"
+    "expected_native": {
+      "extended": "ok",
+      "podkop-engine": "ok"
+    }
   },
   {
     "id": "vless-xhttp-no-extra",
@@ -21,7 +24,10 @@
       "security": "tls",
       "path": "/x"
     },
-    "expected_native": "ok"
+    "expected_native": {
+      "extended": "ok",
+      "podkop-engine": "ok"
+    }
   },
   {
     "id": "vless-xhttp-b64-padding",
@@ -33,7 +39,10 @@
       "security": "tls",
       "extra": "eyJ4UGFkZGluZ0J5dGVzIjoiMTItMjQifQ"
     },
-    "expected_native": "ok"
+    "expected_native": {
+      "extended": "ok",
+      "podkop-engine": "rejected"
+    }
   },
   {
     "id": "vless-xhttp-json-text",
@@ -45,7 +54,10 @@
       "security": "tls",
       "extra": "{\"xPaddingBytes\":\"12-24\"}"
     },
-    "expected_native": "rejected"
+    "expected_native": {
+      "extended": "rejected",
+      "podkop-engine": "ok"
+    }
   },
   {
     "id": "vless-xhttp-json-null",
@@ -57,7 +69,10 @@
       "security": "tls",
       "extra": "bnVsbA"
     },
-    "expected_native": "rejected"
+    "expected_native": {
+      "extended": "rejected",
+      "podkop-engine": "rejected"
+    }
   },
   {
     "id": "vless-xhttp-invalid-extra",
@@ -69,7 +84,10 @@
       "security": "tls",
       "extra": "not-json!!"
     },
-    "expected_native": "rejected"
+    "expected_native": {
+      "extended": "rejected",
+      "podkop-engine": "rejected"
+    }
   },
   {
     "id": "vless-xhttp-unsupported-field",
@@ -81,7 +99,10 @@
       "security": "tls",
       "extra": "eyJkb3dubG9hZFNldHRpbmdzIjp7ImFkZHJlc3MiOiJleGFtcGxlLm9yZyJ9fQ"
     },
-    "expected_native": "rejected"
+    "expected_native": {
+      "extended": "rejected",
+      "podkop-engine": "rejected"
+    }
   },
   {
     "id": "vless-tcp-http-header",
@@ -93,7 +114,10 @@
       "headerType": "http",
       "security": "tls"
     },
-    "expected_native": "rejected"
+    "expected_native": {
+      "extended": "rejected",
+      "podkop-engine": "rejected"
+    }
   },
   {
     "id": "vless-cs-nonempty",
@@ -105,7 +129,10 @@
       "security": "tls",
       "cs": "TLS_A"
     },
-    "expected_native": "rejected"
+    "expected_native": {
+      "extended": "rejected",
+      "podkop-engine": "rejected"
+    }
   },
   {
     "id": "vmess-cs-empty",
@@ -117,7 +144,10 @@
       "tls": "tls",
       "cs": ""
     },
-    "expected_native": "rejected"
+    "expected_native": {
+      "extended": "rejected",
+      "podkop-engine": "rejected"
+    }
   },
   {
     "id": "vmess-tcp-http-header",
@@ -129,7 +159,10 @@
       "type": "http",
       "scy": "auto"
     },
-    "expected_native": "rejected"
+    "expected_native": {
+      "extended": "rejected",
+      "podkop-engine": "rejected"
+    }
   },
   {
     "id": "trojan-xhttp-b64-extra",
@@ -140,7 +173,10 @@
       "type": "xhttp",
       "extra": "eyJ4UGFkZGluZ0J5dGVzIjoiMTItMjQifQ"
     },
-    "expected_native": "ok"
+    "expected_native": {
+      "extended": "ok",
+      "podkop-engine": "rejected"
+    }
   },
   {
     "id": "trojan-xhttp-json-text",
@@ -151,7 +187,10 @@
       "type": "xhttp",
       "extra": "{\"xPaddingBytes\":\"12-24\"}"
     },
-    "expected_native": "rejected"
+    "expected_native": {
+      "extended": "rejected",
+      "podkop-engine": "rejected"
+    }
   },
   {
     "id": "trojan-cs-empty",
@@ -161,6 +200,9 @@
       "password": "secret",
       "cs": ""
     },
-    "expected_native": "rejected"
+    "expected_native": {
+      "extended": "rejected",
+      "podkop-engine": "rejected"
+    }
   }
 ]
