@@ -971,6 +971,55 @@ python3 tools/audit_native_coverage.py \
 Не обещать автоматически +126 к `native_ok_no_unclassified_loss`:
 после прохождения первого gate запись может получить другой отказ.
 
+## Точечный VMess TCP HTTP disguise mapping (2026-11-05)
+
+**Контракт:** legacy VMess Base64(JSON) использует `net` как
+transport selector, `type` — как header/disguise selector.
+См. выше «Семантический контракт полей», пункты VMess `net`
+и `type`. Проверены независимо:
+
+- [2dust/v2rayN, Description of VMess share link](https://github.com/2dust/v2rayN/wiki/Description-of-VMess-share-link):
+  `type=http` для TCP, `host`/`path` зависят от типа транспорта;
+- [dioxine/sing-box-extended parser/link/vmess.go](https://github.com/dioxine/sing-box-extended/blob/extended/parser/link/vmess.go),
+  проверенный Git blob `d3a09711efedaab6f567ae71765109f23614e391`:
+  только `net=tcp` и `type=http` создают
+  `V2RayTransportTypeHTTP`, значения `method`, `path`, `host`
+  перенесены в `HTTPOptions`. Сам `type` не является `net`.
+
+В **экспериментальном** `convert_uri_to_native` для явного
+`net=tcp&type=http` создаётся native `transport.type=http`.
+Проверенные простые поля `host` (один хост), `path`, `method`
+переходят в `transport.host` (одноэлементный массив),
+`transport.path`, `transport.method`.
+`original_raw` и `params` не меняются.
+
+**Границы:**
+
+- Стандартные схемы Xray/v2rayN допускают список HTTP hosts,
+  разделённый запятыми, но исходный код целевого `extended`
+  формирует `Host = []string{host}` без разделения.
+  Поэтому VMess TCP HTTP с запятой в `host` пока **отклоняется**,
+  вместо выбора несовместимых семантик.
+- `headers` пока отклоняется: для него нет подтверждённого
+  безопасного преобразования строкового JSON-поля VMess в native
+  `HTTPHeader`.
+- `type=http` вне явного `net=tcp`, нестандартные header types,
+  `method` вне TCP HTTP, `serviceName` в TCP, некорректные типы
+  значений не преобразуются по догадке.
+- Наличие native HTTP transport ещё не доказывает `sing-box check`
+  или совместимость с удалённым сервером. Проверка на реальном
+  бинарнике и переаудит необходимы перед любым production-переносом.
+
+Команды на ноутбуке, из `app/`:
+
+```bash
+python3 -m unittest tests.test_native_experiment tests.test_audit_native_coverage -v
+python3 tools/audit_native_coverage.py \
+  --checkpoint ../data/work/03-safe.jsonl \
+  --output /tmp/proxyfilter-native-coverage-after-vmess-http.json
+jq '.protocols.vmess' /tmp/proxyfilter-native-coverage-after-vmess-http.json
+```
+
 ## Зафиксированные пробелы реализации и правила gate
 
 1. **Версионная схема:** upstream JSON documentation может описывать поля после 1.14.3; получить version-specific schema и выполнить `sing-box check` установленным бинарником.
