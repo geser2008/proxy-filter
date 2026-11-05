@@ -336,3 +336,23 @@ stderr from tests involving real proxy configs.
 If WS control passes but minimal XHTTP fails, identify the specific core
 error before changing the mapper. If all four pass, investigate the
 generated XHTTP options and the A/B configuration differences instead.
+
+### XHTTP padding decode failure isolated
+
+A synthetic check on `sing-box 1.14.3-extended-2.7.3-lite` produced:
+`x_padding_bytes cannot be disabled` with no `x_padding_bytes` key.
+The fork's `option/v2ray_transport.go` enforces a positive range when
+unmarshalling native JSON, while its `GetNormalizedXPaddingBytes()`
+uses the range `100-1000` if the range is unset. The fork's example client
+config also supplies `x_padding_bytes: "100-1000"`.
+
+The synthetic smoke tool now checks three additional XHTTP cases with
+explicit `x_padding_bytes: "100-1000"`. Do **not** insert a silent default
+into the production mapper yet: compare actual check results, verify how the
+extended URI parser handles absent/explicit padding, and later test real
+network behavior to establish equivalent semantics.
+
+```bash
+git pull
+python3 tools/ab_xhttp_smoke.py
+```
