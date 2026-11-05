@@ -245,7 +245,20 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
                 raise NativeMappingError("transport_fields_on_tcp",
                                          tuple(k for k in ("serviceName", "service_name") if k in params))
         elif selector in {"", "tcp", "raw"}:
-            present_tcp_fields = tuple(key for key in tcp_fields if key in params)
+            # For VMess net=tcp with no HTTP disguise, the pinned EXT parser
+            # skips host/path and never consumes serviceName. Only exact empty
+            # strings are proven inert placeholders. Nonempty or non-string
+            # values stay fail-closed; do not generalize to VLESS/Trojan.
+            neutral_vmess_tcp_empty = (
+                protocol == "vmess" and selector == "tcp"
+                and params.get("type", "") in ("", "none")
+            )
+            present_tcp_fields = tuple(
+                key for key in tcp_fields if key in params
+                and not (neutral_vmess_tcp_empty
+                         and key in ("host", "path", "serviceName", "service_name")
+                         and type(params[key]) is str and params[key] == "")
+            )
             if present_tcp_fields:
                 raise NativeMappingError("transport_fields_on_tcp", present_tcp_fields)
         if selector in {"ws", "websocket", "grpc", "xhttp"} and "headers" in params:
@@ -276,6 +289,12 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
         and not (key == "vcn" and neutral_vmess_empty_vcn)
     )
     mapped = {key: value for key, value in params.items() if key in known}
+    if protocol == "vmess" and selector == "tcp" and params.get("type", "") in ("", "none"):
+        # Target parser treats empty TCP placeholders as absent. Keep source
+        # params verbatim, but do not pass them to the native JSON mapper.
+        for field in ("host", "path", "serviceName", "service_name"):
+            if type(mapped.get(field)) is str and mapped[field] == "":
+                mapped.pop(field)
     if neutral_vmess_empty_cs:
         # Verified parser-neutral omission, never a source-data mutation.
         mapped.pop("cs", None)
