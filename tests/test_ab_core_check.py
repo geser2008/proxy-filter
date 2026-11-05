@@ -116,7 +116,7 @@ class ABCheckTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             checkpoint = Path(tmp) / "03-safe.jsonl"
             output = Path(tmp) / "report.jsonl"
-            checkpoint.write_text(json.dumps(p.to_dict()) + "\\n", encoding="utf-8")
+            checkpoint.write_text(json.dumps(p.to_dict()) + "\n", encoding="utf-8")
             with patch("tools.ab_core_check._safe_check",
                        side_effect=[("pass", None), ("check_failed", "unknown_json_field")]):
                 counts = run(checkpoint, output, "extended", "native", 1, 3)
