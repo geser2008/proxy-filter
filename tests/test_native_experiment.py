@@ -174,6 +174,58 @@ class NativeExperimentTests(unittest.TestCase):
         with self.assertRaisesRegex(EngineError, "invalid boolean value"):
             convert_uri_to_native(p)
 
+    def test_vmess_empty_pcs_neutral_for_tls_enabled_and_disabled(self):
+        for tls in ("none", "tls"):
+            with self.subTest(tls=tls):
+                p = proxy("vmess", {
+                    "id": UUID, "scy": "auto", "pcs": "",
+                    "tls": tls, "insecure": "false",
+                })
+                original = dict(p.params)
+                result = convert_uri_to_native(p)
+                self.assertTrue(result.no_unclassified_loss)
+                self.assertEqual(result.dropped_fields, ())
+                self.assertEqual(result.outbound.get("tls", {}).get("enabled", False),
+                                 tls == "tls")
+                self.assertEqual(p.params, original)
+                self.assertEqual(p.original_raw, "vmess://redacted")
+
+    def test_vmess_nonempty_or_nonstring_pcs_still_rejected(self):
+        for pin in ("opaque-hash", None, 0, False, [], {}):
+            with self.subTest(pin=pin):
+                with self.assertRaises(NativeMappingError) as caught:
+                    convert_uri_to_native(proxy("vmess", {"id": UUID, "pcs": pin}))
+                self.assertEqual(caught.exception.code, "unsupported_connection_field")
+                self.assertEqual(caught.exception.fields, ("pcs",))
+
+    def test_vmess_empty_pcs_does_not_hide_ech(self):
+        for field in ("ech", "echConfigList"):
+            with self.subTest(field=field):
+                with self.assertRaises(NativeMappingError) as caught:
+                    convert_uri_to_native(proxy("vmess", {
+                        "id": UUID, "pcs": "", field: "opaque",
+                    }))
+                self.assertEqual(caught.exception.code, "unsupported_connection_field")
+                self.assertEqual(caught.exception.fields, (field,))
+
+    def test_vmess_empty_pcs_does_not_bypass_other_blockers(self):
+        p = proxy("vmess", {
+            "id": UUID, "pcs": "", "fm": "opaque",
+        })
+        with self.assertRaises(NativeMappingError) as caught:
+            convert_uri_to_native(p)
+        self.assertEqual(caught.exception.fields, ("fm",))
+
+    def test_empty_pcs_other_protocols_remain_rejected(self):
+        for protocol, params in (
+            ("vless", {"uuid": UUID, "pcs": ""}),
+            ("trojan", {"password": "secret", "pcs": ""}),
+        ):
+            with self.subTest(protocol=protocol):
+                with self.assertRaises(NativeMappingError) as caught:
+                    convert_uri_to_native(proxy(protocol, params))
+                self.assertEqual(caught.exception.code, "unsupported_connection_field")
+
     def test_vmess_empty_cs_is_parser_neutral_only_in_temporary_copy(self):
         params = {"id": UUID, "scy": "auto", "net": "ws", "tls": "tls",
                   "path": "/socket", "cs": ""}
