@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from proxyfilter.engine import EngineError
 from proxyfilter.model import ProxyConfig, SourceInfo
-from tools.ab_core_check import compare_one, run, inspect_core_version, inspect_pair, classify_check_failure, classify_mapper_failure, classify_mapper_fields
+from tools.ab_core_check import compare_one, run, inspect_core_version, inspect_pair, classify_check_failure, classify_mapper_failure, classify_mapper_fields, load_native_mismatch_hashes, diagnostic_value_shape
 
 UUID = "00000000-0000-0000-0000-000000000001"
 
@@ -184,6 +184,51 @@ class ABCheckTests(unittest.TestCase):
                              {"unknown_json_field": 1})
             self.assertEqual(run.last_summary["by_protocol_outcome"],
                              {"vless:mapped:pass:check_failed": 1})
+
+    def test_focus_report_picks_only_native_mismatches(self):
+        p = valid_proxy()
+        first = p.original_raw
+        focus = __import__("hashlib").sha256(first.encode()).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp) / "prior.jsonl"
+            report_path.write_text(
+                json.dumps({"uri_sha256": focus, "extended": "pass",
+                            "native": "check_failed"}) + "\n"
+                + json.dumps({"uri_sha256": "0" * 64, "extended": "pass",
+                              "native": "pass"}) + "\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(load_native_mismatch_hashes(report_path), {focus})
+            checkpoint = Path(tmp) / "03-safe.jsonl"
+            other = valid_proxy()
+            other.original_raw = "vless://different-private-credential"
+            checkpoint.write_text(
+                json.dumps(p.to_dict()) + "\n" + json.dumps(other.to_dict()) + "\n",
+                encoding="utf-8",
+            )
+            output = Path(tmp) / "focused.jsonl"
+            with patch("tools.ab_core_check._safe_check", return_value=("pass", None)) as check:
+                count = run(checkpoint, output, "extended", "native", 0, 3, {focus})
+            self.assertEqual(count, {"mapped": 1})
+            self.assertEqual(len(output.read_text(encoding="utf-8").splitlines()), 1)
+            self.assertEqual(check.call_count, 2)
+
+    def test_focus_report_rejects_invalid_hash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = Path(tmp) / "prior.jsonl"
+            report.write_text(
+                json.dumps({"uri_sha256": "SECRET", "extended": "pass",
+                            "native": "check_failed"}) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "invalid URI digest"):
+                load_native_mismatch_hashes(report)
+
+    def test_boolean_value_shape_never_contains_content(self):
+        self.assertEqual(diagnostic_value_shape(""), "empty_string")
+        self.assertEqual(diagnostic_value_shape("   "), "whitespace_string")
+        self.assertEqual(diagnostic_value_shape("PRIVATE-SECRET"), "nonempty_string")
+        self.assertNotIn("PRIVATE-SECRET", diagnostic_value_shape("PRIVATE-SECRET"))
 
     def test_only_safe_checkpoint_accepted(self):
         with tempfile.TemporaryDirectory() as tmp:
