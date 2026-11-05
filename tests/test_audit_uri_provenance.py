@@ -100,6 +100,15 @@ class UriProvenanceAuditTests(unittest.TestCase):
                              "UNTRUSTED-private@example.com", "sensitive"):
                 self.assertNotIn(fragment, serialized)
 
+    def test_cs_is_recognized_as_observed_in_three_protocols(self):
+        for protocol in ("vless", "vmess", "trojan"):
+            with self.subTest(protocol=protocol):
+                item = self.registry[protocol]["cs"]
+                self.assertEqual(item["classes"], ["OBSERVED"])
+                self.assertIn("C1", item["source_refs"])
+                self.assertIn("C2", item["source_refs"])
+        self.assertNotIn("cs", self.registry["ss"])
+
     def test_local_hash_resolution(self):
         key = "vendor-field"
         digest = hashlib.sha256(key.encode()).hexdigest()
