@@ -309,6 +309,128 @@ VMess JSON/nested extra), `origin_class`, `source_ref`, `value_type`,
 | mKCP/QUIC/DomainSocket | `type=kcp/quic/ds` | зависит от upstream/extended | upstream справочник исключает mKCP/DomainSocket, QUIC перечисляет |
 | certificate pin | `fingerprint`, `pinSHA256` | не выводить в uTLS автоматически | разные алгоритмы/формы pin |
 
+## Семантический контракт полей: типы, значения, зависимости (этап 1)
+
+Это **отдельный от классификации происхождения** слой спецификации.
+Он описывает проверку на границе URI → protocol-specific model. Обозначения:
+
+- **P** — правило подтверждается указанным форматом или структурой URI;
+- **V** — правило нужно сверить с указанной версией share-формата/целевого backend;
+- **G** — gate отказа: нельзя создавать видимость работоспособного соединения
+  заменой неизвестного, некорректного или неподдерживаемого значения;
+- **`absent` ≠ `""` ≠ `null`**; преобразование допустимо только по
+  документированной семантике конкретного поля и формата;
+- исходный `original_raw` и `params` сохраняются; никакой автоматической
+  нормализации источника при аудите.
+
+Следующие таблицы **не являются реализацией** и не утверждают, что все поля
+поддерживаются `sing-box 1.14.3-extended`. Статус `V` — открытая проверка,
+не разрешение молча исключать поле.
+
+### Общая оболочка и аутентификация
+
+| Формат / поле | Тип исходника | Допустимость / значение | Зависимости / конфликты | Проверка |
+|---|---|---|---|---|
+| Все URI: hostname, port | URI authority | Host непустой; explicit port 1–65535; IPv6 в квадратных скобках | Отсутствие порта не заменять произвольным, у Hysteria2 есть собственный default | P/G |
+| VLESS: `uuid` | UUID в userinfo | Формально корректный UUID | Не подставлять UUID из имени ссылки | P/G [V1] |
+| VMess legacy: `id`, `aid` | строки/числа внутри Base64(JSON) | `id` UUID; `aid` целое без дробной части; тип `aid` string/number проверять | `net` задаёт транспорт, `type` — header type | P/V [M1] |
+| Trojan: `password` | userinfo | Непустой пароль после строго одного URI decode | Не путать с query password | P/G [T1] |
+| SS: `method`, `password` | userinfo, SIP002/legacy | Непустые; декодирование зависит от SS URI-формы/шифра | Плагин `plugin` — отдельная зависимая конфигурация | P/V [S1] |
+| Hysteria2: auth/userinfo | userinfo | По H1; различать исходный userinfo и ingest `params.password` | `obfs-password` не равно паролю сервера | P/V [H1] |
+| TUIC: `uuid:password` | userinfo | UUID + password; синтаксис — соглашение URI экспортёра | Нельзя подменять v5 `token` из v4 | V/G [U1] |
+
+### TLS, REALITY и сертификаты
+
+| Протокол / поля | Тип значений | Семантика / допустимые значения | Зависимости / конфликты | Проверка |
+|---|---|---|---|---|
+| VLESS/Trojan: `security` | selector string | `none`, `tls`, `reality` — проверить по текущей реализации; неизвестное значение не превращать в `none` | REALITY: `pbk` и контекст `sid`; TLS-свойства нельзя оставлять при неактивном TLS без разбора | V/G [V1,V2,T1] |
+| VLESS: `encryption` | string | Базовый `none`; иное значение — не «пустая метка», а возможное расширение | Не отбрасывать неизвестное encryption | P/G [V1] |
+| VMess: `scy` | enum string | Допустимый cipher список сверять с VMess и target backend | Не путать с `security=tls` других URI | V/G [M1] |
+| `sni`, `server_name` | string | Точное значение имени, включая регистр/escaping по спецификации | При конфликтующих алиасах — отказ; не брать SNI из чужого поля автоматически | V/G |
+| `alpn` | string/list по формату | Упорядоченный список протоколов; пустые элементы требуют отдельной проверки | TLS контекст; не сортировать и не дедуплицировать без доказательства | V |
+| `fp` / `client-fingerprint` | string | uTLS client fingerprint, **не certificate pin** | `fp` не универсален для всех протоколов; недокументированное значение — отказ/gap | V/G [V2] |
+| `pbk` / `public_key` | encoded public key | REALITY public key с форматом, размером и кодированием, установленными Xray | `security=reality`; конфликт алиасов — отказ; не придумывать отсутствующие значения | V/G [V2] |
+| `sid` / `short_id` | hex-like string | Формат и допустимая длина по REALITY; пустое значение не равно отсутствующему без доказательства | Только REALITY | V/G [V2] |
+| `spx`, `pqv`, `fm` | extension string | Специфичные REALITY/FinalMask расширения | Пока `GAP` или ограниченный mapper — явно фиксировать, не отбрасывать как META | V/G [V2] |
+| `allowInsecure`, `insecure`, `skip-cert-verify` | bool-like | Синтаксис true/false **зависит от формата**; `""` не равен `true` | Отключает/меняет TLS verification; конфликт с проверкой pin и политикой безопасности | V/G |
+| Hysteria2: `pinSHA256` | certificate pin | Формат SHA-256 pin по официальному H1 | **Не** `tls.utls.fingerprint`; `fp` не синоним | P/G [H1] |
+| `pcs`, `vcn`, `ech` | extension string/encoded | Pin/ECH/verification специфичны для клиента; нужны версия и семантика | Не переинтерпретировать pin сертификата как uTLS | V/G |
+
+### Транспорты VLESS / Trojan и VMess
+
+| Поле / контекст | Тип | Семантика / значения | Зависимости и конфликт | Проверка |
+|---|---|---|---|---|
+| VLESS/Trojan: `type` | selector string | `tcp`/`raw`, `ws`, `grpc`, `http`/`h2`, `httpupgrade`, `xhttp`; дополнительные — только при наличии подтверждённого mapping | Неизвестное значение нельзя заменять TCP | V/G [V1,V2,T1] |
+| VMess: `net` | selector string | Значение transport независимо от VMess `type` | `net` ≠ `type` и не может замещать его | P/G [M1] |
+| VMess: `type` | header/disguise string или null | `none` — кандидат нейтрального header; другие требуют документированного mapping | `null` в реальных JSON и отсутствие `type` требуют отдельной проверки | V/G [M1] |
+| WS: `path`, `host` | strings | HTTP path и Host header; порядок/декодирование URL не менять | Только `type=ws`/VMess `net=ws`; пустой path/Host анализировать отдельно | V |
+| WS: `ed`, `eh` | nonnegative integer/text | Early data size и header name; значения и диапазон проверить | Только WS; не переносить в unrelated transport | V/G [V2] |
+| gRPC: `serviceName`, `service_name` | string | Service name; percent-encoding и конфликт алиасов | Только gRPC; `mode` интерпретировать лишь с контекстом транспорта | V/G |
+| HTTP/H2: `host`, `path`, `headers`, `method` | string/list/object по формату | Структуры HTTP transport; не преобразовывать строку заголовков в dict без описанного кодирования | Только HTTP; нельзя автоматически объявить H2 эквивалентом произвольного HTTP | V/G |
+| XHTTP: `mode`, `path`, `host` | string | Назначение, разрешённые значения и defaults сверить с версией XHTTP | Только XHTTP; `mode` другого транспорта — отдельное поле | V/G [V2] |
+| XHTTP: `extra` | encoded nested JSON | Различать JSON-text и Base64URL(JSON) по документированному формату; валидировать вложенную схему | Пустой extra ≠ `{}`; неизвестные вложенные поля не «исправлять» | V/G [V2] |
+| TCP: `headerType` | header selector | `none`/empty — только после проверки транспортного соглашения | Non-neutral disguise требует собственный transport mapping | V/G |
+| `packetEncoding` | enum string | Например `xudp`/`packetaddr`, точный enum по ядру | Protocol-specific outbound, не transport `type` | V/G |
+
+### Shadowsocks, Hysteria2 и TUIC: дополнительные зависимости
+
+| Формат / поле | Тип | Условия и конфликт | Проверка |
+|---|---|---|---|
+| SS `plugin` | SIP002 encoded name/options | Опции извлекать по синтаксису SIP002; отдельно `plugin_opts` не сливать без проверки совпадения | P/G [S1] |
+| SS `network`, `udp_over_tcp`, `multiplex` | extension | Не являются нормативными SIP002 query keys; не считать поддержанными из-за имени JSON поля | V/G |
+| HY2: authority port ranges | URI authority | Правила hopping и default port по H1; `mport`/query aliases не приравнивать автоматически | P/G [H1] |
+| HY2: `obfs`, `obfs-password` | enum + string | Пароль обфускации применим только к соответствующему `obfs`; неизвестный алгоритм — отказ | P/V [H1] |
+| HY2: `up`, `down`, `up_mbps` | bandwidth values | Расширения клиента; официальный URI H1 не переносит bandwidth, numeric units не угадывать | V/G [H1] |
+| TUIC: `congestion_control` | enum string | Известные варианты target JSON сверять с версией ядра; URI aliases отдельно | V/G [U2] |
+| TUIC: `udp_relay_mode`, `udp_over_stream` | enum / boolean | Возможный конфликт настроек UDP; не отдавать противоречивую конфигурацию без явного правила | V/G [U2] |
+| TUIC: `zero_rtt_handshake`, `reduce-rtt` | bool-like | URI-алиасы и security последствия 0-RTT проверять по версии клиента | V/G [U2] |
+| TUIC: `heartbeat`, `heartbeat_interval` | duration | Не угадывать единицы при алиасах; проверять соответствие schema | V/G [U2] |
+
+### Непосредственно наблюдаемые типы в `03-safe.jsonl`
+
+По аудиту `proxyfilter-uri-provenance-audit-v2.json` (8 848 записей):
+
+| Протокол | Поле | Фактический Python/JSON type | Последствие для следующего этапа |
+|---|---|---|---|
+| VMess | `aid` | string × 524; number × 22 | Поддерживать оба представления только если значение валидно; не принимать дробные/нецифровые строки |
+| VMess | `v` | string × 509; null × 31 | `v` — версия share JSON; null не подменять версией без доказательства |
+| VMess | `type` | string × 507; null × 31 | Проверить null/header semantics отдельно от `net` |
+| VMess | `host` | string × 528; null × 6 | Различать отсутствующее/пустое/null |
+| VMess | `skip-cert-verify` | boolean × 6 | Alias не следует преобразовывать через `bool("false")` |
+| VLESS | `headerType` | string × 1 618 | Высокий приоритет: выяснить распределение значений и транспортов |
+| VLESS | `extra` | string × 249 | Высокий приоритет: вложенный XHTTP schema и encoding |
+| VLESS | `spx` | string × 372 | Проверить REALITY semantic loss, не считать metadata |
+| Trojan | `headerType` | string × 408 | Проверить non-neutral disguise и связь с transport |
+| Hysteria2 | `security` | string × 38 | Не нормативное поле H1; определить происхождение/условия |
+
+### Разрешение оставшегося неизвестного имени локально
+
+Отчёт v2 содержит 248 вхождений `UNLISTED` (VLESS 91, VMess 145,
+Trojan 7, Shadowsocks 5). Один и тот же SHA-256 ключа встречается
+**173 раза** (VLESS 45, VMess 126, Trojan 2):
+
+```text
+sha256:3b8b91c75627bee566dcb88f4805901b20a3eab2520bcff8d26c87157a035026
+```
+
+Отчёт **не содержит обратимого исходного имени**. Новая опция
+`tools/audit_uri_provenance.py --resolve-hash` локально пересчитывает
+SHA-256 **только от имён** полей `config.params`; совпавшие имена и
+частоты выводятся в терминал, значения полей, `original_raw` и адреса
+серверов не выводятся. Результат не записывается в JSON audit и не
+изменяет checkpoint.
+
+```bash
+python3 tools/audit_uri_provenance.py \
+  --checkpoint ../data/work/03-safe.jsonl \
+  --resolve-hash 3b8b91c75627bee566dcb88f4805901b20a3eab2520bcff8d26c87157a035026
+```
+
+Возможна конфиденциальность **самих имён ключей**; результат предназначен
+только для локальной проверки. До его получения нельзя утверждать, какое
+именно поле породило этот digest. Другие UNLISTED ключи исследовать по
+убыванию частоты. Отсутствие TUIC в корпусе требует отдельных fixture.
+
 ## Аудит полей реальных URI по матрице
 
 Для текущего checkpoint `data/work/03-safe.jsonl` создан отдельный,
