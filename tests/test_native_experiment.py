@@ -165,6 +165,44 @@ class NativeExperimentTests(unittest.TestCase):
         self.assertEqual(result.outbound["transport"]["mode"], "stream-up")
         self.assertEqual(p.params["extra"], encoded)
 
+    def test_xhttp_absent_padding_uses_extended_runtime_default(self):
+        for protocol, identity in (
+            ("vless", {"uuid": UUID}),
+            ("vmess", {"id": UUID, "scy": "auto", "net": "xhttp"}),
+            ("trojan", {"password": "secret"}),
+        ):
+            with self.subTest(protocol=protocol):
+                params = {**identity}
+                if protocol != "vmess":
+                    params["type"] = "xhttp"
+                p = proxy(protocol, params)
+                original = dict(p.params)
+                result = convert_uri_to_native(p)
+                transport = result.outbound["transport"]
+                self.assertEqual(transport["type"], "xhttp")
+                self.assertEqual(transport["x_padding_bytes"], "100-1000")
+                self.assertEqual(p.params, original)
+
+    def test_xhttp_explicit_padding_is_never_overwritten(self):
+        for padding in ("12-24", "0-0", ""):
+            with self.subTest(padding=padding):
+                extra = {"xPaddingBytes": padding}
+                encoded = base64.urlsafe_b64encode(
+                    json.dumps(extra).encode()
+                ).decode().rstrip("=")
+                p = proxy("vless", {"uuid": UUID, "type": "xhttp",
+                                    "extra": encoded})
+                result = convert_uri_to_native(p)
+                self.assertEqual(
+                    result.outbound["transport"]["x_padding_bytes"], padding
+                )
+                self.assertEqual(p.params["extra"], encoded)
+
+    def test_non_xhttp_does_not_receive_padding(self):
+        p = proxy("vless", {"uuid": UUID, "type": "ws", "path": "/socket"})
+        result = convert_uri_to_native(p)
+        self.assertNotIn("x_padding_bytes", result.outbound["transport"])
+
     def test_xhttp_plain_json_in_share_uri_is_not_base64url(self):
         p = proxy("vless", {"uuid": UUID, "type": "xhttp",
                              "extra": '{"mode":"auto"}'})
