@@ -665,6 +665,92 @@ python3 tools/audit_uri_semantics.py \
 проверяемые fixtures для native mapping. В production никаких
 изменений не требуется.
 
+## Семантический аудит v2: перекрёстная проверка транспорта
+
+Локальный отчёт `uri-semantic-aggregation-v2` по `03-safe.jsonl`:
+8 848 валидных записей, 0 ошибок; UNLISTED:
+VLESS 19, VMess 11, Trojan 5, SS 5, Hysteria2 0 (**40 всего**).
+Все подсчёты в разделе ниже основаны на агрегированном отчёте;
+полные исходные URI/значения не представлены.
+
+### Header type × transport
+
+| Протокол | Транспорт | `headerType` bucket | Записей |
+|---|---|---|---:|
+| VLESS | tcp | none / empty / http / other | 1487 / 23 / 19 / 8 |
+| VLESS | ws | none / empty | 52 / 17 |
+| VLESS | xhttp | none / other | 8 / 4 |
+| Trojan | tcp | none / empty / http / other | 398 / 7 / 1 / 1 |
+| Trojan | raw | none | 1 |
+| SS | tcp | none | 7 |
+
+`other` не равно ошибке: значение просто не входит в приватный
+ограниченный словарь отчёта. Для TCP `http` — **20** записей,
+требующих явного решения по HTTP-disguise. В текущем
+`singbox_backend.py` TCP `headerType` кроме `""`/`none`
+**отклоняется**, то есть его нельзя молча отобразить как обычный TCP.
+
+### XHTTP `extra` по кодированию и транспорту
+
+VLESS: 249 вхождений:
+- xhttp + JSON-text object/null: 246;
+- xhttp + invalid: 2;
+- транспорт отсутствует + invalid: 1.
+
+Из 246 JSON-text значений 241 имеет top-level object, 5 — JSON null.
+Trojan: 1 XHTTP + JSON-text object.
+Ни одного распознанного Base64URL(JSON) в этом checkpoint.
+
+**Обнаруженное расхождение реализаций:** экспериментальный
+`native_experiment.py` в ветке сейчас проверяет `extra` как
+Base64URL(JSON) при XHTTP, тогда как `singbox_backend.py`
+поддерживает JSON-text. Следовательно, на данной выборке 246 VLESS
+и 1 Trojan XHTTP с распознанным JSON-text не пройдут **именно
+экспериментальный Base64URL-only gate**, даже если часть имеет
+допустимую вложенную схему. Это не доказательство, что production URI
+parser принимает JSON-text эквивалентно: перед изменением gate
+проверить parser oracle на конкретных URI и не изменять ingest.
+
+Вложенная структура XHTTP (`xmux`, `downloadSettings` и прочие
+поля) в отчёте v2 **не раскрывается и не проверяется**.
+Значения JSON null и invalid нельзя превращать в пустой объект.
+
+### TLS cipher suites
+
+- VLESS: `cs` в 45 WS+TLS записях: 29 со структурой списка из 1
+  шифросюита, 16 с 5+.
+- VMess: **126/126** `cs=""`; TLS selector: 104 `tls`,
+  3 `none`, 19 empty.
+- Trojan: 2 списка из 5+ элементов при отсутствии explicit
+  `security`; default Trojan TLS нельзя выводить из одного selector.
+
+**Проблема существующего backend:** `_colon_list_value_exact("")`
+даёт `[""]`, а не пустой список. Следовательно, текущий путь
+`cs=""` может сериализовать TLS `cipher_suites: [""]`.
+Это требует отдельного теста семантической эквивалентности и
+fail-closed решения; не вводить автоматическое исправление на
+основании только статистики.
+
+### Остаточные семантические пробелы
+
+- VLESS `mode=<other>`: **280** вхождений из 804 — для анализа
+  значений нужен ограниченный локальный audit, текущий JSON
+  принципиально не содержит значения.
+- VMess `type=<other>`: **86** вхождений из 538; `type` — TCP
+  header/disguise, не alias `net` (transport).
+- Три invalid `extra` и пять JSON null требуют source-specific
+  fixtures. Текущий отчёт не доказывает порчу URI: необходимо
+  увидеть форму исходного `original_raw` локально.
+- Отсутствие TUIC в 8 848 записей означает отсутствие эмпирической
+  проверки этой семьи, а не её полную поддержку.
+
+**Порядок следующих задач:** (1) validate experimental `extra`
+gate против реального sing-box-extended URI parser;
+(2) отдельный тест на `cs=""`, без изменения значений;
+(3) read-only исследование `mode=<other>` и
+`headerType=<other>`; (4) fixtures для спорных случаев.
+Production ingest и identity не менять.
+
 ## Зафиксированные пробелы реализации и правила gate
 
 1. **Версионная схема:** upstream JSON documentation может описывать поля после 1.14.3; получить version-specific schema и выполнить `sing-box check` установленным бинарником.
