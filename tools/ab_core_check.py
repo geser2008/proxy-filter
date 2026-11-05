@@ -13,15 +13,56 @@ import argparse
 from collections import Counter
 import hashlib
 import json
+import re
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 from typing import Any
+
+# Allow both "python3 tools/ab_core_check.py" and "python3 -m tools.ab_core_check".
+# The direct-script invocation otherwise places tools/ rather than the repo root
+# on sys.path, so the sibling proxyfilter package cannot be imported.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from proxyfilter.model import ProxyConfig
 from proxyfilter.native_experiment import convert_uri_to_native
 from proxyfilter.security import check_static_security
 from proxyfilter.singbox_modes import SingBoxBackend
+
+
+def inspect_core_version(binary: str) -> str:
+    """Read the core version without persisting the executable output verbatim."""
+    try:
+        proc = subprocess.run(
+            [binary, "version"], capture_output=True, text=True,
+            timeout=10, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"cannot inspect core version: {type(exc).__name__}") from exc
+    if proc.returncode:
+        raise RuntimeError(f"core version command returned {proc.returncode}")
+    # Reject unusual output instead of accidentally storing secrets or garbage.
+    first_line = (proc.stdout or "").splitlines()
+    line = first_line[0].strip() if first_line else ""
+    if not re.fullmatch(r"sing-box version [A-Za-z0-9.+_-]+", line):
+        raise RuntimeError("unexpected sing-box version output")
+    return line.removeprefix("sing-box version ")
+
+
+def inspect_pair(extended_binary: str, native_binary: str) -> dict[str, str]:
+    """Fail early if A cannot parse URI or core revisions are not comparable."""
+    extended = inspect_core_version(extended_binary)
+    native = inspect_core_version(native_binary)
+    if "extended" not in extended.lower():
+        raise RuntimeError("extended binary does not identify as sing-box-extended")
+    if extended != native:
+        raise RuntimeError(
+            "A/B requires identical core versions; pass the same extended binary "
+            "for both --extended-bin and --native-bin"
+        )
+    return {"extended_version": extended, "native_version": native}
 
 
 def _check(binary: str, config: dict[str, Any], timeout: float = 20.0) -> str:
@@ -130,6 +171,12 @@ def main() -> None:
     args = parser.parse_args()
     if args.limit < 0 or args.timeout <= 0:
         parser.error("--limit must be nonnegative and --timeout positive")
+    try:
+        versions = inspect_pair(args.extended_bin, args.native_bin)
+    except RuntimeError as exc:
+        parser.error(str(exc))
+    print(f"sing-box extended: {versions['extended_version']}")
+    print(f"sing-box native:   {versions['native_version']}")
     summary = run(args.checkpoint, args.output, args.extended_bin,
                   args.native_bin, args.limit, args.timeout)
     print(f"report: {args.output}")
