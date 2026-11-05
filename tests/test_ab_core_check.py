@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from proxyfilter.model import ProxyConfig, SourceInfo
-from tools.ab_core_check import compare_one, run, inspect_core_version, inspect_pair
+from tools.ab_core_check import compare_one, run, inspect_core_version, inspect_pair, classify_check_failure
 
 UUID = "00000000-0000-0000-0000-000000000001"
 
@@ -64,9 +64,9 @@ class ABCheckTests(unittest.TestCase):
 
         def fake_check(binary, config, timeout):
             seen.append({"binary": binary, "outbound": config["outbounds"][0]})
-            return "pass"
+            return "pass", None
 
-        with patch("tools.ab_core_check._check", side_effect=fake_check):
+        with patch("tools.ab_core_check._safe_check", side_effect=fake_check):
             row = compare_one(p, "extended-core", "native-core")
 
         self.assertEqual(row["extended"], "pass")
@@ -82,13 +82,49 @@ class ABCheckTests(unittest.TestCase):
     def test_failed_conversion_does_not_suppress_baseline(self):
         p = valid_proxy()
         p.params["fm"] = "{}"
-        with patch("tools.ab_core_check._check", return_value="pass") as check:
+        with patch("tools.ab_core_check._safe_check", return_value=("pass", None)) as check:
             row = compare_one(p, "extended-core", "native-core")
         self.assertEqual(row["extended"], "pass")
         self.assertEqual(row["native"], "not_run")
         self.assertEqual(row["conversion"], "rejected")
         self.assertEqual(check.call_count, 1)
         self.assertNotIn("fm", json.dumps(row.get("conversion_error_type", "")))
+
+    def test_structured_mapping_refusal_reason_without_secret(self):
+        p = valid_proxy()
+        p.params["fm"] = "sensitive-content"
+        with patch("tools.ab_core_check._safe_check", return_value=("pass", None)):
+            report = compare_one(p, "extended", "native")
+        self.assertEqual(report["conversion_reason"], "unsupported_connection_field")
+        self.assertNotIn("sensitive-content", json.dumps(report))
+        self.assertNotIn(p.original_raw, json.dumps(report))
+
+    def test_core_failure_is_classified_without_echoing_sensitive_values(self):
+        sensitive = "user:secret@example.org"
+        self.assertEqual(
+            classify_check_failure(
+                f"decode configuration: unknown field 'foo' near {sensitive}", ""
+            ), "unknown_json_field"
+        )
+        self.assertEqual(
+            classify_check_failure(f"connection to {sensitive} failed", ""),
+            "other_check_failure"
+        )
+
+    def test_native_reason_written_and_counted(self):
+        p = valid_proxy()
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = Path(tmp) / "03-safe.jsonl"
+            output = Path(tmp) / "report.jsonl"
+            checkpoint.write_text(json.dumps(p.to_dict()) + "\\n", encoding="utf-8")
+            with patch("tools.ab_core_check._safe_check",
+                       side_effect=[("pass", None), ("check_failed", "unknown_json_field")]):
+                counts = run(checkpoint, output, "extended", "native", 1, 3)
+            report = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(counts["mapped"], 1)
+            self.assertEqual(report["native_reason"], "unknown_json_field")
+            self.assertEqual(run.last_summary["native_check_reasons"],
+                             {"unknown_json_field": 1})
 
     def test_only_safe_checkpoint_accepted(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -108,7 +144,7 @@ class ABCheckTests(unittest.TestCase):
     def test_security_rejected_never_invokes_core(self):
         p = valid_proxy()
         p.params["insecure"] = "true"
-        with patch("tools.ab_core_check._check") as check:
+        with patch("tools.ab_core_check._safe_check") as check:
             row = compare_one(p, "extended", "native")
         self.assertEqual(row["conversion"], "security_rejected")
         self.assertEqual(row["extended"], "not_run")
@@ -120,7 +156,7 @@ class ABCheckTests(unittest.TestCase):
             checkpoint = Path(tmp) / "03-safe.jsonl"
             report = Path(tmp) / "comparison.jsonl"
             checkpoint.write_text(json.dumps(p.to_dict()) + "\n", encoding="utf-8")
-            with patch("tools.ab_core_check._check", return_value="pass"):
+            with patch("tools.ab_core_check._safe_check", return_value=("pass", None)):
                 counts = run(checkpoint, report, "extended", "native", 1, 3)
             written = report.read_text(encoding="utf-8")
             self.assertEqual(counts, {"mapped": 1})
