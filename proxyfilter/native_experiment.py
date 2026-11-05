@@ -55,6 +55,16 @@ _UNSUPPORTED = set("""fm final_mask pcs pinnedPeerCertSha256 peer_certificate_sh
  ech echConfigList spx spider_x smux pinSHA256 pin_sha256 fastopen
  realm-opts token""".split())
 _METADATA = {"ps", "name", "tag", "v"}
+# Fields not represented by this protocol's native mapping are not
+# necessarily harmless: even if an alternate URI parser ignores them,
+# silently dropping them would make the A/B result misleading. This is a
+# conservative registry, not an instruction to guess their meaning.
+_UNMAPPED_CONNECTION_FIELDS = {
+    "peer", "allowinsecure", "security", "encryption", "pbk", "sid",
+    "ws", "wspath", "headertype", "headerType", "type", "pool",
+    "udp", "prefix",
+}
+
 # Only alias groups whose values genuinely share one destination are checked.
 _ALIASES = (
     ("sni", "server_name", "servername", "server-name"),
@@ -178,6 +188,12 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
     # The mapper currently does not consume security=none for VLESS, but the
     # explicit value is checked above for encryption, not inferred.
     known = _PROTOCOL_FIELDS[protocol]
+    unmapped = tuple(sorted(
+        key for key in params
+        if key not in known and key in _UNMAPPED_CONNECTION_FIELDS
+    ))
+    if unmapped:
+        raise NativeMappingError("unmapped_connection_field", unmapped)
     dropped = tuple(
         DroppedField(str(key), "metadata" if key in _METADATA else "unclassified")
         for key in sorted(params) if key not in known
