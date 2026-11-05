@@ -46,6 +46,19 @@ class NativeDifferentialTests(unittest.TestCase):
         self.assertEqual(compare({**one, "lossless_fields": False}, one),
                          "unclassified_loss")
 
+    def test_podkop_profile_is_explicit_and_changes_json_text_outcome(self):
+        item = next(x for x in self.fixtures if x["id"] == "vless-xhttp-json-text")
+        default = native_result(item)
+        alternative = native_result(item, profile="podkop-engine")
+        self.assertEqual(default["status"], "rejected")
+        self.assertEqual(alternative["status"], "ok")
+        self.assertEqual(alternative["outbound"]["transport"]["x_padding_bytes"], "12-24")
+        report = run([item], native_profile="podkop-engine")
+        self.assertEqual(report["native_profile"], "podkop-engine")
+        self.assertEqual(report["results"][0]["native"], "ok")
+        self.assertFalse(report["results"][0]["expected_native_match"])
+        self.assertEqual(report["results"][0]["vs_target"], "unavailable")
+
     def test_oracle_file_validation(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "oracle.json"
