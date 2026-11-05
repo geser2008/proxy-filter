@@ -180,6 +180,7 @@ def run(checkpoint: Path, output: Path, extended_binary: str, native_binary: str
         )
     counts: Counter[str] = Counter()
     by_protocol: Counter[str] = Counter()
+    by_protocol_outcome: Counter[str] = Counter()
     by_conversion_reason: Counter[str] = Counter()
     by_native_check_reason: Counter[str] = Counter()
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -199,7 +200,10 @@ def run(checkpoint: Path, output: Path, extended_binary: str, native_binary: str
                           "extended": "not_run", "native": "not_run"}
             sink.write(json.dumps(report, ensure_ascii=False, sort_keys=True) + "\n")
             counts[report["conversion"]] += 1
-            by_protocol[str(report.get("protocol", "invalid"))] += 1
+            protocol_name = str(report.get("protocol", "invalid"))
+            by_protocol[protocol_name] += 1
+            outcome = f"{protocol_name}:{report.get('conversion', 'unknown')}:{report.get('extended', 'not_run')}:{report.get('native', 'not_run')}"
+            by_protocol_outcome[outcome] += 1
             if report.get("conversion_reason"):
                 by_conversion_reason[str(report["conversion_reason"])] += 1
             if report.get("native_reason"):
@@ -207,6 +211,7 @@ def run(checkpoint: Path, output: Path, extended_binary: str, native_binary: str
     run.last_summary = {
         "conversion": dict(sorted(counts.items())),
         "by_protocol": dict(sorted(by_protocol.items())),
+        "by_protocol_outcome": dict(sorted(by_protocol_outcome.items())),
         "conversion_reasons": dict(sorted(by_conversion_reason.items())),
         "native_check_reasons": dict(sorted(by_native_check_reason.items())),
     }
