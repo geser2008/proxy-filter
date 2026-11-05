@@ -39,6 +39,7 @@ REASON_CODES = frozenset((
     "invalid_xhttp_extra_encoding", "invalid_xhttp_extra_json",
     "invalid_xhttp_extra_type", "unmapped_vmess_http_method",
     "invalid_vmess_http_field", "ambiguous_vmess_http_hosts",
+    "vmess_http_disguise_tls_conflict",
 ))
 
 
