@@ -140,3 +140,20 @@ The A/B checkpoint default is anchored to the repository layout:
 `<project>/app/`. The default does not depend on the current working directory.
 For a custom path, pass `--checkpoint`; nonexistent inputs fail before
 creating or truncating the report file.
+
+## Phase 4b: diagnostic A/B
+
+The runner records stable conversion reason codes and categorized sing-box check
+failures. It does not copy exception messages or raw sing-box output to the
+JSONL report. Classification of core output is heuristic.
+
+Run the complete checkpoint rather than the initial 100 records:
+
+```bash
+python3 -m unittest tests.test_native_experiment tests.test_ab_core_check -v
+python3 tools/ab_core_check.py --limit 0 \
+  --output /tmp/proxyfilter-ab-core-full.jsonl
+```
+
+The console summary now includes per-protocol outcomes and conversion reasons.
+A full checkpoint core check is not a network connectivity benchmark.
