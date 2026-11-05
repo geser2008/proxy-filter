@@ -103,8 +103,8 @@ VMess JSON/nested extra), `origin_class`, `source_ref`, `value_type`,
 | `net=ws` | `transport.type=ws` | M | ранние данные и Host требуют fixtures | LEGACY [M1] |
 | `net=grpc` | `transport.type=grpc` | C | serviceName/aliases | LEGACY [M1] |
 | `net=h2/http` | `transport.type=http` | C | проверить HTTP request semantics | LEGACY [M1] |
-| `global_padding`, `authenticated_length` | одноимённые boolean | C | в legacy VMess URI часто отсутствуют, отсутствие ≠ explicit false | EXT [M1] |
-| `packetEncoding` | `packet_encoding` | C | зависит от parser implementation | EXT [M1] |
+| `global_padding`, `authenticated_length` | одноимённые boolean | C | в legacy VMess URI часто отсутствуют, отсутствие ≠ explicit false | OBSERVED |
+| `packetEncoding` | `packet_encoding` | C | зависит от parser implementation | OBSERVED |
 | `ps`, `v` | metadata / format version | META/C | `ps` не outbound; `v` версия share payload, проверить формат | META/LEGACY [M1] |
 | неизвестные VMess JSON keys | нет | GAP | EXT обычно игнорирует; не считать безопасными без анализа | OBSERVED |
 
@@ -126,10 +126,10 @@ VMess JSON/nested extra), `origin_class`, `source_ref`, `value_type`,
 |---|---|---|---| --- |
 | userinfo `method:password` | `method`, `password` | M | SIP002 plain/base64 и legacy base64; сохранить ровно однократное URI decoding | SPEC/LEGACY [S1] |
 | `plugin=name;opts` | `plugin`, `plugin_opts` | C | Разделять только синтаксические границы SIP002; не терять literal delimiters | SPEC [S1] |
-| `plugin_opts`, `plugin-opts` | `plugin_opts` | C | конфликт с уже раскрытым `plugin=...;opts` → диагностировать | EXT [S1] |
-| `network` | `network` | C | `tcp`/`udp` допустимы; не путать с `type` V2Ray transport | EXT [S1] |
-| `udp_over_tcp` | `udp_over_tcp` | C | boolean/object по схеме установленного ядра | EXT [S1] |
-| `multiplex` | `multiplex` | C | JSON object; не считать частью URI SIP002 без подтверждения | EXT [S1] |
+| `plugin_opts`, `plugin-opts` | `plugin_opts` | C | конфликт с уже раскрытым `plugin=...;opts` → диагностировать | OBSERVED |
+| `network` | `network` | C | `tcp`/`udp` допустимы; не путать с `type` V2Ray transport | OBSERVED |
+| `udp_over_tcp` | `udp_over_tcp` | C | boolean/object по схеме установленного ядра | OBSERVED |
+| `multiplex` | `multiplex` | C | JSON object; не считать частью URI SIP002 без подтверждения | OBSERVED |
 | `type=tcp`, `headerType=none` | нет собственного SS transport | C | только доказанная render-neutral metadata, не добавлять transport object | OBSERVED |
 | неизвестные поля | нет | GAP | EXT SS link handler обрабатывает минимальный набор | OBSERVED [S1] |
 
@@ -139,8 +139,8 @@ VMess JSON/nested extra), `origin_class`, `source_ref`, `value_type`,
 |---|---|---|---| --- |
 | userinfo / `auth` | `password` | C | требуется отсутствие противоречий `password/auth` | SPEC [H1] |
 | authority порт / `mport`, `ports`, `server_ports` | `server_port` или `server_ports` | C | server_ports — диапазоны, JSON `2080:3000`; порт hopping без потерь | SPEC/EXT [H1] |
-| `hop_interval`, `hop_interval_max` | одноимённые duration | C | число и единицы нельзя угадывать | EXT [H1] |
-| `up`/`down`, `up_mbps`/`down_mbps` | integer Mbps | C | PF отвергает нецелое Mbps; EXT может проигнорировать ошибку | EXT [H1] |
+| `hop_interval`, `hop_interval_max` | одноимённые duration | C | число и единицы нельзя угадывать | OBSERVED |
+| `up`/`down`, `up_mbps`/`down_mbps` | integer Mbps | C | PF отвергает нецелое Mbps; EXT может проигнорировать ошибку | OBSERVED [H1: explicitly excluded] |
 | `obfs`, `obfs-password` | `obfs.type`, `obfs.password` | C | salamander и корректность пароля | SPEC [H1] |
 | `obfs_min_packet_size`, `obfs_max_packet_size` | `obfs.min_packet_size`, `max_packet_size` | C | проверить ограничения | EXT [H1] |
 | `sni`, `alpn`, `insecure` | `tls.server_name`, `alpn`, `insecure` | C | применяется static security gate; insecure TLS не принимать автоматически | SPEC/EXT [H1] |
@@ -153,7 +153,7 @@ VMess JSON/nested extra), `origin_class`, `source_ref`, `value_type`,
 
 | URI поле | JSON назначение | Статус | EXT / PF / ограничения | Происхождение / источник |
 |---|---|---|---| --- |
-| `UUID:password@` | `uuid`, `password` | M | обязательный UUID; password проверять отдельно | EXT [U1] |
+| `UUID:password@` | `uuid`, `password` | M | обязательный UUID; password проверять отдельно | OBSERVED [U1: not URI specification] |
 | `congestion_control` / `congestion-controller` | `congestion_control` | C | проверить разрешённые `cubic/new_reno/bbr` | OBSERVED [U2] |
 | `udp_relay_mode` | `udp_relay_mode` | C | не путать с `udp_over_stream` | OBSERVED [U2] |
 | `udp_over_stream` | `udp_over_stream` | C | EXT может очищать relay mode при true, требуются fixtures | OBSERVED [U2] |
