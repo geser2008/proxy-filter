@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from proxyfilter.engine import EngineError
 from proxyfilter.model import ProxyConfig, SourceInfo
-from tools.ab_core_check import compare_one, run, inspect_core_version, inspect_pair, classify_check_failure, classify_mapper_failure
+from tools.ab_core_check import compare_one, run, inspect_core_version, inspect_pair, classify_check_failure, classify_mapper_failure, classify_mapper_fields
 
 UUID = "00000000-0000-0000-0000-000000000001"
 
@@ -143,6 +143,18 @@ class ABCheckTests(unittest.TestCase):
         self.assertNotIn("SECRET", classify_mapper_failure(exc))
         self.assertEqual(classify_mapper_failure(ValueError("SECRET-SENTINEL")),
                          "backend_mapping_error")
+
+    def test_mapper_boolean_field_extracted_without_value(self):
+        exc = EngineError("invalid boolean value for global_padding: 'PRIVATE-TOKEN'")
+        self.assertEqual(classify_mapper_fields(exc), ["global_padding"])
+        self.assertEqual(classify_mapper_failure(exc), "backend_invalid_boolean")
+        self.assertNotIn("PRIVATE-TOKEN", str(classify_mapper_fields(exc)))
+        self.assertEqual(classify_mapper_fields(
+            EngineError("invalid boolean value for fake_private_field: 'SECRET'")
+        ), [])
+        self.assertEqual(classify_mapper_fields(
+            EngineError("invalid boolean value: 'SECRET'")
+        ), [])
 
     def test_core_failure_is_classified_without_echoing_sensitive_values(self):
         sensitive = "user:secret@example.org"
