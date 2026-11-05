@@ -788,6 +788,45 @@ ingest, dedup и хранение не менялись.
 Base64URL(JSON), invalid, JSON null. Не переносить поведение
 чужого форка автоматически на `dioxine/sing-box-extended`.
 
+## Сравнительный аудит реализаций: Nekoray / Throne / NekoBox
+
+Дополнительные источники (изучение кода, **не** нормативный URI
+контракт) для XHTTP:
+
+1. **Nekoray** [MatsuriDayo/nekoray](https://github.com/MatsuriDayo/nekoray)
+   архивирован в марте 2025 года: пригоден как исторический baseline,
+   но не отражает современные XHTTP extension exports.
+2. **Throne** [throneproj/Throne](https://github.com/throneproj/Throne),
+   активный наследник Nekoray. В
+   [`src/configs/common/xrayStreamSetting.cpp`](https://github.com/throneproj/Throne/blob/dev/src/configs/common/xrayStreamSetting.cpp)
+   `xrayXHTTP::ParseFromLink` извлекает `extra` из query и
+   вызывает `ParseExtraJson`; JSON-object параметры разбираются в
+   `parseXHTTPExtraObject`. Также распознаётся прямой
+   `x_padding_bytes`. `ParseExtraJson` имеет **эвристику**
+   преобразования Python dict repr (`'...'`, `True`, `False`)
+   после неудачи строгого JSON. Эта эвристика **неприемлема**
+   для консервативного `proxy-filter`: переписывание входа
+   без доказанной эквивалентности запрещено.
+   Неизвестные вложенные ключи сохраняются Throne в `rawExtra`,
+   что подтверждает важность unrecognized-field accounting.
+3. **Throne** поддерживает раздельную структуру Xray-профилей и
+   XHTTP, а не обязуется эквивалентно преобразовывать их в
+   native sing-box JSON. Поэтому его успешный импорт не означает
+   переносимости всех опций `downloadSettings`, `xmux`,
+   `xPaddingBytes` в целевой backend.
+4. **NekoBox Android / Throne Android** должны рассматриваться как
+   самостоятельные парсеры и конвертеры; подтверждённых строк кода
+   для XHTTP `extra` в этом сравнении пока нет. Не делать
+   выводов об их поведении по названию проекта.
+
+**Подтверждённое различие:** целевой
+[dioxine/sing-box-extended VLESS parser](https://github.com/dioxine/sing-box-extended/blob/extended/parser/link/vless.go)
+ожидает Base64URL(JSON), а Throne `xrayXHTTP::ParseFromLink`
+принимает JSON-text. Оба поведения встречаются в живых
+экосистемах, но не могут быть автоматически объединены в
+консервативном mapper. Для `proxy-filter` сохраняем исходное
+значение и отклоняем неподтверждённое эквивалентное преобразование.
+
 ## Зафиксированные пробелы реализации и правила gate
 
 1. **Версионная схема:** upstream JSON documentation может описывать поля после 1.14.3; получить version-specific schema и выполнить `sing-box check` установленным бинарником.
