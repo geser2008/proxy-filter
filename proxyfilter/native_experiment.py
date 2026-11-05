@@ -125,9 +125,9 @@ def _podkop_xmux_json(extra: dict[str, Any]) -> dict[str, Any]:
     JSON ranges are serialized to decimal strings; no malformed input is
     rewritten or ignored. This is an experimental profile, not a core oracle.
     """
-    xmux = extra.get("xmux")
-    if xmux is None:
+    if "xmux" not in extra:
         return extra
+    xmux = extra["xmux"]
     if not isinstance(xmux, dict):
         raise NativeMappingError("invalid_xhttp_xmux_type")
     if "maxConnections" in xmux and "maxConcurrency" in xmux:
@@ -253,7 +253,11 @@ def convert_uri_to_native(proxy: Any, *, profile: str = "extended") -> NativeCon
         if podkop_tcp_http:
             # podkop-engine docs/LINKS.md: HTTP/1.1 disguise over plain TCP.
             # With TLS sing-box's HTTP transport would use HTTP/2.
-            if params.get("security") in {"tls", "reality"} or params.get("tls") in {"tls", "reality", "true", "1", True}:
+            tls_selector = params.get("tls")
+            if (params.get("security") in {"tls", "reality"}
+                    or (isinstance(tls_selector, str) and tls_selector.lower()
+                        in {"tls", "reality", "true", "1"})
+                    or tls_selector is True or isinstance(tls_selector, dict)):
                 raise NativeMappingError("http_header_with_tls")
             if any(key in params for key in ("headers", "serviceName", "service_name")):
                 raise NativeMappingError("unmapped_tcp_http_fields")
