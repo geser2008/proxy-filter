@@ -43,6 +43,17 @@ def main() -> None:
         ("xhttp_minimal", {"type": "xhttp"}),
         ("xhttp_path", {"type": "xhttp", "path": "/probe"}),
         ("xhttp_mode", {"type": "xhttp", "mode": "stream-up", "path": "/probe"}),
+        # The extended fork's GetNormalizedXPaddingBytes() uses 100..1000
+        # when the source range is absent, but native UnmarshalJSON rejects
+        # a zero range. Verify explicitly before changing the mapper.
+        ("xhttp_padding", {"type": "xhttp", "x_padding_bytes": "100-1000"}),
+        ("xhttp_padding_path", {
+            "type": "xhttp", "path": "/probe", "x_padding_bytes": "100-1000",
+        }),
+        ("xhttp_padding_mode", {
+            "type": "xhttp", "mode": "stream-up", "path": "/probe",
+            "x_padding_bytes": "100-1000",
+        }),
     )
     try:
         version = subprocess.run(
