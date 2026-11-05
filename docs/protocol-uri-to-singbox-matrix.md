@@ -1184,6 +1184,60 @@ jq '.protocols.vmess | {rows, native_ok_no_unclassified_loss, rejected, reasons}
   /tmp/proxyfilter-native-coverage-after-vmess-http-tls-gate.json
 ```
 
+## VMess: декомпозиция `unsupported_connection_field` (2026-11-05)
+
+По последнему локальному отчёту: **201 из 364 VMess отказов**
+получили `unsupported_connection_field`, что составляет 55,2% отказов
+VMess. Это **не одна ошибка конкретного поля**. Из исходного кода
+`proxyfilter/native_experiment.py` установлено, что до проверок TLS,
+header/transport и backend действует пересечение
+`set(params) & _UNSUPPORTED`. При наличии хотя бы одного совпадения
+возвращается один общий код. Поскольку проверка первая, отчёт не
+показывает вторые/последующие причины отказа.
+
+### Закрытый список имён: это не результаты подсчёта checkpoint
+
+| Семейство | Зарегистрированные имена `_UNSUPPORTED` | Семантика / дальнейшая проверка |
+|---|---|---|
+| FinalMask | `fm`, `final_mask` | Xray/обфускация и UDP-поведение; Podkop умеет частичное извлечение, но оно может не сохранить исходный wire protocol. Никакого универсального удаления |
+| Certificate pin | `pcs`, `pinnedPeerCertSha256`, `peer_certificate_sha256`, `pinSHA256`, `pin_sha256` | Не тождественно uTLS fingerprint; отдельно установить тип pin (публичный ключ/сертификат) |
+| ECH | `ech`, `echConfigList` | TLS ECH; нужна конкретная версия backend и эквивалентная форма |
+| REALITY spider | `spx`, `spider_x` | Не считать metadata; target/backend может не поддерживать |
+| Multiplex | `smux` | Семантика мультиплексора и протокол на проводе; недостаточно `multiplex.enabled` |
+| Socket | `fastopen` | Не считать нейтральной настройкой только из-за отсутствия сетевого протокола |
+| Realm | `realm-opts` | Версионное QUIC/HY2 расширение; для VMess контекст пока не подтверждён |
+| Other | `token` | Назначение зависит от реализации; не классифицировать как рекламу |
+
+**Важно:** наличие имени в глобальном `_UNSUPPORTED` не доказывает,
+что оно вообще встречается у VMess. Таблица выше — карта гипотез,
+а не распределение 201 записей.
+
+Для фактического разбора добавлен **read-only** анализатор
+`tools/audit_vmess_blockers.py`: он проверяет **реальный первый
+отказ** каждой VMess URI-записи и считает `by_field`,
+`by_group` и `by_combination`. Агрегаты не содержат URI, endpoint,
+credentials, значения query или произвольные имена полей.
+Числа по именам **могут перекрываться**: запись с `fm` и `ech`
+будет учтена в обеих колонках, но только однажды в `rows`.
+Классификация по этим именам не подтверждает
+преобразуемость содержимого.
+
+Команды на ноутбуке из `app/`:
+
+```bash
+python3 -m unittest tests.test_audit_vmess_blockers -v
+python3 tools/audit_vmess_blockers.py \
+  --checkpoint ../data/work/03-safe.jsonl \
+  --output /tmp/proxyfilter-vmess-blockers.json
+cat /tmp/proxyfilter-vmess-blockers.json
+```
+
+**Следующее решение зависит от полученных счётчиков.** Приоритетом
+будет доминирующее семейство, но исправление допустимо только после
+сверки отдельного URI-поля с нашей спецификацией, целевым
+`sing-box-extended` и независимым источником. Без checkpoint
+не приписывать 201 случаям конкретные поля или значения.
+
 ## Зафиксированные пробелы реализации и правила gate
 
 1. **Версионная схема:** upstream JSON documentation может описывать поля после 1.14.3; получить version-specific schema и выполнить `sing-box check` установленным бинарником.
