@@ -60,7 +60,12 @@ def load_matrix(path: Path) -> dict[str, dict[str, dict[str, Any]]]:
         if len(cells) != 4 or cells[0] == "Поле / алиасы":
             continue
         names, location, category_cell, details = cells
-        classes = category_cell.split()[0].split("/")
+        # Some matrix rows describe entire schemes outside production or
+        # other URI components rather than keys stored in config.params.
+        # Ignore them before interpreting the provenance label.
+        if "://" in names or location.startswith(("scheme", "**другая схема**")):
+            continue
+        classes = category_cell.split()[0].rstrip(",").split("/")
         if not classes or any(name not in KNOWN_CLASSES for name in classes):
             raise ValueError(f"unsupported provenance class in {proto} matrix")
         for token in FIELD_PATTERN.findall(names):
