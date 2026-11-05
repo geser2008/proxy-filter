@@ -165,6 +165,111 @@ VMess JSON/nested extra), `origin_class`, `source_ref`, `value_type`,
 | `network`, QUIC параметры | `network` / QUIC fields | C | проверка версии ядра и схемы | OBSERVED [U2] |
 
 
+### Поимённая инвентаризация URI-полей (версия 0.2)
+
+В этой таблице **расположение поля и класс относятся к самому полю**, а не к
+одноимённому JSON-ключу ядра. Записи сгруппированы только там, где одинаковы
+источник и смысл. `OBSERVED` означает «встречается в конфигурациях или
+существующем PF mapper, но надёжный нормативный URI-источник пока не закреплён».
+`EXT` не гарантирует поддержку в установленном `sing-box`. Обозначение
+`[схема]` ниже не подразумевает ввод новых production-схем.
+
+#### VLESS — query URI и userinfo
+
+| Поле / алиасы | Где | Класс | Источник / граница применимости |
+|---|---|---|---|
+| UUID | userinfo | EXT | [V1], обязательный идентификатор |
+| `encryption`, `flow` | query | EXT | [V1]; значения и требования зависят от версии VLESS |
+| `type`, `host`, `path` | query | EXT | [V1], транспортно-зависимые значения |
+| `security`, `sni`, `alpn` | query | EXT | [V1], TLS/XTLS; `reality` — позднее расширение [V2] |
+| `fp` | query | EXT | [V2], uTLS client fingerprint |
+| `pbk`, `sid`, `spx`, `pqv` | query | EXT | [V2], REALITY; `spx` не объявлять безвредным metadata |
+| `serviceName`, `mode` | query | EXT | [V1,V2], транспортно-зависимо; `mode` неоднозначен вне типа транспорта |
+| `extra` | query | EXT | [V2], XHTTP extra; способ кодирования сверять по конкретной версии экспортёра |
+| `ed`, `eh` | query | EXT | [V2], WS early data; уточнение по источнику версии требуется |
+| `packetEncoding` | query | EXT | [V2], допустимые значения валидировать отдельно |
+| `server_name`, `client-fingerprint`, `public_key`, `short_id` | query | OBSERVED | Локальные алиасы PF mapper; требуются URI-источники для точного написания |
+| `authority`, `headerType`, `method`, `headers` | query | OBSERVED | Зависимые от транспорта; одного наличия native JSON-поля недостаточно |
+| `pcs`, `vcn`, `ech`, `fm` | query | EXT/OBSERVED | Xray-specific расширения; для каждого поля требуется версия экспортёра [V2] |
+| `spider_x`, `final_mask`, `net`, `network` | query | OBSERVED | Алиасы/расширения PF; не часть доказанного базового VLESS URI |
+| `allowInsecure`, `insecure`, `disable_sni` | query | EXT/OBSERVED | Настройки TLS, риск смены security semantics; проверить конкретный клиент |
+
+#### VMess — legacy Base64(JSON), а не query URI
+
+| Поле / алиасы | Где | Класс | Источник / граница применимости |
+|---|---|---|---|
+| `v`, `ps` | JSON внутри Base64 | META/LEGACY | [M1], версия формата и имя |
+| `add`, `port`, `id` | JSON внутри Base64 | LEGACY | [M1], endpoint/UUID |
+| `aid`, `scy` | JSON внутри Base64 | LEGACY | [M1], alterId и шифр |
+| `net`, `type`, `host`, `path` | JSON внутри Base64 | LEGACY | [M1]; `type` — TCP header/disguise, **не** transport selector |
+| `tls`, `sni`, `alpn`, `fp`, `insecure` | JSON внутри Base64 | LEGACY | [M1], TLS и проверка сертификата |
+| `vcn`, `pcs` | JSON внутри Base64 | LEGACY | [M1], дополнительные условия сертификата; нельзя потерять молча |
+| `global_padding`, `authenticated_length`, `packetEncoding` | JSON внутри Base64 | OBSERVED | Есть в PF mapper/native schema, но [M1] не доказывает все эти share-ключи |
+| `security`, `cipher`, `alterId`, `network`, `uuid` | JSON внутри Base64 | OBSERVED | Алиасы PF, не приравнивать автоматически к исходным [M1] |
+| `vmess://UUID@host:port?...` | **другой формат** | EXT | [V1], предложение VMessAEAD URI; **не** смешивать с [M1] |
+
+#### Trojan — base URI и клиентские расширения
+
+| Поле / алиасы | Где | Класс | Источник / граница применимости |
+|---|---|---|---|
+| `password` | userinfo | EXT | [T1], пароль Trojan |
+| `sni`, `peer`, `alpn`, `fp`, `allowInsecure` | query | EXT | [T1], TLS; `peer` означает SNI в данном формате |
+| `security`, `type`, `host`, `path`, `serviceName` | query | EXT | [T1], security/WS/gRPC/HTTP transport |
+| `pbk`, `sid`, `ech` | query | EXT | [T1], REALITY/ECH клиентские расширения |
+| `extra`, `mode`, `pcs`, `fm` | query | OBSERVED | Не подтверждены ссылкой [T1] как универсальные поля Trojan URI |
+| `headerType`, `headers`, `authority`, `net`, `network` | query | OBSERVED | Нужна точная спецификация транспортного расширения |
+
+#### Shadowsocks — SIP002 и legacy
+
+| Поле / алиасы | Где | Класс | Источник / граница применимости |
+|---|---|---|---|
+| `method`, `password` | userinfo | SPEC | [S1], plaintext percent-encoded либо Base64URL по правилам семейства шифра |
+| `host`, `port` | URI authority | SPEC | [S1], адрес сервера |
+| `plugin` | query | SPEC | [S1], единый параметр с вложенными настройками и экранированием |
+| `#tag` | fragment | META/SPEC | [S1], отображаемое имя |
+| `ss://Base64(method:password@host:port)` | legacy форма | LEGACY | [S1], предшественник SIP002 |
+| `plugin_opts`, `plugin-opts` | query | OBSERVED | Не отдельные нормативные параметры SIP002 |
+| `network`, `udp_over_tcp`, `multiplex` | query | OBSERVED | Не определены SIP002; схема native JSON этого не меняет |
+| `type`, `headerType` | query | OBSERVED | Не часть SIP002; SS transport нельзя заимствовать из VLESS |
+
+#### Hysteria2 / hy2 — официальный share URI
+
+| Поле / алиасы | Где | Класс | Источник / граница применимости |
+|---|---|---|---|
+| `hysteria2://`, `hy2://` | scheme | SPEC | [H1], обе формы указаны официально |
+| `auth` | userinfo | SPEC | [H1], percent encoding; допускается userpass |
+| `hostname[:port]`, диапазоны портов | authority | SPEC | [H1], по умолчанию порт 443; multi-port в authority |
+| `obfs`, `obfs-password` | query | SPEC | [H1], значения обфускации зависят от версии |
+| `sni`, `insecure`, `pinSHA256`, `ech` | query | SPEC | [H1], TLS; pinSHA256 — certificate pin, не uTLS |
+| `#name` | fragment | META/SPEC | [H1], имя |
+| `mport`, `ports`, `server_ports` | query | OBSERVED | Алиасы port hopping; не заменяют нормативный multi-port authority |
+| `hop_interval`, `hop_interval_max` | query | OBSERVED | Настройки hopping вне перечисления [H1] |
+| `up`, `down`, `upmbps`, `downmbps` | query | EXT/OBSERVED | [H1] **предписывает не включать bandwidth** в переносимую URI |
+| `fp`, `client-fingerprint`, `fingerprint` | query | OBSERVED | uTLS и сертификатный pin — разные значения; не отождествлять |
+| `alpn`, `fastopen`, `realm`, `realm-opts`, `bbr_profile`, `network` | query | OBSERVED | Не определены как поля базового `hysteria2://` в [H1] |
+| `hysteria2+realm://` | **другая схема** | SPEC, вне production | [H1], не включать автоматически в `hysteria2://` ingest |
+
+#### TUIC v5 — URI-конвенция, не формальный URI-стандарт
+
+| Поле / алиасы | Где | Класс | Источник / граница применимости |
+|---|---|---|---|
+| `uuid:password` | userinfo | EXT/OBSERVED | Имеющаяся `tuic://`-конвенция; [U1] не задаёт синтаксис share URI |
+| `host`, `port`, `#name` | authority/fragment | EXT/OBSERVED | URI-оболочка; точное правило URI-экспортёра не установлено |
+| `congestion_control`, `congestion-controller` | query | OBSERVED | Семантика JSON известна по [U2], происхождение URI не доказано |
+| `udp_relay_mode`, `udp-relay-mode` | query | OBSERVED | [U2] определяет JSON; не использовать как URI-спецификацию |
+| `udp_over_stream`, `udp-over-stream` | query | OBSERVED | [U2], проверить конфликт с `udp_relay_mode` |
+| `zero_rtt_handshake`, `zero-rtt-handshake`, `reduce-rtt` | query | OBSERVED | JSON/клиентские алиасы; не доказывают `tuic://` формат |
+| `heartbeat`, `heartbeat_interval`, `heartbeat-interval` | query | OBSERVED | Клиентские продолжительности; единицы могут отличаться |
+| `sni`, `alpn`, `insecure`, `allow_insecure`, `fp` | query | OBSERVED | TLS-конвенции; требуется источник точной URI-разметки |
+| `fingerprint` | query | OBSERVED | Может обозначать certificate pin; нельзя подставлять в `tls.utls` |
+| `token` | query | LEGACY/OBSERVED | Связано с TUIC v4 в предыдущем аудите; не трактовать как v5 |
+
+**Проверки перед использованием реестра:** поля с `OBSERVED` требуют
+источника/fixtures конкретного экспортёра; алиасы надо проверять
+на совпадение типов и значений; вложенные настройки XHTTP рассматриваются
+отдельно. Полнота этого реестра относится к текущим строкам документа и
+известным URI-соглашениям, а не ко всем возможным расширениям клиентов.
+
 ### Ссылки классификации происхождения URI (проверены 2026-11-05)
 
 - **[V1]** [XTLS/Xray-core #716 — VMessAEAD / VLESS share-link proposal](https://github.com/XTLS/Xray-core/discussions/716). Это **предложение URI**, а не общеобязательный стандарт каждого Xray-расширения.
