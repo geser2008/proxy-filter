@@ -149,6 +149,31 @@ class NativeExperimentTests(unittest.TestCase):
         self.assertEqual(result.outbound["transport"]["path"], "/socket")
         self.assertEqual(p.params["type"], "none")
 
+    def test_vmess_empty_insecure_preserves_verification(self):
+        p = proxy("vmess", {
+            "id": UUID, "scy": "auto", "tls": "tls", "insecure": "",
+        })
+        original = dict(p.params)
+        result = convert_uri_to_native(p)
+        self.assertTrue(result.outbound["tls"]["enabled"])
+        self.assertFalse(result.outbound["tls"].get("insecure", False))
+        self.assertEqual(p.params, original)
+        self.assertEqual(p.original_raw, "vmess://redacted")
+
+    def test_vmess_explicit_insecure_false_remains_false(self):
+        p = proxy("vmess", {
+            "id": UUID, "scy": "auto", "tls": "tls", "insecure": "false",
+        })
+        result = convert_uri_to_native(p)
+        self.assertIs(result.outbound["tls"]["insecure"], False)
+
+    def test_vmess_invalid_nonempty_insecure_is_not_repaired(self):
+        p = proxy("vmess", {
+            "id": UUID, "scy": "auto", "tls": "tls", "insecure": "invalid-value",
+        })
+        with self.assertRaisesRegex(EngineError, "invalid boolean value"):
+            convert_uri_to_native(p)
+
     def test_vmess_nontrivial_tcp_header_rejected(self):
         p = proxy("vmess", {"id": UUID, "net": "tcp", "type": "http"})
         with self.assertRaisesRegex(EngineError, "unsupported_vmess_header"):
