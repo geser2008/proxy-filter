@@ -109,6 +109,20 @@ class UriProvenanceAuditTests(unittest.TestCase):
                 self.assertIn("C2", item["source_refs"])
         self.assertNotIn("cs", self.registry["ss"])
 
+    def test_new_connection_sensitive_fields_are_observed(self):
+        for protocol, fields in {
+            "vless": ("x_padding_bytes", "support-x25519mlkem768"),
+            "vmess": ("pqv", "xhttp_extra", "mux", "muxConcurrency"),
+        }.items():
+            for field in fields:
+                with self.subTest(protocol=protocol, field=field):
+                    self.assertIn(field, self.registry[protocol])
+                    self.assertIn("OBSERVED",
+                                  self.registry[protocol][field]["classes"])
+        # Unknown query text is NOT automatically considered safe metadata.
+        for field in ("Telegram", "headertype", "pool"):
+            self.assertNotIn(field, self.registry["vless"])
+
     def test_local_hash_resolution(self):
         key = "vendor-field"
         digest = hashlib.sha256(key.encode()).hexdigest()
