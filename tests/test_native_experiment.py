@@ -6,7 +6,7 @@ import unittest
 
 from proxyfilter.engine import EngineError
 from proxyfilter.model import ProxyConfig, SourceInfo
-from proxyfilter.native_experiment import convert_uri_to_native
+from proxyfilter.native_experiment import NativeMappingError, convert_uri_to_native
 
 
 SOURCE = SourceInfo("fixture", "Fixture", "plain")
@@ -64,6 +64,17 @@ class NativeExperimentTests(unittest.TestCase):
         p = proxy("vless", {"uuid": UUID, "fm": '{"tcp":[]}'})
         with self.assertRaisesRegex(EngineError, "unsupported_connection_field"):
             convert_uri_to_native(p)
+
+    def test_unsupported_fields_provide_stable_names_not_values(self):
+        p = proxy("vless", {
+            "uuid": UUID, "fm": "sensitive-one", "spx": "sensitive-two",
+        })
+        with self.assertRaises(NativeMappingError) as captured:
+            convert_uri_to_native(p)
+        self.assertEqual(captured.exception.code, "unsupported_connection_field")
+        self.assertEqual(captured.exception.fields, ("fm", "spx"))
+        self.assertNotIn("sensitive-one", str(captured.exception))
+        self.assertNotIn("sensitive-two", str(captured.exception))
 
     def test_invalid_vless_encryption_fails(self):
         p = proxy("vless", {"uuid": UUID, "encryption": "aes-128-gcm"})
