@@ -174,6 +174,48 @@ class NativeExperimentTests(unittest.TestCase):
         with self.assertRaisesRegex(EngineError, "invalid boolean value"):
             convert_uri_to_native(p)
 
+    def test_vmess_empty_vcn_is_neutral_with_or_without_tls(self):
+        for tls in ("none", "tls"):
+            with self.subTest(tls=tls):
+                p = proxy("vmess", {
+                    "id": UUID, "pcs": "", "vcn": "", "tls": tls,
+                    "insecure": "false",
+                })
+                before = dict(p.params)
+                result = convert_uri_to_native(p)
+                self.assertTrue(result.no_unclassified_loss)
+                self.assertEqual(result.dropped_fields, ())
+                self.assertEqual(result.outbound.get("tls", {}).get("enabled", False),
+                                 tls == "tls")
+                self.assertEqual(p.params, before)
+                self.assertEqual(p.original_raw, "vmess://redacted")
+
+    def test_vmess_nonempty_or_nonstring_vcn_is_not_safe(self):
+        for names in ("example.org", "one.example,two.example", None, 0, []):
+            with self.subTest(value_type=type(names).__name__):
+                result = convert_uri_to_native(proxy("vmess", {
+                    "id": UUID, "vcn": names,
+                }))
+                self.assertFalse(result.no_unclassified_loss)
+                self.assertEqual(
+                    tuple(f.name for f in result.dropped_fields
+                          if f.reason == "unclassified"), ("vcn",)
+                )
+
+    def test_vmess_empty_vcn_does_not_hide_ech(self):
+        with self.assertRaises(NativeMappingError) as caught:
+            convert_uri_to_native(proxy("vmess", {
+                "id": UUID, "vcn": "", "pcs": "", "ech": "opaque",
+            }))
+        self.assertEqual(caught.exception.code, "unsupported_connection_field")
+        self.assertEqual(caught.exception.fields, ("ech",))
+
+    def test_other_protocols_empty_vcn_is_not_classified_as_neutral(self):
+        p = proxy("vless", {"uuid": UUID, "vcn": ""})
+        result = convert_uri_to_native(p)
+        self.assertFalse(result.no_unclassified_loss)
+        self.assertEqual(tuple(f.name for f in result.dropped_fields), ("vcn",))
+
     def test_vmess_empty_pcs_neutral_for_tls_enabled_and_disabled(self):
         for tls in ("none", "tls"):
             with self.subTest(tls=tls):
