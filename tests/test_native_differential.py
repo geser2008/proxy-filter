@@ -23,8 +23,19 @@ class NativeDifferentialTests(unittest.TestCase):
         self.assertGreaterEqual(len(self.fixtures), 12)
         result = run(self.fixtures)
         self.assertEqual(result["expected_native_passed"], len(self.fixtures))
+        podkop_report = run(self.fixtures, native_profile="podkop-engine")
+        self.assertEqual(podkop_report["expected_native_passed"], len(self.fixtures))
         self.assertEqual(result["target_comparisons"], {"unavailable": len(self.fixtures)})
         self.assertEqual(result["podkop_comparisons"], {"unavailable": len(self.fixtures)})
+
+    def test_fixture_expectations_require_both_profiles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fixtures.json"
+            item = dict(self.fixtures[0])
+            item["expected_native"] = {"extended": "ok"}
+            path.write_text(json.dumps([item]))
+            with self.assertRaisesRegex(ValueError, "both profile outcomes"):
+                load_fixtures(path)
 
     def test_report_has_no_uri_or_credential(self):
         result = json.dumps(run(self.fixtures))
@@ -56,7 +67,7 @@ class NativeDifferentialTests(unittest.TestCase):
         report = run([item], native_profile="podkop-engine")
         self.assertEqual(report["native_profile"], "podkop-engine")
         self.assertEqual(report["results"][0]["native"], "ok")
-        self.assertFalse(report["results"][0]["expected_native_match"])
+        self.assertTrue(report["results"][0]["expected_native_match"])
         self.assertEqual(report["results"][0]["vs_target"], "unavailable")
 
     def test_oracle_file_validation(self):
