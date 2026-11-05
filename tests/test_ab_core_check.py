@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from proxyfilter.engine import EngineError
 from proxyfilter.model import ProxyConfig, SourceInfo
-from tools.ab_core_check import compare_one, run, inspect_core_version, inspect_pair, classify_check_failure, classify_mapper_failure, classify_mapper_fields, load_native_mismatch_hashes, diagnostic_value_shape
+from tools.ab_core_check import compare_one, run, inspect_core_version, inspect_pair, classify_check_failure, classify_mapper_failure, classify_mapper_fields, load_native_mismatch_hashes, diagnostic_value_shape, native_outbound_shape
 
 UUID = "00000000-0000-0000-0000-000000000001"
 
@@ -155,6 +155,42 @@ class ABCheckTests(unittest.TestCase):
         self.assertEqual(classify_mapper_fields(
             EngineError("invalid boolean value: 'SECRET'")
         ), [])
+
+    def test_native_transport_shape_only_lists_allowlisted_names(self):
+        outbound = {
+            "type": "vless",
+            "transport": {
+                "type": "ws", "path": "/private-token",
+                "headers": {"Host": "private.example"},
+                "SENSITIVE-DYNAMIC-KEY": "secret-value",
+            },
+        }
+        shape = native_outbound_shape(outbound)
+        self.assertEqual(shape["native_transport"], "ws")
+        self.assertEqual(shape["native_transport_fields"],
+                         ["headers", "other", "path"])
+        self.assertNotIn("private", json.dumps(shape))
+        self.assertNotIn("secret", json.dumps(shape))
+        self.assertNotIn("SENSITIVE-DYNAMIC-KEY", json.dumps(shape))
+
+    def test_native_transport_type_unknown_is_not_echoed(self):
+        shape = native_outbound_shape({
+            "transport": {"type": "PRIVATE-CUSTOM-TRANSPORT"}
+        })
+        self.assertEqual(shape["native_transport"], "other")
+        self.assertEqual(shape["native_transport_fields"], [])
+        self.assertEqual(native_outbound_shape({})["native_transport"], "none")
+
+    def test_comparison_includes_transport_diagnostics(self):
+        p = valid_proxy()
+        p.params.update({"type": "ws", "path": "/secret-path"})
+        with patch("tools.ab_core_check._safe_check",
+                   side_effect=[("pass", None), ("check_failed", "transport_mentioned")]):
+            row = compare_one(p, "extended", "native")
+        self.assertEqual(row["native_transport"], "ws")
+        self.assertIn("path", row["native_transport_fields"])
+        self.assertNotIn("/secret-path", json.dumps(row))
+        self.assertEqual(row["native_reason"], "transport_mentioned")
 
     def test_core_failure_is_classified_without_echoing_sensitive_values(self):
         sensitive = "user:secret@example.org"
