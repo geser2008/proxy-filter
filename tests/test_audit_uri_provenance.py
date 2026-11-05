@@ -43,6 +43,21 @@ class UriProvenanceAuditTests(unittest.TestCase):
         self.assertEqual(registry["hysteria2"]["pinSHA256"]["classes"],
                          ["SPEC"])
 
+    def test_audit_observed_post_ingest_fields_are_registered(self):
+        expected = {
+            "vless": ("note", "allowinsecure"),
+            "vmess": ("name", "skip-cert-verify", "serviceName"),
+            "trojan": ("insecure", "spx", "note"),
+            "ss": ("note",),
+            "hysteria2": ("password", "security", "fm"),
+        }
+        for protocol, keys in expected.items():
+            for key in keys:
+                with self.subTest(protocol=protocol, key=key):
+                    self.assertIn(key, self.registry[protocol])
+                    self.assertIn("OBSERVED",
+                                  self.registry[protocol][key]["classes"])
+
     def test_credential_names_from_uri_are_classified(self):
         self.assertIn("uuid", self.registry["vless"])
         self.assertIn("uuid", self.registry["tuic"])
