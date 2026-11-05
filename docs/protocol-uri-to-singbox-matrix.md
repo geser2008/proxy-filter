@@ -1020,6 +1020,121 @@ python3 tools/audit_native_coverage.py \
 jq '.protocols.vmess' /tmp/proxyfilter-native-coverage-after-vmess-http.json
 ```
 
+## Сравнительный аудит готовых URI-реализаций (2026-11-05)
+
+**Назначение:** искать проверенную семантику URI-полей и архитектурные решения
+*до* расширения собственного конвертера. Этот раздел не меняет
+классификацию происхождения в таблицах выше автоматически и не
+санкционирует копирование чужих допущений. Граница PF: TXT/Base64(TXT)
+→ семь URI-схем (шесть семейств); Xray JSON, Clash YAML и sing-box JSON
+не становятся production input.
+
+### Источники, уровень доказательности и применимость
+
+| Источник | Проверенный артефакт | Что подтверждает | Что **не** подтверждает |
+|---|---|---|---|
+| **Podkop** (P) | [podkop-engine docs/LINKS.md](https://github.com/podkop-net/podkop-engine/blob/main/docs/LINKS.md), blob \`34a62f58f49a3ec5ddadde89f30ec7f1980645c4\` | Поведение \`tools decode-link\`, документированные URI→outbound mappings, предупреждения и отказы; авторы сообщают о запуске каждой табличной строки на **r15**, full 1.13.21 и 1.14.3 | Эквивалентность с **нашим** зафиксированным sing-box-extended, принятие всех расширений/дефолтов и сохранение неизвестных полей |
+| **Sing-Box Launcher** (L) | [контракт VMess](https://github.com/Leadaxe/singbox-launcher/blob/main/contract/registry/protocols/vmess.json), [VLESS](https://github.com/Leadaxe/singbox-launcher/blob/main/contract/registry/protocols/vless.json), [HY2](https://github.com/Leadaxe/singbox-launcher/blob/main/contract/registry/protocols/hysteria2.json), [TUIC](https://github.com/Leadaxe/singbox-launcher/blob/main/contract/registry/protocols/tuic.json); [DRIFT](https://github.com/Leadaxe/singbox-launcher/blob/main/SPECS/131-F-O-UNIFIED_NODE_PIPELINE/DRIFT.md); blobs VMess \`6f5e6168dd47bb41dd898d0bd7201b9e09392b53\`, VLESS \`132567c30374d4ef4de4751d44920667208d4494\`, HY2 \`7ef420689999bead451de9784ccf4352d07ae5ac\`, TUIC \`6c6c8a48077760a9cb6bf8c63a741fc9dbb7089c\` | Поля, типы, aliases, контекст, потенциальные defaults; идея контрактного реестра и раздельных parser/model/emitter. DRIFT фиксирует реальные несогласованности Go/Dart | Соответствие двух версий самого Launcher; корректность дефолтов/алиасов для PF или другого ядра. Часть текстов реестра описывает исторический код, не только текущую реализацию |
+| **Link Parser To JSON** (J) | [README](https://github.com/iroblivionspark/link-parser/blob/main/README.md), blob \`0dd1c6bc38fa285d20113b2023c835f83d9aa371\` | Заявлены VMess/VLESS/Trojan/SS/HY2/TUIC, выходы Xray/V2Ray и sing-box **1.14.1**, разделение «outbound / полный config» и явное отклонение неподдерживаемого REALITY/XHTTP в V2Ray target | Семантика **конкретных** URI-полей, отсутствие потерь и фактическая корректность сгенерированного JSON — код/тесты для этих утверждений **не проверены** |
+| **Целевой EXT** (E) | [sing-box-extended parser/link/vmess.go](https://github.com/dioxine/sing-box-extended/blob/extended/parser/link/vmess.go), проверенный blob \`d3a09711efedaab6f567ae71765109f23614e391\` и раздел выше «Исходный код URI-парсера» | Поведение **проверенной** ветки для сравнения, в частности VMess \`net=tcp&type=http\` и \`cs\` | Корректность по Xray/v2rayN, другим форкам и всем бинарникам/версиям |
+
+**Статус источников:** P — табличные результаты внешних прогонов;
+L — прочитанные реестры и опубликованный внутренний DRIFT-анализ;
+J — только описание возможностей; E — исходный код.
+Источник другой реализации = \`EXT\` либо \`LEGACY\` **только при
+подтверждении точного URI-формата**; не превращать произвольные
+имена в \`SPEC\` по одному факту их наличия в реестре.
+
+### Варианты URI и политика парсинга: существенные расхождения
+
+| Вопрос | Подтверждённое внешнее поведение | Решение для PF |
+|---|---|---|
+| Scope форматов | P разбирает также HTTP/SOCKS/AnyTLS и **VMess URL-форму**; VMess доступен только в \`podkop-engine-full\`. L включает дополнительные семейства, форматы Xray/sing-box и контейнеры. J генерирует несколько видов полного JSON-конфига | Не расширять production input сверх принятого списка и VMess Base64(JSON) |
+| Регистр и HTML-артефакты | P сравнивает query keys без учёта регистра и снимает префикс \`amp;\` | Не принимать \`amp;\` за доказанный эквивалент исходного URI; регистр имён — отдельно по спецификации и ingest |
+| Повторные query keys | P берёт **первое** значение | Наш строгий reject дублей оставить; first-wins теряет данные |
+| Неизвестные и контекстно неуместные поля | P предупреждает и игнорирует неизвестное поле, чужие transport/TLS поля нередко игнорирует **без предупреждения** | Не считать такой исход \`no_unclassified_loss\`; не копировать «best effort» |
+| Исправления и fallback | P убирает BOM/краевые пробелы, допускает дополнительные варианты URI; L normalizes \`scy\`, uTLS, 일부 security и отдельно предупреждает о деградации | Не исправлять неверное encoding/URI и не подменять значения без доказанной эквивалентности |
+| Обработка секретов | P отделяет stderr и stdout, подавляет URI в сообщениях; выводит outbound только после конструирования ядром | Использовать **идею** безопасных структурированных причин отказа; никогда не писать URI/пароли в аудит |
+| Проверка результата | P сообщает, что stdout появляется после конструирования outbound самим sing-box, а не просто JSON-serialize | Разделять \`parsed\`, \`mapped\`, \`sing-box check\`, реальный network test. Собранный JSON не гарантирует handshake |
+| Арбитраж явных настроек | P имеет расширение \`sb.<path>\`, которое может **перекрывать** другое поле URI, в том числе \`sni\` | Отмечать как **vendor extension**, не превращать в универсальный fallback и не выбирать победителя автоматически |
+| Контрактный реестр | L хранит protocol JSON с \`type\`, \`aliases\`, \`default\`, \`maps_to\`, \`impl\` и корпусом fixtures; DRIFT показывает несовпадение Go/Dart | Заимствовать **метод**: единый field registry + матрица условий + golden fixtures; не менять действующий ingest до решения архитектуры |
+
+### Поля и зависимости: пополнение матрицы
+
+Ниже «внешнее наблюдение» не является разрешением на преобразование.
+Ссылки P/L/E определены в таблице источников выше.
+
+| URI-family / поле | Внешнее наблюдение | Путь JSON / контекст | Статус и решение PF |
+|---|---|---|---|
+| **VMess** \`net\` / \`type\` | P: в Base64(JSON) \`net\` определяет transport, \`type\` определяет TCP-header, при gRPC — mode; L отдельно перечисляет оба, E для \`net=tcp&type=http\` создаёт HTTP transport | \`transport.type\` только при соответствующем контексте | \`LEGACY\`, C; нельзя считать \`type\` общим с VLESS selector |
+| VMess \`net=tcp&type=http\`, \`host\`, \`path\`, \`method\` | P: HTTP disguise, \`host\` — CSV, \`path\` — путь; E использует **один** \`host\` как одну строку в массиве и также переносит \`method\` | \`transport.type=http\`, \`transport.host[]\`, \`path\`, \`method\` | C **с расхождением** CSV semantics. У PF уже есть экспериментальная поддержка узкого случая, проверить отдельно TLS и заголовки |
+| **Критический конфликт VMess TCP HTTP + TLS** | P явно **отказывает** HTTP-disguise с TLS/REALITY: его native HTTP transport при TLS говорит HTTP/2, а Xray TCP HTTP disguise — HTTP/1.1. E создаёт HTTP transport и при TLS без аналогичного gate | \`tls.enabled\` × \`transport.type=http\` | **GAP / потенциальная неверная семантика существующего native mapping.** Перед расширением покрытия поставить независимый oracle A/B, временно не объявлять эти записи эквивалентными. Сведения P и E нельзя слить в одну «истину» |
+| VMess \`net=grpc&type=multi\`, \`path\` | P: \`path\` = имя сервиса, \`multi\` заменяется на gun с предупреждением; \`type\` не transport selector | \`transport.service_name\` / gRPC mode | C/GAP: не переносить деградацию mode без согласия сервера |
+| VMess \`net=ws&path=/ws?ed=N\` | P: \`ed\` извлекается из path, \`early_data_header_name\` = \`Sec-WebSocket-Protocol\`; L также исследует \`splitWSEarlyData\` | \`transport.max_early_data\`, \`early_data_header_name\`, остаточный \`path\` | \`LEGACY\`, C; для URI Base64(JSON) требуется тест разделителя/повторного percent decoding |
+| VMess \`scy\` | P принимает ограниченные значения и для прочих применяет \`auto\` с warning; L DRIFT фиксирует случаи, когда неизвестный cipher заменяется на \`auto\` | \`security\` | \`LEGACY\`, C; **не заменять** неизвестный исходный шифр на auto. Коды совместимости ядра отличать от редакторских исправлений |
+| **VLESS** \`packetEncoding=none\` | P: в VLESS explicit \`none\` отображается пустой строкой, чтобы отключить default XUDP; \`packet\` → \`packetaddr\` | \`packet_encoding\` | \`EXT\`, C; отсутствие поля не всегда равно явному \`none\`. Проверить на зафиксированном backend перед mapping |
+| VLESS \`flow=xtls-rprx-vision\` × transport | P требует TLS/REALITY и обычный TCP, если нет отдельного VLESS encryption; L DRIFT отмечает нормализацию \`flow\` при transport | \`flow\`, \`tls\`, \`transport\`, \`encryption\` | C; не удалять \`flow\` автоматически; не переносить Xray-специфичные правила на другой backend |
+| VLESS \`encryption=mlkem768x25519plus…\` | P r14 поддерживает новое VLESS Encryption и проводит отдельную валидацию | \`encryption\` | \`EXT\`, GAP для нашей текущей версии; прежний отказ ненулевого encryption сохранять, пока зафиксированная сборка не проверена |
+| **VLESS / Trojan** \`headerType=http\` при TCP | P: HTTP/1.1 disguise допустим только **без** TLS/REALITY; при TLS HTTP transport имеет другую wire semantics | \`transport.type=http\` | C/GAP; **не** переводить TCP HTTP disguise в native HTTP при TLS без отдельного доказательства |
+| WS \`host\` и TLS \`sni\` | P при отсутствии WS \`host\` может использовать TLS SNI как Host, для Xray reverse proxy; L реестры контекстны | \`transport.headers.Host\` и \`tls.server_name\` | C; не выводить WS Host из SNI автоматически только по аналогии |
+| **XHTTP** \`extra\` | P: принимает URL-escaped JSON object, иногда декодирует %-encoding повторно; E требует Base64URL(JSON) и на ошибках фактически игнорирует extra | \`transport\` / вложенные опции | \`EXT\`, **GAP между источниками**, намеренный fail-closed; повторное декодирование не внедрять |
+| XHTTP \`mode\`, \`xmux\` и диапазоны | P: \`mode=auto/packet-up/stream-up/stream-one\`; ряд \`xPaddingBytes\`, \`sessionIDLength\`, \`scMaxEachPostBytes\` и др. отображается отдельно; P документирует приоритет значения в extra или query | \`transport.mode\`, \`x_padding_bytes\`, \`xmux.*\` | \`EXT\`, C/GAP; собрать schema-aware table приоритетов для **конкретной версии**. Не переносить чужие defaults без теста |
+| **SS** \`plugin\` | P: SIP003 \`name;opts\`; \`simple-obfs\` → \`obfs-local\`, остальные options сохраняются | \`plugin\`, \`plugin_opts\` | \`SPEC\` только для SIP002/SIP003 при сверке норматива; C для alias simple-obfs, различать token и подстроку пароля |
+| SS \`type\`, \`security\`, \`headerType\` | P принимает \`tcp/raw/none\` как не меняющие transport, прочие значения отклоняет | нет native V2Ray transport | C/OBSERVED: не гасить поля только по примеру Podkop, проверить каждое в нашем URI корпусе |
+| **HY2** userinfo \`user:password\` | P рассматривает всю часть до \`@\` как **один пароль**, не разделяя по двоеточию | \`password\` | \`SPEC\` по Hysteria2 URI при сверке первоисточника; проверить parser/encoding на точной строке |
+| HY2 \`mport\` / port ranges | P: port hopping, список в authority имеет приоритет над \`mport\`; L registry допускает \`mport\` alias \`ports\` и multiport | \`server_ports\`, \`server_port\` | C; при наличии обеих форм не терять одну без доказанного приоритета |
+| HY2 \`obfs=salamander\`, \`obfs-password\` | P: пароль нужен только при obfs; у линии 1.14 отдельно \`gecko\`; L реестр явно фиксирует параметры gecko | \`obfs.type\`, \`obfs.password\`, версия-зависимые размеры | C; проверить зависимость/версию. Нельзя при неизвестном obfs незаметно выключать маскировку |
+| HY2 \`fm\` | P иногда раскладывает JSON finalmask в \`obfs\` / hopping / bandwidth; отказывает маскам, меняющим wire protocol | много полей | **GAP**; сам факт наличия такого mapping у P не доказывает эквивалентность. Наш reject оставить |
+| HY2/TUIC \`fingerprint\`, \`fp\`, \`pinSHA256\` | L registry **сводит** \`fingerprint\` к uTLS \`fp\` для части протоколов, хотя в нашей матрице \`fingerprint\` может означать certificate pin | \`tls.utls.fingerprint\` **или** certificate pin | **Критический конфликт**: не заимствовать этот alias. Сертификатный pin и fingerprint ClientHello — разные свойства |
+| **TUIC** \`congestion_control\`, \`udp_relay_mode\` | P: \`cubic/new_reno/bbr\` и \`native/quic\`; L фиксирует default \`cubic\` и \`native\`, но признаёт drift явного emit-default | одноимённые outbound fields | \`EXT\`, C; отсутствие ≠ явно заданное значение. Проверить enum и реальные defaults целевого ядра |
+| TUIC \`reduce_rtt\` / \`zero_rtt_handshake\` | P и L связывают разные alias с \`zero_rtt_handshake\` | \`zero_rtt_handshake\` | \`EXT\`, C; boolean aliases сравнивать строго при конфликтах, не «первое непустое» |
+| TUIC \`udp_over_stream\` × \`udp_relay_mode\` | P: одновременно заданные режимы могут приводить к отказу конструктора outbound | \`udp_over_stream\`, \`udp_relay_mode\` | C/GAP; зависимость двух полей, нужна версия-зависимая проверка |
+| TUIC \`alpn\` | P: для TUIC sing-box не предлагает ALPN по умолчанию и предупреждает об отсутствии; требование зависит от сервера | \`tls.alpn\` | C; не вставлять \`h3\` автоматически |
+
+### Вывод о переносимости и дорожная карта
+
+**Результат аудита: не копируем готовый парсер целиком.** У него другой
+контракт: лишние входные форматы, first-wins/ignore правила, автоматические
+исправления, нормализация vendor defaults и версии ядра. Используем:
+(1) **матрицы P** как список гипотез/fixtures и ошибок;
+(2) **контракт L** как схему для структурированного field registry
+(\`uri_family\`, \`field\`, \`location\`, \`value_type\`,
+\`applicability\`, \`aliases\`, \`default\`, \`maps_to\`, \`provenance\`,
+\`backend_support\`, \`semantic_risk\`);
+(3) **таблицу несовместимостей** и warning-коды для отказов;
+(4) **проверку через конструктор целевого ядра** и отдельный runtime test.
+
+**Приоритеты перед новым кодом:**
+
+1. **P0 — проверить/ограничить уже написанное VMess TCP HTTP mapping
+   при \`tls=tls/reality\`.** P указывает на HTTP/1.1 ↔ HTTP/2
+   несовместимость; E не ставит gate. Не объявлять A/B с E достаточным
+   подтверждением сохранения wire semantics.
+2. P1 — выделить из 201 VMess \`unsupported_connection_field\`
+   безопасные закрытые имена по уже имеющимся аудитам; неизвестные
+   имена не публиковать.
+3. P1 — VMess \`net=grpc\` + \`path\` и \`type\` — проверить на конкретном
+   parser + backend, без молчаливого \`multi\` → gun.
+4. P1 — VLESS/Trojan TCP \`headerType\` (включая \`http\` и
+   TLS-совместимость), SS transport extension.
+5. P2 — XHTTP \`extra\` и nested fields: раздельные форматы P/E,
+   приоритеты \`extra\`/query, отдельные fixtures для JSON null и
+   invalid, без повторного URL decoding.
+6. P2 — HY2/TUIC alias collisions, \`fm\`, fingerprints и version
+   gates; HY2/TUIC в корпусе не равномерно представлены.
+
+**Юридический статус:** P и L распространяются с GPL-3.0, J — MIT;
+проверены файлы LICENSE соответствующих репозиториев.
+Заимствуем сейчас **факты, критерии и идеи**, а не текст/код.
+Лицензия самого PF и условия возможного копирования сюда не
+устанавливались.
+
+**Граница выполненного:** проверены названные документы и реестры;
+не запускались сторонние бинарники/тестовые корпуса и не проводился
+новый \`sing-box check\` на нашем checkpoint. У J нет достаточного
+полевого подтверждения; именно поэтому он не используется для
+нормативного mapping отдельных параметров.
+
 ## Зафиксированные пробелы реализации и правила gate
 
 1. **Версионная схема:** upstream JSON documentation может описывать поля после 1.14.3; получить version-specific schema и выполнить `sing-box check` установленным бинарником.
