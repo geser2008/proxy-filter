@@ -70,7 +70,7 @@ def compare_one(proxy: ProxyConfig, extended_binary: str, native_binary: str,
     # Both tests receive the same runtime configuration template (listen
     # address, DNS, routing). Only outbound differs.
     extended_backend = SingBoxBackend(backend_mode="extended")
-    base = extended_backend.render_config(proxy, 0)
+    base = extended_backend.render_config(proxy, 18080)
     result["extended"] = _check(extended_binary, base, timeout)
 
     try:
