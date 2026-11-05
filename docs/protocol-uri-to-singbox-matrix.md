@@ -1006,6 +1006,49 @@ python3 tools/native_differential.py --native-profile podkop-engine
 внешнему ядру. Его результат — локальный тест конкретного
 перенесённого правила.
 
+## Подтверждённые переносы Podkop v2: TCP HTTP и XHTTP xmux
+
+Из [podkop-engine docs/LINKS.md](https://github.com/podkop-net/podkop-engine/blob/main/docs/LINKS.md) перенесены в **опциональный** экспериментальный профиль `podkop-engine`:
+
+- VLESS `type=tcp/raw`, `headerType=http` **без TLS/REALITY**:
+  native `transport.type=http`; `host` может быть списком имён
+  через запятую; одиночный `path` переносится без изменений.
+  В случае TLS/REALITY — `http_header_with_tls`: HTTP/1.1
+  disguise Xray нельзя подменить HTTP/2.
+- Несколько путей `/first,/second` не сводятся автоматически к
+  одному: Xray может выбирать путь случайным образом, а sing-box
+  ожидает один путь. Причина отказа —
+  `unrepresentable_tcp_http_path`.
+- XHTTP `extra.xmux.maxConnections` и `maxConcurrency` одновременно
+  — `conflicting_xhttp_xmux_limits`. Числовые JSON-диапазоны,
+  которые можно представить десятичной строкой без потери, переводятся
+  в native строку; диапазоны со знаком, нулевой границей, неверным
+  типом и неизвестные поля **не исправляются** (fail closed).
+- `hKeepAlivePeriod` принимается только как целое число; неизвестные
+  ключи `xmux` отклоняются, а не теряются.
+
+Это *консервативное подмножество* поведения Podkop, не заявка
+на полное совпадение с ним. Бинарный `podkop-engine decode-link`
+остаётся отдельным oracle. Production ingest/backend не менялись.
+
+Синтетические дифференциальные fixtures теперь имеют отдельные
+`expected_native.extended` и
+`expected_native.podkop-engine` (19 случаев). Показатель
+`expected_native_passed` сравнивается только с ожиданием
+текущего профиля. Ошибки в поведении внешнего oracle этот счётчик
+не обнаруживает.
+
+Проверка из `app/`:
+
+```bash
+python3 -m unittest tests.test_native_experiment tests.test_native_differential -v
+python3 tools/native_differential.py --native-profile extended
+python3 tools/native_differential.py --native-profile podkop-engine
+# С независимым локальным oracle (если установлен):
+python3 tools/native_differential.py --native-profile podkop-engine \
+    --podkop-binary /path/to/podkop-engine
+```
+
 ## Зафиксированные пробелы реализации и правила gate
 
 1. **Версионная схема:** upstream JSON documentation может описывать поля после 1.14.3; получить version-specific schema и выполнить `sing-box check` установленным бинарником.
