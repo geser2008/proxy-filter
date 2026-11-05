@@ -7,6 +7,10 @@ Unknown fields are removed only from a temporary mapping copy, and reported by
 name. An outbound with removed fields is never asserted semantically equivalent.
 """
 from dataclasses import dataclass
+import base64
+import binascii
+import json
+import re
 from typing import Any
 
 from .engine import EngineError
@@ -57,7 +61,8 @@ _ALIASES = (
     ("fp", "client-fingerprint"),
     ("pbk", "public_key"),
     ("sid", "short_id"),
-    ("type", "net", "network"),
+    # VMess legacy "type" is a TCP header selector, not a net alias.
+    # Network alias conflict is verified separately per protocol.
     ("serviceName", "service_name"),
     ("ed", "max_early_data", "max-early-data"),
     ("eh", "early_data_header_name", "early-data-header-name"),
@@ -131,10 +136,21 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
         if not any(key in params for key in ("pbk", "public_key", "reality-opts")):
             raise EngineError("REALITY without public key cannot be mapped")
 
+    # A VMess share JSON "type" denotes TCP header type; unlike VLESS URI
+    # "type", it is not an alias for the transport network. Only the neutral
+    # explicit value "none" is currently supported.
+    if protocol == "vmess" and "type" in params:
+        if params["type"] not in ("", "none"):
+            raise EngineError("unsupported VMess TCP header type")
+    transport_keys = ("network", "net") if protocol == "vmess" else ("network", "net", "type")
+    transport_aliases = [key for key in transport_keys if key in params]
+    if len(transport_aliases) > 1 and any(
+        params[key] != params[transport_aliases[0]] for key in transport_aliases[1:]
+    ):
+        raise EngineError("conflicting transport aliases: " + ", ".join(transport_aliases))
     # Do not turn an unknown transport into an unintentional TCP outbound.
     if protocol in {"vless", "vmess", "trojan"}:
-        selector = next((params[key] for key in ("network", "net", "type")
-                         if key in params), "")
+        selector = next((params[key] for key in transport_keys if key in params), "")
         if selector not in {"", "tcp", "raw", "ws", "websocket", "grpc",
                             "http", "h2", "httpupgrade", "http-upgrade", "xhttp"}:
             raise EngineError(f"unsupported transport selector: {selector!r}")
@@ -155,6 +171,26 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
         for key in sorted(params) if key not in known
     )
     mapped = {key: value for key, value in params.items() if key in known}
+    if protocol == "vmess":
+        # Marker "none" is a known explicit neutral VMess header setting.
+        # Removing it prevents the shared mapper from interpreting it as a
+        # different transport when "net" is absent.
+        mapped.pop("type", None)
+    if selector == "xhttp" if protocol in {"vless", "vmess", "trojan"} else False:
+        if "extra" in mapped:
+            encoded = mapped["extra"]
+            if not isinstance(encoded, str) or not re.fullmatch(r"[A-Za-z0-9_-]+={0,2}", encoded):
+                raise EngineError("XHTTP URI extra must be Base64URL(JSON)")
+            try:
+                raw = base64.b64decode(
+                    encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True
+                )
+                parsed = json.loads(raw.decode("utf-8"))
+            except (binascii.Error, ValueError, UnicodeDecodeError) as exc:
+                raise EngineError("invalid XHTTP Base64URL JSON extra") from exc
+            if not isinstance(parsed, dict):
+                raise EngineError("XHTTP extra must decode to a JSON object")
+            mapped["extra"] = parsed
     # Never invoke ensure_id(), alter original_raw, or mutate source params.
     from copy import copy
     temporary = copy(proxy)
