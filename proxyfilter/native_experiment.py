@@ -176,7 +176,7 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
         # Removing it prevents the shared mapper from interpreting it as a
         # different transport when "net" is absent.
         mapped.pop("type", None)
-    if selector == "xhttp" if protocol in {"vless", "vmess", "trojan"} else False:
+    if protocol in {"vless", "vmess", "trojan"} and selector == "xhttp":
         if "extra" in mapped:
             encoded = mapped["extra"]
             if not isinstance(encoded, str) or not re.fullmatch(r"[A-Za-z0-9_-]+={0,2}", encoded):
