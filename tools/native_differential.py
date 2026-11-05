@@ -59,8 +59,11 @@ def load_fixtures(path: Path) -> list[dict]:
             item["protocol"] + "://"
         ) or not isinstance(item["params"], dict):
             raise ValueError("fixture URI or params invalid")
-        if item["expected_native"] not in {"ok", "rejected"}:
-            raise ValueError("expected_native must be ok or rejected")
+        expected = item["expected_native"]
+        if not isinstance(expected, dict) or set(expected) != {"extended", "podkop-engine"} or any(
+            value not in {"ok", "rejected"} for value in expected.values()
+        ):
+            raise ValueError("expected_native requires both profile outcomes")
     return items
 
 
@@ -155,7 +158,7 @@ def run(fixtures: list[dict], target: dict | None = None,
             "id": item["id"],
             "native": native["status"],
             "native_reason": native.get("reason"),
-            "expected_native_match": native["status"] == item["expected_native"],
+            "expected_native_match": native["status"] == item["expected_native"][native_profile],
             "target": oracle["status"],
             "podkop": podkop["status"],
             "vs_target": compare(native, oracle),
