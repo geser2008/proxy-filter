@@ -939,6 +939,38 @@ Native coverage: `6351` успешных без *неизвестных* пот�
 sing-box-extended и только затем код адаптера. Не повторять
 общий provenance/semantic сбор и не менять production.
 
+## Подтверждённое точечное исключение: VMess `cs=""`
+
+Проверен исходный код целевого
+[`dioxine/sing-box-extended/parser/link/vmess.go`](https://github.com/dioxine/sing-box-extended/blob/extended/parser/link/vmess.go),
+ветка `extended`, Git blob
+`d3a09711efedaab6f567ae71765109f23614e391`.
+В `parseVMessLink` отсутствует обработчик ключа `cs`, в том числе
+пустого: `cs=""` не влияет на URI-parsed TLS options.
+
+В изолированном `convert_uri_to_native` при VMess **только**
+`cs=""` удаляется из временной копии перед JSON mapping. Иначе
+общий backend сформировал бы `tls.cipher_suites=[""]`, чего
+целевой URI parser не делает. `original_raw` и `params`
+остаются verbatim. Никаких пустых cipher suites не создаётся.
+
+Это **не** разрешение автоматически удалять другие URI-параметры,
+пустые `cipher_suites`/`cipher-suites` или менять VLESS/Trojan;
+`cs` с непустым значением пока отклоняется консервативно.
+Успешная генерация JSON не равна `sing-box check` и не подтверждает
+эквивалентность установленного бинарника. Этот вывод относится
+к проверенному исходному дереву, не ко всем версиям форка.
+
+Повторный аудит после локальных тестов:
+```bash
+python3 -m unittest tests.test_native_experiment tests.test_audit_native_coverage -v
+python3 tools/audit_native_coverage.py \
+  --checkpoint ../data/work/03-safe.jsonl \
+  --output /tmp/proxyfilter-native-coverage-after-vmess-cs.json
+```
+Не обещать автоматически +126 к `native_ok_no_unclassified_loss`:
+после прохождения первого gate запись может получить другой отказ.
+
 ## Зафиксированные пробелы реализации и правила gate
 
 1. **Версионная схема:** upstream JSON documentation может описывать поля после 1.14.3; получить version-specific schema и выполнить `sing-box check` установленным бинарником.
