@@ -7,8 +7,8 @@ import unittest
 from unittest.mock import patch
 
 from tools.native_differential import (
-    capture_podkop_engine, compare, load_fixtures, load_oracle,
-    native_result, run,
+    capture_podkop_engine, check_podkop_binary, compare, load_fixtures,
+    load_oracle, native_result, outbound_top_level_difference, run,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "native_differential.json"
@@ -95,6 +95,55 @@ class NativeDifferentialTests(unittest.TestCase):
         self.assertEqual(args[0], ["/usr/bin/sing-box", "tools", "decode-link", "--compact"])
         self.assertIn("secret", kwargs["input"])
         self.assertNotIn("secret", str(result))
+
+    @patch("tools.native_differential.subprocess.run")
+    def test_binary_preflight_rejects_unsupported_core(self, mock_run):
+        from subprocess import CompletedProcess
+        mock_run.return_value = CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="no such command",
+        )
+        with self.assertRaisesRegex(ValueError, "does not support"):
+            check_podkop_binary("/usr/bin/sing-box")
+        args, kwargs = mock_run.call_args
+        self.assertEqual(args[0], ["/usr/bin/sing-box", "tools", "decode-link", "--help"])
+        self.assertEqual(kwargs["input"], "")
+
+    @patch("tools.native_differential.subprocess.run")
+    def test_real_oracle_report_catches_status_mismatch(self, mock_run):
+        from subprocess import CompletedProcess
+        def fake(args, **kwargs):
+            if "--help" in args:
+                return CompletedProcess(args, 0, "", "")
+            return CompletedProcess(args, 2, "", "private error text")
+        mock_run.side_effect = fake
+        item = next(x for x in self.fixtures if x["id"] == "vless-ws-tls")
+        report = run([item], podkop_binary="/usr/bin/podkop-engine")
+        self.assertEqual(report["podkop_oracle_checked"], 1)
+        self.assertEqual(report["podkop_mismatch_ids"], [item["id"]])
+        self.assertEqual(report["podkop_comparisons"], {"status_mismatch": 1})
+        self.assertNotIn("private error text", json.dumps(report))
+        self.assertEqual(mock_run.call_count, 2)
+
+    def test_field_diffs_only_expose_safe_names(self):
+        a = {"status": "ok", "outbound": {"type": "vless", "tls": {"server_name": "private-a"},
+                                          "secret_user_defined_key": "private-one"}}
+        b = {"status": "ok", "outbound": {"type": "vless", "tls": {"server_name": "private-b"},
+                                          "secret_user_defined_key": "private-two"}}
+        self.assertEqual(outbound_top_level_difference(a, b), ["tls"])
+
+    @patch("tools.native_differential.subprocess.run")
+    def test_oracle_result_structural_difference_lists_fields_not_values(self, mock_run):
+        from subprocess import CompletedProcess
+        def fake(args, **kwargs):
+            if "--help" in args:
+                return CompletedProcess(args, 0, "", "")
+            return CompletedProcess(args, 0, '{"type":"vless","transport":{"type":"grpc"}}', "")
+        mock_run.side_effect = fake
+        item = next(x for x in self.fixtures if x["id"] == "vless-ws-tls")
+        report = run([item], podkop_binary="/usr/bin/podkop-engine")
+        self.assertEqual(report["podkop_mismatch_ids"], [item["id"]])
+        self.assertIn("transport", report["results"][0]["podkop_differing_fields"])
+        self.assertNotIn("grpc", json.dumps(report))
 
     def test_target_oracle_structural_equality_is_not_certification(self):
         item = next(x for x in self.fixtures if x["id"] == "vless-ws-tls")
