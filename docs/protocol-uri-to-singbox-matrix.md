@@ -1686,6 +1686,78 @@ cat /tmp/proxyfilter-vmess-tcp-fields.json
 причиной большинства отказов. Production mapping
 и критерии `safe_native` не меняются.
 
+## VMess plain TCP: локальный разбор и узкое исключение пустых полей (2026-11-05)
+
+Локальный `tools/audit_vmess_tcp_fields.py` подтвердил **168**
+первых отказов `transport_fields_on_tcp`; `invalid=0`.
+Все 168 — `net=tcp`, все содержат `host` и `path`.
+`type=none`: 149; `type=""`: 16; `type` отсутствует:
+3. TLS `disabled`: 145; `enabled`: 23.
+
+| Поле | Пустая строка | Непустая строка |
+|---|---:|---:|
+| `host` | 142 | 26 |
+| `path` | 138 | 30 |
+| `serviceName` | 3 | 0 |
+
+Сочетания:
+
+| Контекст | URI |
+|---|---:|
+| `tcp / none / tls disabled / host+path` | 132 |
+| `tcp / none / tls enabled / host+path` | 17 |
+| `tcp / "" / tls disabled / host+path` | 13 |
+| `tcp / "" / tls enabled / host+path` | 3 |
+| `tcp / type absent / tls enabled / host+path+serviceName` | 3 |
+
+**Нельзя сложить число пустых `host` и пустых `path`:**
+это пересекающиеся записи, а отчёт пока не содержит
+точного совместного распределения пустоты. Число успешно
+разблокированных записей не предсказывается из этих таблиц.
+
+В подтверждённом target EXT VMess URI parser
+(`parser/link/vmess.go`, blob
+`d3a09711efedaab6f567ae71765109f23614e391`)
+`net=tcp` с `type=none`, `type=""` или без `type`
+**не формирует V2Ray HTTP transport**, поэтому пустые
+`host`/`path` не несут настроек TCP HTTP-disguise.
+`serviceName` в этой ветке также не используется;
+пустая строка ничего не задаёт.
+
+В **экспериментальном** `native_experiment.py` добавлено
+строгое исключение **только** для VMess
+`net=tcp`, `type` отсутствует/`none`/пуст и
+`host=""`, `path=""`, `serviceName=""` или
+`service_name=""`. Такие поля не вызывают
+`transport_fields_on_tcp` и удаляются только из
+временной копии перед native JSON mapping.
+Непустые, нестроковые поля и `headers` продолжают
+вызывать отказ; другие протоколы и `net=raw`
+не меняются. `original_raw` и исходные `params`
+сохраняются verbatim.
+
+**Поддержка непустого `host/path` не расширена.**
+Хотя target EXT parser для `net=tcp/type=none`
+не потребляет их, политика PF не должна автоматически
+считать их нейтральными без отдельного контекстного
+обоснования и сравнительных тестов. Podkop допускает
+более либеральное игнорирование полей, не подходящих
+выбранному транспорту.
+
+Для нового локального прогона из `app/`:
+
+```bash
+python3 -m unittest tests.test_native_experiment tests.test_audit_vmess_tcp_fields -v
+python3 tools/audit_native_coverage.py \
+  --checkpoint ../data/work/03-safe.jsonl \
+  --output /tmp/proxyfilter-native-after-vmess-empty-tcp.json
+jq '.protocols.vmess' /tmp/proxyfilter-native-after-vmess-empty-tcp.json
+```
+
+**До прогона** нет подтверждённого прироста `safe_native`;
+другие причины отклонения и потерь не исключены.
+Production pipeline не изменён.
+
 ## Зафиксированные пробелы реализации и правила gate
 
 1. **Версионная схема:** upstream JSON documentation может описывать поля после 1.14.3; получить version-specific schema и выполнить `sing-box check` установленным бинарником.
