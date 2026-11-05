@@ -27,7 +27,7 @@ HEADINGS = {
 }
 KNOWN_CLASSES = {"SPEC", "EXT", "LEGACY", "OBSERVED", "META"}
 FIELD_PATTERN = re.compile(r"`([^`]+)`")
-SOURCE_PATTERN = re.compile(r"\b(?:V[12]|M1|T1|S1|H1|U[12])\b")
+SOURCE_PATTERN = re.compile(r"\b(?:V[12]|M1|T1|S1|H1|U[12]|C[12])\b")
 FIELD_NAME = re.compile(r"[a-zA-Z][a-zA-Z0-9_-]*\Z")
 
 def load_matrix(path: Path) -> dict[str, dict[str, dict[str, Any]]]:
