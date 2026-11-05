@@ -1135,6 +1135,55 @@ J — только описание возможностей; E — исходн
 полевого подтверждения; именно поэтому он не используется для
 нормативного mapping отдельных параметров.
 
+## VMess TCP HTTP + TLS: защита сетевой семантики (2026-11-05)
+
+Сравнение **трёх оснований**: нашей матрицы (раздел «Сравнительный
+аудит готовых URI-реализаций»), проверенного
+[`parser/link/vmess.go`](https://github.com/dioxine/sing-box-extended/blob/extended/parser/link/vmess.go)
+(`d3a09711efedaab6f567ae71765109f23614e391`),
+и [Podkop `docs/LINKS.md`](https://github.com/podkop-net/podkop-engine/blob/main/docs/LINKS.md)
+(таблицы VMess и транспорта; зафиксированный blob
+`34a62f58f49a3ec5ddadde89f30ec7f1980645c4`).
+
+- EXT при `net=tcp&type=http` создаёт
+  `V2RayTransportTypeHTTP`, даже если `tls=tls`: это
+  **описание поведения parser**, а не доказательство сетевой
+  эквивалентности исходной TCP HTTP/1.1-маскировке.
+- Podkop заявляет проверенное ограничение: HTTP TCP disguise
+  совместим с native HTTP transport только **без TLS**.
+  С TLS sing-box HTTP transport может перейти на HTTP/2,
+  тогда как disguise перед исходным потоком использует HTTP/1.1.
+- Следовательно, экспериментальный `convert_uri_to_native`
+  теперь явно отклоняет `net=tcp&type=http` с активным либо
+  неподтверждённо выключенным `tls`;
+  причина `vmess_http_disguise_tls_conflict` (без значения поля
+  и секрета в отчёте).
+- Допустимы только отсутствие `tls` или точно подтверждённые
+  отключающие строковые маркеры `""`, `none`, `0`,
+  `false`. Любая нестроковая форма и остальные значения
+  **отклоняются**, без переинтерпретации в native TLS.
+  Правило не влияет на VMess WS/TLS и на прочие протоколы.
+- Остаются действующими прежние границы: неоднозначный `host`
+  со списком, `headers`, нетипизированные поля и другие TCP
+  disguises не обрабатываются по догадке.
+
+**Статус:** семантический fail-closed gate, не runtime-прогон.
+Это может уменьшить число успешных native-преобразований, и такое
+уменьшение **не дефект аудита**, если иначе меняется протокол
+на проводе. Текущая реализация остаётся экспериментальной;
+production input и `type=parser` не меняются.
+
+Из `app/`:
+
+```bash
+python3 -m unittest tests.test_native_experiment tests.test_audit_native_coverage -v
+python3 tools/audit_native_coverage.py \
+  --checkpoint ../data/work/03-safe.jsonl \
+  --output /tmp/proxyfilter-native-coverage-after-vmess-http-tls-gate.json
+jq '.protocols.vmess | {rows, native_ok_no_unclassified_loss, rejected, reasons}' \
+  /tmp/proxyfilter-native-coverage-after-vmess-http-tls-gate.json
+```
+
 ## Зафиксированные пробелы реализации и правила gate
 
 1. **Версионная схема:** upstream JSON documentation может описывать поля после 1.14.3; получить version-specific schema и выполнить `sing-box check` установленным бинарником.
