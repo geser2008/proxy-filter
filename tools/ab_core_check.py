@@ -330,7 +330,11 @@ def run(checkpoint: Path, output: Path, extended_binary: str, native_binary: str
                 if focus_hashes is not None:
                     if not isinstance(row, dict):
                         continue
-                    raw = row.get("original_raw")
+                    # Checkpoint schema nests the verbatim URI under
+                    # "original.raw" (ProxyConfig.to_dict), not a top-level
+                    # "original_raw" attribute.
+                    original = row.get("original")
+                    raw = original.get("raw") if isinstance(original, dict) else None
                     if not isinstance(raw, str) or hashlib.sha256(raw.encode("utf-8")).hexdigest() not in focus_hashes:
                         continue
                 proxy = ProxyConfig.from_dict(row)
