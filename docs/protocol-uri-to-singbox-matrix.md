@@ -194,6 +194,7 @@ VMess JSON/nested extra), `origin_class`, `source_ref`, `value_type`,
 | `spider_x`, `final_mask`, `net`, `network` | query | OBSERVED | Алиасы/расширения PF; не часть доказанного базового VLESS URI |
 | `allowInsecure`, `insecure`, `disable_sni` | query | EXT/OBSERVED | Настройки TLS, риск смены security semantics; проверить конкретный клиент |
 | `cs` | query | OBSERVED | TLS cipher suites selector in some share-link exporters; Xray TLS config `cipherSuites` is a colon-separated string [C1,C2]. Не VLESS `encryption`, не `fp`. URI-нормативность не доказана |
+| `x_padding_bytes`, `support-x25519mlkem768` | query / config.params | OBSERVED | Реальные поля checkpoint: XHTTP padding range (18) и REALITY hybrid key-share hint (9). Значимы для соединения, не metadata; при неподдерживаемом mapping нужен GAP [XH1,PQ1] |
 | `note`, `password`, `allowinsecure`, `pinSHA256`, `packet-encoding`, `udp` | config.params после ingest | OBSERVED | Зафиксированы аудитом 8 848; `note` — кандидат metadata, но не автоматически безопасное для соединения поле; `password` в VLESS требует отдельного анализа |
 
 #### VMess — legacy Base64(JSON), а не query URI
@@ -210,6 +211,7 @@ VMess JSON/nested extra), `origin_class`, `source_ref`, `value_type`,
 | `security`, `cipher`, `alterId`, `network`, `uuid` | JSON внутри Base64 | OBSERVED | Алиасы PF, не приравнивать автоматически к исходным [M1] |
 | `vmess://UUID@host:port?...` | **другой формат** | EXT | [V1], предложение VMessAEAD URI; **не** смешивать с [M1] |
 | `cs` | JSON внутри Base64 | OBSERVED | В VMess legacy share JSON найдено в 126 записях. Нельзя выводить нормативность VMess JSON из документации Xray `cipherSuites`; [C1,C2] подтверждают назначение лишь как TLS expansion |
+| `pqv`, `xhttp_extra`, `mux`, `muxConcurrency` | JSON внутри Base64 / config.params | OBSERVED | Наблюдаемые VMess поля (5, 1, 1, 1); назначение `pqv` без подтверждения нельзя автоматически приравнять к VLESS `pqv`; XHTTP и multiplex требуют контекста [PQ1,XH1] |
 | `name`, `skip-cert-verify`, `serviceName`, `ech`, `echConfigList` | JSON внутри Base64 / config.params | OBSERVED | Аудит 8 848: варианты полей и расширения; `name` кандидат META, остальные нельзя молча отбрасывать |
 
 #### Trojan — base URI и клиентские расширения
@@ -434,6 +436,37 @@ legacy Base64(JSON) документированность конкретног�
 suite names, правила значения `""`, активный TLS, несовместимые aliases,
 TLS 1.3 особенности и поведение с uTLS fingerprint. **Не** переносить
 это поле в VMess `scy`, `fp` или в metadata. Никакой silent drop.
+
+### Результат локального раскрытия оставшихся UNLISTED имён
+
+Вывод после семантического аудита (8 848 записей, 75 вхождений)
+предоставлен локально 2026-11-05. Значения параметров и URI не исследовались.
+
+| Семейство | Имя → количество | Предварительная категория |
+|---|---|---|
+| SS | `prefix` 3; `Telegram` 1; `POST` 1 | `prefix` может быть расширением, два остальных — невалидные или необычные query names / экспортер: требуют raw URI проверки |
+| Trojan | `wspath` 3; `headertype` 2 | Возможные транспортные алиасы; **не** приравнивать автоматически к `path` и `headerType` без transport-specific evidence |
+| VLESS | `x_padding_bytes` 18; `support-x25519mlkem768` 9 | XHTTP padding; REALITY hybrid key-share compatibility — семантически значимы [XH1,PQ1] |
+| VLESS | `Telegram` 12; `Telegram🇨🇳WangCai2` 1 | Похожи на ошибочное размещение текстовых меток в query; без оригинального URI нельзя отличить мусор от vendor-параметров |
+| VLESS | `headertype` 2; `pool` 2; `al` 1; `fragment` 1 | Возможные алиасы, XHTTP/pooling и fragmentation extension; недоказанная семантика. **Не** классифицировать как META |
+| VMess | `pqv` 5; `xhttp_extra` 1; `mux` 1; `muxConcurrency` 1 | Предположительно REALITY/XHTTP и multiplex; зависимость от VMess legacy export; неизвестные значения и mapping |
+| VMess | `test_name` 2; `serverDescription` 1; `nation` 1; `batch` 1 | Вероятные метаданные, но принадлежность к metadata по одному имени не доказана |
+| VMess | `echServerKeys` 1; `fakehost_domain` 1; `interval` 1; `length` 1; `packets` 1; `serverPort` 1 | Возможные ECH, TLS fragmentation или legacy serializer extensions. `serverPort` не использовать как authority port без явного правила |
+
+**Подсчёт:** SS 5, Trojan 5, VLESS 46, VMess 19 = 75
+вхождений. В отдельных строках классификационной матрицы теперь
+зарегистрированы только распознанные имена XHTTP/REALITY и явно
+помеченные неизвестной семантики VMess extension. Это уменьшит
+`UNLISTED` в будущем прогоне, но **не улучшит mapper** само по себе.
+
+- **[XH1]** [Hiddify sing-box XHTTP transport reference](https://hiddify.com/core/sing-box/features/transports/xhttp/): `x_padding_bytes` — диапазон длины XHTTP padding, не декоративная метка. Способ экспортирования через URI varies by client.
+- **[PQ1]** [3x-ui REALITY share-link compatibility](https://github.com/MHSanaei/3x-ui/docs/content/docs/en/config/reality.mdx): `support-x25519mlkem768` передаётся как необязательный hint в VLESS URI; это не универсальный нормативный параметр URI. См. также [issue #6555](https://github.com/MHSanaei/3x-ui/issues/6555) и [issue #6730](https://github.com/MHSanaei/3x-ui/issues/6730).
+
+**Критерий исправления ingest:** если ключ явно похож на ошибочную
+текстовую метку (`Telegram`, `POST`), сначала проверить исходный
+`original_raw` и правила разбора URI. Нельзя удалять такие поля или
+исправлять URI без доказательства ошибки upstream, поскольку действующая
+политика ingest — сохранять неизвестные параметры и исходник verbatim.
 
 ### Разрешение оставшегося неизвестного имени локально
 
