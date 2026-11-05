@@ -195,6 +195,15 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
         and ("net" in params or "network" in params)
         and next((params[key] for key in transport_keys if key in params), "") == "tcp"
     )
+    if vmess_tcp_http:
+        # Xray VMess TCP HTTP header disguise uses HTTP/1.1. Native sing-box
+        # HTTP transport with TLS can use HTTP/2, changing wire semantics.
+        # The target link parser does not gate this, but Podkop's checked
+        # mapping does. Keep the experimental conversion fail-closed when
+        # TLS is active or its state cannot be proven disabled.
+        tls_marker = params.get("tls", "")
+        if not isinstance(tls_marker, str) or tls_marker not in ("", "none", "0", "false"):
+            raise NativeMappingError("vmess_http_disguise_tls_conflict", ("tls",))
     if protocol == "vmess" and params.get("type") == "http" and not vmess_tcp_http:
         raise NativeMappingError("unsupported_vmess_header")
     if protocol == "vmess" and "method" in params and not vmess_tcp_http:
