@@ -827,6 +827,70 @@ Base64URL(JSON), invalid, JSON null. Не переносить поведени�
 консервативном mapper. Для `proxy-filter` сохраняем исходное
 значение и отклоняем неподтверждённое эквивалентное преобразование.
 
+## Дополнительные reference implementations: Podkop, NetShift, Forkop
+
+Проверены исходные репозитории и документация (2026-11-05):
+- [itdoginfo/podkop](https://github.com/itdoginfo/podkop) — OpenWrt
+  маршрутизатор, исходный shell-парсер и подключение альтернативного ядра;
+- [xDarkOne/netshift](https://github.com/xDarkOne/netshift) — форк с
+  subscription URL, mixed subscription formats (URI, base64, Clash,
+  Xray JSON), автообновлением и выбором ядра;
+- [ushan0v/forkop](https://github.com/ushan0v/forkop) — поддержка
+  VLESS/VMess/Trojan/SS/HY2/TUIC и списков URI, Clash/mihomo,
+  sing-box, Xray, SIP008, base64; конкретная реализация URI→JSON
+  пока не подтверждена построчно;
+- **[podkop-net/podkop-engine](https://github.com/podkop-net/podkop-engine)**
+  — отдельное sing-box-ядро с командой
+  `sing-box tools decode-link --compact` и
+  [подробной матрицей](https://github.com/podkop-net/podkop-engine/blob/main/docs/LINKS.md),
+  содержащей протестированные URI→outbound cases.
+
+### Почему podkop-engine особенно полезен
+
+`decode-link` выдаёт sing-box outbound, проверенный сборкой самого
+ядра, либо предупреждение/отказ (status 0/2/1).
+Утверждение проекта: строки `docs/LINKS.md` проверены на
+`podkop-engine-full` r15, линиях 1.13.21 и 1.14.3.
+Это **independent oracle**, но не замена target oracle
+`dioxine/sing-box-extended`: поддерживаемые опции и defaults
+могут отличаться.
+
+По таблице LINKS.md:
+- `type=xhttp&extra=%7B...%7D` — URL-экранированный JSON-object
+  превращается в XHTTP transport options; это соответствует
+  распространённым Xray subscription exports и форме 246 VLESS
+  `extra` в нашем checkpoint.
+- `headerType=http` при TCP без TLS допускает HTTP/1.1 transport;
+  с TLS/REALITY явный отказ, потому что sing-box HTTP transport
+  с TLS означает другой протокол HTTP/2.
+- `cs` с непустым значением получает предупреждение, что Xray
+  cipher suite override не поддерживается; молчаливо маппить его
+  как native TLS `cipher_suites` неправильно.
+- Заявлена сравнительная проверка 1533 links со старым shell-parser.
+  Считать это внешними benchmark-данными, не результатами
+  `proxy-filter`.
+
+**Важная граница:** NetShift и Forkop — конечные потребители
+подписок. То, что они принимают URI, ещё не доказывает, что каждое
+поле сохранило значение. Их успешный импорт не является
+oracle-equivalence доказательством.
+
+### Интеграционный план
+
+1. Сохранить в differential harness отдельные профили сравнения:
+   `target_extended_uri`, `podkop_engine_decode_link` и
+   `native_backend` — с указанием версии ядра.
+2. Использовать `docs/LINKS.md` для создания синтетических fixtures
+   (XHTTP extra, headerType/TLS, cs, VMess type/net).
+3. Сравнивать *outbound структуру и diagnostics*, не утверждать
+   эквивалентность лишь по status=0.
+4. Не вводить Clash/Xray/sing-box JSON в production ingest:
+   широкая поддержка форматов NetShift/Forkop не меняет нашу
+   утверждённую границу TXT/Base64(TXT) → URI.
+5. Никаких автоматических исправлений encoding или изменений
+   production parser/dedup/publish на основании поведения
+   сторонних клиентов.
+
 ## Зафиксированные пробелы реализации и правила gate
 
 1. **Версионная схема:** upstream JSON documentation может описывать поля после 1.14.3; получить version-specific schema и выполнить `sing-box check` установленным бинарником.
