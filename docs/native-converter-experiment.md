@@ -309,3 +309,30 @@ python3 tools/ab_core_check.py \
 This is diagnostic instrumentation only. A transport keyword in core
 stderr does not establish that the transport itself was invalid, and no
 production code or mapper semantics changed.
+
+## Phase 4g: isolate XHTTP native check failures safely
+
+The focused transport report contains 320 A-pass/B-fail rows: 291 VLESS
+XHTTP, 18 VLESS without transport, 10 VMess WS, 1 Trojan without transport.
+The XHTTP failures span multiple field combinations, including 24 with
+only `{"type":"xhttp"}`.
+
+The extended fork publishes XHTTP native-JSON examples, so this report
+does not prove that native XHTTP is unavailable. Diagnose the installed
+binary's actual behavior first, with a **synthetic** smoke test:
+
+```bash
+python3 tools/ab_xhttp_smoke.py 2>&1 | tee /tmp/proxyfilter-xhttp-smoke.log
+```
+
+This script never reads `03-safe.jsonl` or real URIs. It generates four
+static configurations (WS control, minimal XHTTP, XHTTP with path, XHTTP
+with mode/path) using a dummy UUID and `example.org`, calls
+`sing-box check` without starting a proxy or contacting the endpoint,
+and prints the core's full diagnostic text. **Only the output of this
+synthetic probe** is suitable for sharing unredacted; do not copy full
+stderr from tests involving real proxy configs.
+
+If WS control passes but minimal XHTTP fails, identify the specific core
+error before changing the mapper. If all four pass, investigate the
+generated XHTTP options and the A/B configuration differences instead.
