@@ -4,7 +4,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from proxyfilter.model import ProxyConfig, SourceInfo
-from proxyfilter.resume import load_stage, stage_should_run, validate_resume_range
+from proxyfilter.resume import cleanup_diagnostic_outputs, load_stage, stage_should_run, validate_resume_range
 
 
 class ResumeTests(unittest.TestCase):
@@ -65,6 +65,40 @@ class ResumeTests(unittest.TestCase):
         self.assertFalse(stage_should_run("download", "geo"))
         self.assertTrue(stage_should_run("render", "geo"))
         self.assertFalse(stage_should_run("render", "render"))
+
+    def test_fresh_run_removes_only_tcp_core_diagnostics(self):
+        with TemporaryDirectory() as tmp:
+            work = Path(tmp) / "work"
+            work.mkdir()
+            diagnostic_names = (
+                "04-tcp-ok.jsonl", "04-rejected-tcp.jsonl",
+                "05-core-ok.jsonl", "05-rejected-core.jsonl",
+            )
+            preserved_names = ("03-safe.jsonl", "06-latency-ok.jsonl")
+            for name in (*diagnostic_names, *preserved_names):
+                (work / name).write_text("test", encoding="utf-8")
+
+            removed = cleanup_diagnostic_outputs(Path(tmp))
+
+            self.assertEqual({p.name for p in removed}, set(diagnostic_names))
+            self.assertTrue(all(not (work / name).exists() for name in diagnostic_names))
+            self.assertTrue(all((work / name).exists() for name in preserved_names))
+
+    def test_resume_preserves_diagnostic_checkpoints(self):
+        with TemporaryDirectory() as tmp:
+            work = Path(tmp) / "work"
+            work.mkdir()
+            checkpoint = work / "05-core-ok.jsonl"
+            checkpoint.write_text("test", encoding="utf-8")
+
+            removed = cleanup_diagnostic_outputs(Path(tmp), resume_from="core")
+
+            self.assertEqual(removed, [])
+            self.assertTrue(checkpoint.exists())
+
+    def test_cleanup_missing_files_is_safe(self):
+        with TemporaryDirectory() as tmp:
+            self.assertEqual(cleanup_diagnostic_outputs(Path(tmp)), [])
 
     def test_until_before_resume_is_rejected(self):
         with self.assertRaises(ValueError):

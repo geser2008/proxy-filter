@@ -338,6 +338,47 @@ class RenderTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("unsupported source field", result.error or "")
 
+    def test_shadowsocks_neutral_tcp_template_fields_render(self):
+        # Real-world failure shape: SS credentials plus generic TCP defaults.
+        uri = (
+            "ss://YWVzLTI1Ni1nY206c2VjcmV0@203.0.113.50:8388"
+            "?type=tcp&headerType=none#old"
+        )
+        rendered = self._round_trip(uri)
+        self.assertNotIn("headerType", rendered)
+        self.assertNotIn("type=tcp", rendered)
+
+    def test_trojan_neutral_encryption_none_renders(self):
+        # Trojan does not use the VLESS 'encryption' option.
+        uri = (
+            "trojan://secret@example.com:443"
+            "?type=tcp&headerType=none&security=tls&encryption=none&sni=example.com#old"
+        )
+        rendered = self._round_trip(uri)
+        self.assertNotIn("encryption=", rendered)
+
+    def test_non_neutral_template_fields_still_rejected(self):
+        cases = (
+            (
+                "ss",
+                {"method": "aes-256-gcm", "password": "secret", "type": "ws"},
+            ),
+            (
+                "ss",
+                {"method": "aes-256-gcm", "password": "secret", "headerType": "http"},
+            ),
+            (
+                "trojan",
+                {"password": "secret", "encryption": "aes-128-gcm"},
+            ),
+        )
+        for protocol, params in cases:
+            with self.subTest(protocol=protocol, params=params):
+                proxy = ProxyConfig(SOURCE, protocol, "203.0.113.50", 443, "old", params)
+                result = render_proxy(proxy, rename_template="{flag} {country_code}")
+                self.assertFalse(result.ok)
+                self.assertIn("unsupported source field", result.error or "")
+
     def test_output_name_uses_geo_and_metrics(self):
         proxy = ProxyConfig(SOURCE, "ss", "203.0.113.50", 8388, "old", {"method": "aes-256-gcm", "password": "secret"})
         proxy.tests.geo = {"flag": "🇳🇱", "country_code": "NL", "country": "Netherlands", "asn": 64500, "org": "Example", "isp": "Example"}

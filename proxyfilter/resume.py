@@ -40,6 +40,35 @@ STAGE_FILES = {
 
 _DIAGNOSTIC_STAGES = {"tcp", "core"}
 
+# Diagnostics are intentionally skipped by normal production runs. Remove their
+# obsolete output files on fresh runs so they cannot be mistaken for new results.
+_DIAGNOSTIC_OUTPUT_FILES = (
+    "04-tcp-ok.jsonl",
+    "04-rejected-tcp.jsonl",
+    "05-core-ok.jsonl",
+    "05-rejected-core.jsonl",
+)
+
+
+def cleanup_diagnostic_outputs(data_dir: Path, *, resume_from: str | None = None) -> list[Path]:
+    """Remove stale tcp/core outputs only when starting a fresh pipeline.
+
+    Resume runs keep their checkpoints intact; explicit tcp/core runs will
+    regenerate their corresponding diagnostic output files.
+    """
+    if resume_from is not None:
+        return []
+
+    work = data_dir / "work"
+    removed: list[Path] = []
+    for filename in _DIAGNOSTIC_OUTPUT_FILES:
+        path = work / filename
+        if path.is_file():
+            path.unlink()
+            removed.append(path)
+    return removed
+
+
 
 def stage_index(stage: str) -> int:
     try:
