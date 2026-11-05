@@ -967,6 +967,45 @@ mapper — это круговая проверка.
 совместимости с внешним ядром. Production и реальная checkpoint-база
 не затрагиваются.
 
+## Использованная реализация Podkop: opt-in XHTTP JSON-text
+
+Перенесено **поведение**, а не исходный Go-код, на основании
+[podkop-engine `docs/LINKS.md`](https://github.com/podkop-net/podkop-engine/blob/main/docs/LINKS.md):
+VLESS `type=xhttp&extra=` принимает URL-escaped JSON object.
+У нас URI query уже распакован в `config.params`, поэтому для
+изолированного экспериментального профиля `podkop-engine`
+выполняется строгое `json.loads(extra)`, проверка top-level object
+и уже существующий маппинг полей XHTTP.
+
+- API: `convert_uri_to_native(proxy, profile="podkop-engine")`.
+  **По умолчанию `profile="extended"`** и Base64URL(JSON) для
+  целевого sing-box-extended — без изменений.
+- CLI: `python3 tools/native_differential.py --native-profile podkop-engine`.
+  Выбор профиля отчётливо отмечен в JSON-отчёте;
+  `expected_native` у fixtures относится к default `extended`
+  и будет отличаться для некоторых fixtures в Podkop-профиле.
+- Не допускаются `null`, Python dict repr, невалидный JSON,
+  неподтверждённые nested fields; никаких автокоррекций.
+- Профиль `podkop-engine` пока ограничен VLESS, поскольку
+  исследованный и подтверждённый пример относится к VLESS XHTTP.
+  Это **не** полноценная эмуляция `sing-box tools decode-link`,
+  и локальный бинарь остаётся независимым oracle.
+- Источник `original_raw` не меняется, код production ingest
+  и конфигурации публикации не модифицируются.
+
+Минимальная проверка:
+
+```bash
+python3 -m unittest tests.test_native_experiment tests.test_native_differential -v
+python3 tools/native_differential.py --native-profile extended
+python3 tools/native_differential.py --native-profile podkop-engine
+```
+
+Второй прогон без `--podkop-binary` **не запускает** реальный
+`podkop-engine` и **не подтверждает** структурную эквивалентность
+внешнему ядру. Его результат — локальный тест конкретного
+перенесённого правила.
+
 ## Зафиксированные пробелы реализации и правила gate
 
 1. **Версионная схема:** upstream JSON documentation может описывать поля после 1.14.3; получить version-specific schema и выполнить `sing-box check` установленным бинарником.
