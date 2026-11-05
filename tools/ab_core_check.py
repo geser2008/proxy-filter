@@ -182,6 +182,7 @@ def run(checkpoint: Path, output: Path, extended_binary: str, native_binary: str
     by_protocol: Counter[str] = Counter()
     by_protocol_outcome: Counter[str] = Counter()
     by_conversion_reason: Counter[str] = Counter()
+    by_protocol_reason: Counter[str] = Counter()
     by_native_check_reason: Counter[str] = Counter()
     output.parent.mkdir(parents=True, exist_ok=True)
     with checkpoint.open(encoding="utf-8") as source, output.open("w", encoding="utf-8") as sink:
@@ -206,6 +207,7 @@ def run(checkpoint: Path, output: Path, extended_binary: str, native_binary: str
             by_protocol_outcome[outcome] += 1
             if report.get("conversion_reason"):
                 by_conversion_reason[str(report["conversion_reason"])] += 1
+                by_protocol_reason[f"{protocol_name}:{report['conversion_reason']}"] += 1
             if report.get("native_reason"):
                 by_native_check_reason[str(report["native_reason"])] += 1
     run.last_summary = {
@@ -213,6 +215,7 @@ def run(checkpoint: Path, output: Path, extended_binary: str, native_binary: str
         "by_protocol": dict(sorted(by_protocol.items())),
         "by_protocol_outcome": dict(sorted(by_protocol_outcome.items())),
         "conversion_reasons": dict(sorted(by_conversion_reason.items())),
+        "by_protocol_reason": dict(sorted(by_protocol_reason.items())),
         "native_check_reasons": dict(sorted(by_native_check_reason.items())),
     }
     return dict(sorted(counts.items()))
