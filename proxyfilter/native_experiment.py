@@ -118,58 +118,12 @@ class NativeConversion:
     no_unclassified_loss: bool
 
 
-def _podkop_xmux_json(extra: dict[str, Any]) -> dict[str, Any]:
-    """Conservative subset of podkop-engine XHTTP xmux input conventions.
-
-    Only documented range fields and an integer keepalive are accepted. Numeric
-    JSON ranges are serialized to decimal strings; no malformed input is
-    rewritten or ignored. This is an experimental profile, not a core oracle.
-    """
-    if "xmux" not in extra:
-        return extra
-    xmux = extra["xmux"]
-    if not isinstance(xmux, dict):
-        raise NativeMappingError("invalid_xhttp_xmux_type")
-    if "maxConnections" in xmux and "maxConcurrency" in xmux:
-        raise NativeMappingError("conflicting_xhttp_xmux_limits")
-    range_fields = {
-        "maxConnections", "maxConcurrency", "cMaxReuseTimes",
-        "hMaxRequestTimes", "hMaxReusableSecs",
-    }
-    converted: dict[str, Any] = {}
-    for key, value in xmux.items():
-        if key in range_fields:
-            if type(value) is int and value > 0:
-                converted[key] = str(value)
-            elif isinstance(value, str) and re.fullmatch(
-                r"[1-9][0-9]*(?:-[1-9][0-9]*)?", value
-            ) and (
-                "-" not in value or
-                int(value.split("-")[0]) <= int(value.split("-")[1])
-            ):
-                converted[key] = value
-            else:
-                raise NativeMappingError("invalid_xhttp_xmux_range")
-        elif key == "hKeepAlivePeriod":
-            if type(value) is not int:
-                raise NativeMappingError("invalid_xhttp_xmux_keepalive")
-            converted[key] = value
-        else:
-            raise NativeMappingError("unsupported_xhttp_xmux_field")
-    return {**extra, "xmux": converted}
-
-
-def convert_uri_to_native(proxy: Any, *, profile: str = "extended") -> NativeConversion:
+def convert_uri_to_native(proxy: Any) -> NativeConversion:
     """Convert a URI proxy without changing identity or production configuration.
 
     Refuse recognized-but-unimplemented connection fields rather than silently
     dropping them. Unclassified fields are reported without leaking values.
     """
-    # Explicit, isolated parser profiles. The default remains the target
-    # sing-box-extended URI parser. podkop-engine's documented VLESS XHTTP
-    # extra accepts URL-query-decoded JSON text, not Base64URL(JSON).
-    if profile not in {"extended", "podkop-engine"}:
-        raise NativeMappingError("unknown_parser_profile")
     if not str(getattr(proxy, "original_format", "")).endswith("-uri"):
         raise NativeMappingError("not_uri")
     protocol = str(proxy.protocol).lower()
@@ -177,9 +131,6 @@ def convert_uri_to_native(proxy: Any, *, profile: str = "extended") -> NativeCon
         protocol = "hysteria2"
     if protocol not in _PROTOCOL_FIELDS:
         raise NativeMappingError("unsupported_protocol")
-    if profile == "podkop-engine" and protocol != "vless":
-        # Only VLESS XHTTP has been source-verified for this profile.
-        raise NativeMappingError("unverified_parser_profile_protocol")
     params = proxy.params
     if not isinstance(params, dict):
         raise NativeMappingError("invalid_params")
@@ -245,33 +196,7 @@ def convert_uri_to_native(proxy: Any, *, profile: str = "extended") -> NativeCon
         if "authority" in params:
             raise NativeMappingError("unsupported_authority", ("authority",))
         tcp_fields = ("host", "path", "headers", "serviceName", "service_name")
-        podkop_tcp_http = (
-            profile == "podkop-engine" and protocol == "vless"
-            and selector in {"", "tcp", "raw"}
-            and params.get("headerType") == "http"
-        )
-        if podkop_tcp_http:
-            # podkop-engine docs/LINKS.md: HTTP/1.1 disguise over plain TCP.
-            # With TLS sing-box's HTTP transport would use HTTP/2.
-            tls_selector = params.get("tls")
-            security_selector = params.get("security")
-            if ((isinstance(security_selector, str)
-                 and security_selector.lower() in {"tls", "reality"})
-                    or (isinstance(tls_selector, str) and tls_selector.lower()
-                        in {"tls", "reality", "true", "1"})
-                    or tls_selector is True or isinstance(tls_selector, dict)):
-                raise NativeMappingError("http_header_with_tls")
-            if any(key in params for key in ("headers", "serviceName", "service_name")):
-                raise NativeMappingError("unmapped_tcp_http_fields")
-            if "path" in params and (not isinstance(params["path"], str)
-                                     or "," in params["path"]):
-                raise NativeMappingError("unrepresentable_tcp_http_path")
-            if "host" in params and (
-                not isinstance(params["host"], str)
-                or any(not part for part in params["host"].split(","))
-            ):
-                raise NativeMappingError("unrepresentable_tcp_http_host")
-        if selector in {"", "tcp", "raw"} and not podkop_tcp_http:
+        if selector in {"", "tcp", "raw"}:
             present_tcp_fields = tuple(key for key in tcp_fields if key in params)
             if present_tcp_fields:
                 raise NativeMappingError("transport_fields_on_tcp", present_tcp_fields)
@@ -292,19 +217,6 @@ def convert_uri_to_native(proxy: Any, *, profile: str = "extended") -> NativeCon
         for key in sorted(params) if key not in known
     )
     mapped = {key: value for key, value in params.items() if key in known}
-    if profile == "podkop-engine" and protocol == "vless" and (
-        params.get("headerType") == "http"
-        and selector in {"", "tcp", "raw"}
-    ):
-        # Use the backend's supported native transport input instead of
-        # interpreting the TCP header value as an unrelated transport type.
-        http_transport: dict[str, Any] = {"type": "http"}
-        if "host" in params and params["host"]:
-            http_transport["host"] = params["host"].split(",")
-        if "path" in params:
-            http_transport["path"] = params["path"]
-        mapped["transport"] = http_transport
-        mapped.pop("headerType", None)
     if protocol == "vmess":
         # sing-box-extended parser/link/vmess.go enables insecure only for
         # literal "1" or "true"; an empty URI value leaves it false.
@@ -319,30 +231,17 @@ def convert_uri_to_native(proxy: Any, *, profile: str = "extended") -> NativeCon
     if protocol in {"vless", "vmess", "trojan"} and selector == "xhttp":
         if "extra" in mapped:
             encoded = mapped["extra"]
-            if profile == "podkop-engine":
-                # podkop-engine docs/LINKS.md: URL-escaped JSON-object in
-                # the query. URI decoding was already performed by ingest.
-                # No Python-repr repair, no implicit alternate encoding.
-                if not isinstance(encoded, str):
-                    raise NativeMappingError("invalid_xhttp_extra_encoding")
-                try:
-                    parsed = json.loads(encoded)
-                except ValueError as exc:
-                    raise NativeMappingError("invalid_xhttp_extra_json") from exc
-            else:
-                if not isinstance(encoded, str) or not re.fullmatch(r"[A-Za-z0-9_-]+={0,2}", encoded):
-                    raise NativeMappingError("invalid_xhttp_extra_encoding")
-                try:
-                    raw = base64.b64decode(
-                        encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True
-                    )
-                    parsed = json.loads(raw.decode("utf-8"))
-                except (binascii.Error, ValueError, UnicodeDecodeError) as exc:
-                    raise NativeMappingError("invalid_xhttp_extra_json") from exc
+            if not isinstance(encoded, str) or not re.fullmatch(r"[A-Za-z0-9_-]+={0,2}", encoded):
+                raise NativeMappingError("invalid_xhttp_extra_encoding")
+            try:
+                raw = base64.b64decode(
+                    encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True
+                )
+                parsed = json.loads(raw.decode("utf-8"))
+            except (binascii.Error, ValueError, UnicodeDecodeError) as exc:
+                raise NativeMappingError("invalid_xhttp_extra_json") from exc
             if not isinstance(parsed, dict):
                 raise NativeMappingError("invalid_xhttp_extra_type")
-            if profile == "podkop-engine":
-                parsed = _podkop_xmux_json(parsed)
             mapped["extra"] = parsed
     # Never invoke ensure_id(), alter original_raw, or mutate source params.
     from copy import copy
