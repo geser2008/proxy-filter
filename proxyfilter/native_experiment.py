@@ -229,6 +229,19 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
     temporary = copy(proxy)
     temporary.params = mapped
     outbound = MappedBackend()._render_outbound(temporary)
+    # Evidence-based compatibility bridge for sing-box-extended XHTTP:
+    # URI parser builds V2RayXHTTPOptions directly, where an absent
+    # XPaddingBytes range is normalized to 100..1000 at runtime
+    # (option/v2ray_transport.go:GetNormalizedXPaddingBytes).
+    # Native JSON goes through UnmarshalJSON, which rejects a zero range.
+    # Set that SAME range only when it is absent; never overwrite a
+    # supplied xPaddingBytes option, even if the value is invalid.
+    transport = outbound.get("transport")
+    if (protocol in {"vless", "vmess", "trojan"} and selector == "xhttp"
+            and isinstance(transport, dict)
+            and transport.get("type") == "xhttp"
+            and "x_padding_bytes" not in transport):
+        transport["x_padding_bytes"] = "100-1000"
     return NativeConversion(
         outbound=outbound,
         dropped_fields=dropped,
