@@ -143,7 +143,7 @@ def context(params: dict) -> tuple[str, str, str]:
 
 def semantic_audit(checkpoint: Path, registry: dict) -> dict:
     result = {
-        "schema": "uri-semantic-aggregation-v1",
+        "schema": "uri-semantic-aggregation-v2",
         "checkpoint": checkpoint.name,
         "privacy": "Only fixed selector vocabulary and structural buckets; no actual URI or secret field values",
         "valid_rows": 0,
@@ -192,15 +192,22 @@ def semantic_audit(checkpoint: Path, registry: dict) -> dict:
                     a["cs"]["value_shape"][cipher_suites_bucket(params[key])] += 1
                     a["cs"]["transport_context"][transport] += 1
                     a["cs"]["security_context"][tls] += 1
-                    a["cs"]["tls_marker"][marker] += 1
+                    # A cs field itself is in TLS_FIELDS, so checking for
+                    # any TLS marker would be tautologically true.
+                    a["cs"]["tls_activation"][tls] += 1
             if "extra" in params:
                 encoding, shape = extra_bucket(params["extra"])
                 a["extra"]["encoding"][encoding] += 1
                 a["extra"]["top_level_shape"][shape] += 1
                 a["extra"]["transport_context"][transport] += 1
                 a["extra"]["security_context"][tls] += 1
+                a["extra"]["encoding_by_transport"][transport + " / " + encoding] += 1
             if "headerType" in params:
                 a["cooccurrences"]["headerType_by_transport"][transport] += 1
+                header = selector_bucket("headerType", params["headerType"])
+                # Cross-tab uses fixed selector vocabulary or <other>, never
+                # an unbounded user-supplied value.
+                a["cooccurrences"]["headerType_value_by_transport"][transport + " / " + header] += 1
     for proto, a in sorted(acc.items()):
         result["protocols"][proto] = {
             "rows": a["rows"],
