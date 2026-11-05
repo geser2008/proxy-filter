@@ -356,3 +356,41 @@ network behavior to establish equivalent semantics.
 git pull
 python3 tools/ab_xhttp_smoke.py
 ```
+
+## Phase 4h: preserve the extended XHTTP omitted-padding default
+
+On the installed `1.14.3-extended-2.7.3-lite` build the **synthetic**
+`sing-box check` results were:
+
+- XHTTP without `x_padding_bytes`: FAIL (`x_padding_bytes cannot be disabled`)
+- XHTTP with explicit `"x_padding_bytes": "100-1000"`: PASS
+  (minimal, with path, and with path/mode)
+- WS control: PASS
+
+In the extended fork, the share-URI parser creates XHTTP options directly,
+while native JSON calls `V2RayXHTTPOptions.UnmarshalJSON` and rejects the
+missing positive range. The fork's
+`V2RayXHTTPBaseOptions.GetNormalizedXPaddingBytes` supplies `100-1000`
+at runtime when the range is absent. This supports a narrowly-scoped
+conversion: **only in the experimental native converter**, if XHTTP's
+`x_padding_bytes` is absent, emit `"100-1000"` in generated native JSON.
+Do not modify the source URI, mutate `params`, repair invalid explicit
+ranges or change production backends. Tests cover omitted, explicit and
+non-XHTTP values.
+
+To recheck the previously identified 320 discrepancies:
+
+```bash
+git pull
+python3 -m unittest tests.test_native_experiment tests.test_ab_core_check -v
+python3 tools/ab_core_check.py \
+  --focus-report /tmp/proxyfilter-ab-core-phase4d.jsonl \
+  --limit 0 \
+  --output /tmp/proxyfilter-ab-core-padding.jsonl
+```
+
+The previous focused cohort is not representative of full coverage; after
+the focused test, a full checkpoint pass is required to compute updated
+totals. Even when both `sing-box check` variants pass, equivalence of
+ALPN, path, XHTTP mode and actual on-wire behavior remains unproven
+until runtime network A/B testing.
