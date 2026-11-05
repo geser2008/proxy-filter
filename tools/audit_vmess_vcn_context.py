@@ -20,33 +20,34 @@ from tools.audit_native_coverage import DEFAULT_CHECKPOINT, _parse_record
 def audit(checkpoint: Path) -> dict:
     types, tls, pairs = Counter(), Counter(), Counter()
     count = invalid = 0
-    for line in checkpoint.open(encoding="utf-8"):
-        if not line.strip():
-            continue
-        try:
-            item = _parse_record(json.loads(line))
-        except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
-            invalid += 1
-            continue
-        if item.protocol.lower() != "vmess" or not item.original_format.endswith("-uri"):
-            continue
-        params = item.params
-        if "vcn" not in params:
-            continue
-        val = params["vcn"]
-        vtype = "empty_string" if type(val) is str and val == "" else (
-            "nonempty_string" if type(val) is str else "non_string"
-        )
-        tval = params.get("tls")
-        ttype = "tls_enabled_literal" if type(tval) is str and tval in ("1", "true", "tls") else (
-            "tls_other" if "tls" in params else "tls_absent"
-        )
-        count += 1
-        types[vtype] += 1
-        tls[ttype] += 1
-        pairs[f"{vtype} | {ttype} | " +
-              ("empty_pcs" if type(params.get("pcs")) is str and params["pcs"] == ""
-               else "other_pcs")] += 1
+    with checkpoint.open(encoding="utf-8") as stream:
+        for line in stream:
+            if not line.strip():
+                continue
+            try:
+                item = _parse_record(json.loads(line))
+            except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
+                invalid += 1
+                continue
+            if item.protocol.lower() != "vmess" or not item.original_format.endswith("-uri"):
+                continue
+            params = item.params
+            if "vcn" not in params:
+                continue
+            val = params["vcn"]
+            vtype = "empty_string" if type(val) is str and val == "" else (
+                "nonempty_string" if type(val) is str else "non_string"
+            )
+            tval = params.get("tls")
+            ttype = "tls_enabled_literal" if type(tval) is str and tval in ("1", "true", "tls") else (
+                "tls_other" if "tls" in params else "tls_absent"
+            )
+            count += 1
+            types[vtype] += 1
+            tls[ttype] += 1
+            pairs[f"{vtype} | {ttype} | " +
+                  ("empty_pcs" if type(params.get("pcs")) is str and params["pcs"] == ""
+                   else "other_pcs")] += 1
     def ordered(counter):
         return dict(sorted(counter.items(), key=lambda x: (-x[1], x[0])))
     return {
