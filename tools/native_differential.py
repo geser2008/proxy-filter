@@ -88,6 +88,41 @@ def native_result(item: dict, *, profile: str = "extended") -> dict:
     }
 
 
+def check_podkop_binary(binary: str) -> dict:
+    """Reject an incompatible executable before sending any fixture URIs.
+
+    The real podkop-engine has a 'tools decode-link' subcommand. Never accept
+    the generic sing-box executable simply because it responds to 'version'.
+    """
+    try:
+        result = subprocess.run(
+            [binary, "tools", "decode-link", "--help"],
+            input="", capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError("podkop-engine binary unavailable or not executable") from exc
+    if result.returncode != 0:
+        # No stderr/stdout: a binary may echo an unsupported argument or path.
+        raise ValueError("binary does not support tools decode-link --help")
+    return {"decode_link_help": "ok"}
+
+
+def outbound_top_level_difference(one: dict, two: dict) -> list[str]:
+    """Only report static top-level field names, never values or arbitrary keys."""
+    allowed = {
+        "type", "tag", "server", "server_port", "domain_resolver",
+        "uuid", "password", "security", "alter_id", "tls", "transport",
+        "flow", "packet_encoding", "multiplex",
+    }
+    if one.get("status") != "ok" or two.get("status") != "ok":
+        return []
+    a, b = one["outbound"], two["outbound"]
+    return sorted(
+        k for k in allowed
+        if (k in a) != (k in b) or (k in a and k in b and a[k] != b[k])
+    )
+
+
 def capture_podkop_engine(uri: str, binary: str, timeout: float = 10.0) -> dict:
     """Invoke known podkop-engine CLI with URI via stdin, never argv or shell."""
     try:
@@ -147,6 +182,8 @@ def run(fixtures: list[dict], target: dict | None = None,
         native_profile: str = "extended") -> dict:
     if native_profile not in {"extended", "podkop-engine"}:
         raise ValueError("unsupported native profile")
+    if podkop_binary:
+        check_podkop_binary(podkop_binary)
     target = target or {}
     entries = []
     for item in fixtures:
@@ -163,6 +200,7 @@ def run(fixtures: list[dict], target: dict | None = None,
             "podkop": podkop["status"],
             "vs_target": compare(native, oracle),
             "vs_podkop": compare(native, podkop),
+            "podkop_differing_fields": outbound_top_level_difference(native, podkop),
         })
     return {
         "schema": "native-differential-v1",
@@ -172,6 +210,12 @@ def run(fixtures: list[dict], target: dict | None = None,
         "expected_native_passed": sum(e["expected_native_match"] for e in entries),
         "target_comparisons": dict(sorted(Counter(e["vs_target"] for e in entries).items())),
         "podkop_comparisons": dict(sorted(Counter(e["vs_podkop"] for e in entries).items())),
+        "podkop_oracle_checked": sum(e["podkop"] != "unavailable" for e in entries),
+        "podkop_mismatch_ids": [
+            e["id"] for e in entries if e["vs_podkop"] in {
+                "status_mismatch", "structural_difference", "unclassified_loss"
+            }
+        ],
         "results": entries,
     }
 
@@ -195,6 +239,8 @@ def main() -> None:
           f"expected_native_passed={report['expected_native_passed']}")
     print("target:", report["target_comparisons"])
     print("podkop:", report["podkop_comparisons"])
+    print("podkop oracle checked:", report["podkop_oracle_checked"])
+    print("podkop mismatch IDs:", ", ".join(report["podkop_mismatch_ids"]) or "(none)")
 
 
 if __name__ == "__main__":
