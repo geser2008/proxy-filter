@@ -1295,6 +1295,76 @@ outbound; `proxy-filter` придерживается `fail-closed` и не пр
 `sing-box-extended` и независимым источником. Без checkpoint
 не приписывать 201 случаям конкретные поля или значения.
 
+## Контекстный аудит `pcs` в VMess Base64(JSON) (2026-11-05)
+
+**Основание:** в последнем локальном checkpoint из 201 VMess
+`unsupported_connection_field` ровно **200 содержат `pcs`**
+(195 только `pcs`, пять `pcs+ech`). Решение об игнорировании
+pin **нельзя** принимать на основании одного имени поля.
+
+### Разделение TLS, VMess security и certificate pin
+
+В проверенном
+[`sing-box-extended/parser/link/vmess.go`](https://github.com/dioxine/sing-box-extended/blob/extended/parser/link/vmess.go)
+(`d3a09711efedaab6f567ae71765109f23614e391`)
+VMess `tls` включает TLS только для точных строковых значений
+`"1"`, `"true"`, `"tls"`; `insecure` и `skip-cert-verify`
+включают обход проверки только для `"1"` или `"true"`.
+Это **описание конкретного внешнего парсера**, не общее правило
+нормализации и не основание переписывать нестроковые JSON-значения.
+`scy`/`security` относятся к VMess cipher, не к TLS; присутствие
+этих полей нужно учитывать отдельно, а не приравнивать к `tls=tls`.
+
+[Podkop `docs/LINKS.md`, TLS](https://github.com/podkop-net/podkop-engine/blob/main/docs/LINKS.md)
+использует другую политику:
+(а) без TLS пропускает TLS-параметры;
+(б) при активной проверке сертификата и непустом `pcs`
+предупреждает, но игнорирует pin;
+(в) при `allowInsecure=1` или наличии `cert` игнорирует pin
+без предупреждения. Наш **fail-closed** не меняется.
+Случай `cert` особенно требует доказательства: наличие сертификата
+в ссылке ещё не доказывает, что конкретный сервер и клиент
+применяют проверку, эквивалентную pinning.
+
+### Диагностика без исходных значений
+
+Добавлен read-only `tools/audit_vmess_pcs_context.py`:
+он принимает тот же `03-safe.jsonl`, рассматривает **только** записи
+VMess с **первым отказом** `unsupported_connection_field` и
+ключом `pcs`, а в JSON отчёта возвращает:
+
+| Счётчик | Что измеряет | Ограничение |
+|---|---|---|
+| `tls_state` | `absent`, `enabled_literal`, `disabled_literal`, `other_literal`, `non_string` | Точные литералы EXT, не сетевой TLS-тест |
+| `insecure_state` | `absent`, `on`, `off`, `other`, `non_string`, `conflicting` для `insecure` и `skip-cert-verify` | Не объединять без доказательства с `allowInsecure` |
+| `pin_state` | `empty_string`, `nonempty_string`, `null`, `non_string` | Отсутствуют длина, хеш, само значение |
+| `other_fields` | Только наличие `cert`, `ech`, `echConfigList`, `security`, `scy` | Наличие `cert` ≠ проверенная работа сертификатного pin |
+| `contexts` | Пересечения фиксированных категорий TLS, insecure, cert, pin, ECH | Ровно одна комбинация на URI; никаких произвольных имён полей |
+
+Инструмент **не выводит** URI, хеши, сертификаты, значения,
+адреса, ключи аутентификации и произвольные имена полей.
+Сумма `contexts` должна равняться `rows`, а при прежнем
+checkpoint ожидается `rows=200`. Численное распределение пока
+**неизвестно**, до локального запуска ничего не приписываем.
+
+Из каталога `app/`, после `git pull`:
+
+```bash
+python3 -m unittest tests.test_audit_vmess_pcs_context -v
+python3 tools/audit_vmess_pcs_context.py \
+  --checkpoint ../data/work/03-safe.jsonl \
+  --output /tmp/proxyfilter-vmess-pcs-context.json
+cat /tmp/proxyfilter-vmess-pcs-context.json
+```
+
+**Дальнейшее правило:** только если будет доказано, что конкретный
+`pcs` нейтрален *для исходного URI и целевого backend*, можно
+рассматривать узкое исключение. Даже для TLS `absent`/выключенного
+одного факта недостаточно без проверки конфликтующих TLS-aliases
+и поведения конкретного парсера. Прямое `pcs` →
+`tls.certificate_public_key_sha256` **запрещено**.
+Production mapping и `_UNSUPPORTED` остаются неизменными.
+
 ## Зафиксированные пробелы реализации и правила gate
 
 1. **Версионная схема:** upstream JSON documentation может описывать поля после 1.14.3; получить version-specific schema и выполнить `sing-box check` установленным бинарником.
