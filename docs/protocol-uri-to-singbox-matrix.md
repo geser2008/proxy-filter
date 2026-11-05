@@ -193,6 +193,7 @@ VMess JSON/nested extra), `origin_class`, `source_ref`, `value_type`,
 | `pcs`, `vcn`, `ech`, `fm` | query | EXT/OBSERVED | Xray-specific расширения; для каждого поля требуется версия экспортёра [V2] |
 | `spider_x`, `final_mask`, `net`, `network` | query | OBSERVED | Алиасы/расширения PF; не часть доказанного базового VLESS URI |
 | `allowInsecure`, `insecure`, `disable_sni` | query | EXT/OBSERVED | Настройки TLS, риск смены security semantics; проверить конкретный клиент |
+| `note`, `password`, `allowinsecure`, `pinSHA256`, `packet-encoding`, `udp` | config.params после ingest | OBSERVED | Зафиксированы аудитом 8 848; `note` — кандидат metadata, но не автоматически безопасное для соединения поле; `password` в VLESS требует отдельного анализа |
 
 #### VMess — legacy Base64(JSON), а не query URI
 
@@ -207,6 +208,7 @@ VMess JSON/nested extra), `origin_class`, `source_ref`, `value_type`,
 | `global_padding`, `authenticated_length`, `packetEncoding` | JSON внутри Base64 | OBSERVED | Есть в PF mapper/native schema, но [M1] не доказывает все эти share-ключи |
 | `security`, `cipher`, `alterId`, `network`, `uuid` | JSON внутри Base64 | OBSERVED | Алиасы PF, не приравнивать автоматически к исходным [M1] |
 | `vmess://UUID@host:port?...` | **другой формат** | EXT | [V1], предложение VMessAEAD URI; **не** смешивать с [M1] |
+| `name`, `skip-cert-verify`, `serviceName`, `ech`, `echConfigList` | JSON внутри Base64 / config.params | OBSERVED | Аудит 8 848: варианты полей и расширения; `name` кандидат META, остальные нельзя молча отбрасывать |
 
 #### Trojan — base URI и клиентские расширения
 
@@ -218,6 +220,7 @@ VMess JSON/nested extra), `origin_class`, `source_ref`, `value_type`,
 | `pbk`, `sid`, `ech` | query | EXT | [T1], REALITY/ECH клиентские расширения |
 | `extra`, `mode`, `pcs`, `fm` | query | OBSERVED | Не подтверждены ссылкой [T1] как универсальные поля Trojan URI |
 | `headerType`, `headers`, `authority`, `net`, `network` | query | OBSERVED | Нужна точная спецификация транспортного расширения |
+| `insecure`, `allow_insecure`, `allowinsecure`, `spx`, `flow`, `encryption`, `ed`, `eh`, `ws`, `Host`, `note` | query / config.params | OBSERVED | По аудиту 8 848; `insecure` — 466 конфигураций; распознавание не устанавливает допустимые значения и эквивалентность; `note` кандидат META |
 
 #### Shadowsocks — SIP002 и legacy
 
@@ -231,6 +234,7 @@ VMess JSON/nested extra), `origin_class`, `source_ref`, `value_type`,
 | `plugin_opts`, `plugin-opts` | query | OBSERVED | Не отдельные нормативные параметры SIP002 |
 | `network`, `udp_over_tcp`, `multiplex` | query | OBSERVED | Не определены SIP002; схема native JSON этого не меняет |
 | `type`, `headerType` | query | OBSERVED | Не часть SIP002; SS transport нельзя заимствовать из VLESS |
+| `note` | config.params после ingest | META | Подтверждено как поле заметки по названию; не часть SIP002, проверить источник ingest при дальнейшем аудите |
 
 #### Hysteria2 / hy2 — официальный share URI
 
@@ -248,6 +252,7 @@ VMess JSON/nested extra), `origin_class`, `source_ref`, `value_type`,
 | `fp`, `client-fingerprint`, `fingerprint` | query | OBSERVED | uTLS и сертификатный pin — разные значения; не отождествлять |
 | `alpn`, `fastopen`, `realm`, `realm-opts`, `bbr_profile`, `network` | query | OBSERVED | Не определены как поля базового `hysteria2://` в [H1] |
 | `hysteria2+realm://` | **другая схема** | SPEC, вне production | [H1], не включать автоматически в `hysteria2://` ingest |
+| `password`, `security`, `fm` | config.params после ingest | OBSERVED | `password` — внутреннее представление auth в checkpoint, НЕ утверждение о нормативном query `password`; `security`/`fm` — не подтверждённые H1 расширения |
 
 #### TUIC v5 — URI-конвенция, не формальный URI-стандарт
 
