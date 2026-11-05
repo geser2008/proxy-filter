@@ -178,7 +178,7 @@ VMess JSON/nested extra), `origin_class`, `source_ref`, `value_type`,
 
 | Поле / алиасы | Где | Класс | Источник / граница применимости |
 |---|---|---|---|
-| UUID | userinfo | EXT | [V1], обязательный идентификатор |
+| `uuid` (UUID в userinfo) | userinfo | EXT | [V1], обязательный идентификатор; в checkpoint хранится как `uuid` |
 | `encryption`, `flow` | query | EXT | [V1]; значения и требования зависят от версии VLESS |
 | `type`, `host`, `path` | query | EXT | [V1], транспортно-зависимые значения |
 | `security`, `sni`, `alpn` | query | EXT | [V1], TLS/XTLS; `reality` — позднее расширение [V2] |
@@ -253,7 +253,7 @@ VMess JSON/nested extra), `origin_class`, `source_ref`, `value_type`,
 
 | Поле / алиасы | Где | Класс | Источник / граница применимости |
 |---|---|---|---|
-| `uuid:password` | userinfo | EXT/OBSERVED | Имеющаяся `tuic://`-конвенция; [U1] не задаёт синтаксис share URI |
+| `uuid`, `password` (как `uuid:password`) | userinfo | EXT/OBSERVED | Имеющаяся `tuic://`-конвенция; [U1] не задаёт синтаксис share URI |
 | `host`, `port`, `#name` | authority/fragment | EXT/OBSERVED | URI-оболочка; точное правило URI-экспортёра не установлено |
 | `congestion_control`, `congestion-controller` | query | OBSERVED | Семантика JSON известна по [U2], происхождение URI не доказано |
 | `udp_relay_mode`, `udp-relay-mode` | query | OBSERVED | [U2] определяет JSON; не использовать как URI-спецификацию |
