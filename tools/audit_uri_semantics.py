@@ -117,7 +117,7 @@ def extra_bucket(value: object) -> tuple[str, str]:
     if not value:
         return "empty", "none"
     encoding, parsed = _parse_extra_json(value)
-    if parsed is None:
+    if encoding not in {"json-text", "base64url-json"}:
         return encoding, "none"
     return encoding, _shape(parsed)
 
