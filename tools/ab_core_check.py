@@ -27,7 +27,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from proxyfilter.model import ProxyConfig
-from proxyfilter.native_experiment import convert_uri_to_native
+from proxyfilter.native_experiment import NativeMappingError, convert_uri_to_native
 from proxyfilter.security import check_static_security
 from proxyfilter.singbox_modes import SingBoxBackend
 
@@ -65,8 +65,28 @@ def inspect_pair(extended_binary: str, native_binary: str) -> dict[str, str]:
     return {"extended_version": extended, "native_version": native}
 
 
-def _check(binary: str, config: dict[str, Any], timeout: float = 20.0) -> str:
-    """Return a non-secret-bearing result classification."""
+_CHECK_PATTERNS = (
+    ("unknown_json_field", r"(?i)unknown field|unknown json field"),
+    ("invalid_json_type", r"(?i)cannot unmarshal|expected (?:string|object|array|number|bool)|invalid character"),
+    ("missing_required_field", r"(?i)missing (?:required )?field|missing (?:server|uuid|password)|required field"),
+    ("invalid_field_value", r"(?i)invalid (?:value|type|argument|option)|unsupported (?:type|transport|protocol|cipher)"),
+    ("unsupported_feature", r"(?i)not supported|unsupported|unknown (?:outbound|inbound) type"),
+    ("invalid_configuration", r"(?i)decode configuration|parse configuration|invalid config"),
+)
+
+
+def classify_check_failure(stderr: str, stdout: str) -> str:
+    """Fixed vocabulary only; never persist raw sing-box error text."""
+    message = "\n".join((stderr or "", stdout or ""))
+    for code, pattern in _CHECK_PATTERNS:
+        if re.search(pattern, message):
+            return code
+    return "other_check_failure"
+
+
+def _check_details(binary: str, config: dict[str, Any],
+                   timeout: float = 20.0) -> tuple[str, str | None]:
+    """Return result and safe error category without writing core diagnostics."""
     with tempfile.TemporaryDirectory(prefix="proxyfilter-ab-") as tmp:
         path = Path(tmp) / "config.json"
         path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
@@ -74,16 +94,32 @@ def _check(binary: str, config: dict[str, Any], timeout: float = 20.0) -> str:
         try:
             proc = subprocess.run(
                 [binary, "check", "-c", str(path)],
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
+                capture_output=True, text=True, timeout=timeout, check=False,
             )
         except subprocess.TimeoutExpired:
-            return "timeout"
+            return "timeout", "timeout"
         except OSError:
-            return "binary_error"
-        return "pass" if proc.returncode == 0 else "check_failed"
+            return "binary_error", "binary_error"
+        if proc.returncode == 0:
+            return "pass", None
+        return "check_failed", classify_check_failure(proc.stderr, proc.stdout)
+
+
+def _check(binary: str, config: dict[str, Any], timeout: float = 20.0) -> str:
+    """Compatibility entry for existing tests and clients."""
+    return _check_details(binary, config, timeout)[0]
+
+
+def _safe_check(binary: str, config: dict[str, Any],
+                timeout: float) -> tuple[str, str | None]:
+    # Compatibility: tests can mock _check. Real checks use the structured
+    # result path without invoking a core twice.
+    if _check is not _ORIGINAL_CHECK:
+        return _check(binary, config, timeout), None
+    return _check_details(binary, config, timeout)
+
+
+_ORIGINAL_CHECK = _check
 
 
 def compare_one(proxy: ProxyConfig, extended_binary: str, native_binary: str,
@@ -112,14 +148,22 @@ def compare_one(proxy: ProxyConfig, extended_binary: str, native_binary: str,
     # address, DNS, routing). Only outbound differs.
     extended_backend = SingBoxBackend(backend_mode="extended")
     base = extended_backend.render_config(proxy, 18080)
-    result["extended"] = _check(extended_binary, base, timeout)
+    result["extended"], extended_reason = _safe_check(extended_binary, base, timeout)
+    if extended_reason:
+        result["extended_reason"] = extended_reason
 
     try:
         converted = convert_uri_to_native(proxy)
-    except Exception as exc:
-        # Exception strings can include credentials or URI field values.
-        # Intentionally retain only the exception class.
+    except NativeMappingError as exc:
         result["conversion"] = "rejected"
+        result["conversion_reason"] = exc.code
+        result["conversion_error_type"] = type(exc).__name__
+        return result
+    except Exception as exc:
+        # Third-party mapper errors may contain secrets: classify only by
+        # exception TYPE, never by message.
+        result["conversion"] = "rejected"
+        result["conversion_reason"] = "backend_mapping_error"
         result["conversion_error_type"] = type(exc).__name__
         return result
 
@@ -131,7 +175,9 @@ def compare_one(proxy: ProxyConfig, extended_binary: str, native_binary: str,
     result["no_unclassified_loss"] = converted.no_unclassified_loss
     native_config = dict(base)
     native_config["outbounds"] = [converted.outbound]
-    result["native"] = _check(native_binary, native_config, timeout)
+    result["native"], native_reason = _safe_check(native_binary, native_config, timeout)
+    if native_reason:
+        result["native_reason"] = native_reason
     return result
 
 
@@ -145,6 +191,9 @@ def run(checkpoint: Path, output: Path, extended_binary: str, native_binary: str
             "Use --checkpoint to specify an existing 03-safe.jsonl."
         )
     counts: Counter[str] = Counter()
+    by_protocol: Counter[str] = Counter()
+    by_conversion_reason: Counter[str] = Counter()
+    by_native_check_reason: Counter[str] = Counter()
     output.parent.mkdir(parents=True, exist_ok=True)
     with checkpoint.open(encoding="utf-8") as source, output.open("w", encoding="utf-8") as sink:
         for lineno, line in enumerate(source, 1):
@@ -162,6 +211,17 @@ def run(checkpoint: Path, output: Path, extended_binary: str, native_binary: str
                           "extended": "not_run", "native": "not_run"}
             sink.write(json.dumps(report, ensure_ascii=False, sort_keys=True) + "\n")
             counts[report["conversion"]] += 1
+            by_protocol[str(report.get("protocol", "invalid"))] += 1
+            if report.get("conversion_reason"):
+                by_conversion_reason[str(report["conversion_reason"])] += 1
+            if report.get("native_reason"):
+                by_native_check_reason[str(report["native_reason"])] += 1
+    run.last_summary = {
+        "conversion": dict(sorted(counts.items())),
+        "by_protocol": dict(sorted(by_protocol.items())),
+        "conversion_reasons": dict(sorted(by_conversion_reason.items())),
+        "native_check_reasons": dict(sorted(by_native_check_reason.items())),
+    }
     return dict(sorted(counts.items()))
 
 
@@ -192,6 +252,7 @@ def main() -> None:
                   args.native_bin, args.limit, args.timeout)
     print(f"report: {args.output}")
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    print(json.dumps(run.last_summary, ensure_ascii=False, sort_keys=True))
 
 
 if __name__ == "__main__":
