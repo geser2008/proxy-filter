@@ -49,7 +49,7 @@ class VMessPCSContextAuditTests(unittest.TestCase):
     def test_context_counts_only_first_rejections_and_hides_values(self):
         report = self.run_audit([
             row({"pcs": "PRIVATE_HASH", "tls": "tls", "insecure": "false", "ech": "ECHSECRET"}),
-            row({"pcs": "", "tls": "none", "cert": "PEMSECRET"}),
+            row({"pcs": "PINWITHCERT", "tls": "none", "cert": "PEMSECRET"}),
             row({"pcs": "PRIVATE_HASH", "tls": True, "skip-cert-verify": True}),
             row({"echConfigList": "SECRET"}),
             row({"pcs": "ANOTHER"}, protocol="vless"),
@@ -62,14 +62,14 @@ class VMessPCSContextAuditTests(unittest.TestCase):
         self.assertEqual(report["tls_state"], {
             "disabled_literal": 1, "enabled_literal": 1, "non_string": 1,
         })
-        self.assertEqual(report["pin_state"], {"nonempty_string": 2, "empty_string": 1})
+        self.assertEqual(report["pin_state"], {"nonempty_string": 3})
         self.assertEqual(report["other_fields"]["ech_present"], 1)
         self.assertEqual(report["other_fields"]["cert_present"], 1)
         self.assertEqual(sum(report["contexts"].values()), report["rows"])
         output = json.dumps(report)
         for secret in (
             "PRIVATE_HASH", "PRIVATE.example", "SECRET", "ECHSECRET",
-            "PEMSECRET", "ANOTHER", UUID, "vmess://",
+            "PEMSECRET", "PINWITHCERT", "ANOTHER", UUID, "vmess://",
         ):
             self.assertNotIn(secret, output)
 
