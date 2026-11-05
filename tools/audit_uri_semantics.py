@@ -14,7 +14,13 @@ import json
 from pathlib import Path
 import re
 
-from tools.audit_uri_provenance import DEFAULT_CHECKPOINT, DEFAULT_MATRIX, load_matrix
+try:
+    from tools.audit_uri_provenance import DEFAULT_CHECKPOINT, DEFAULT_MATRIX, load_matrix
+except ModuleNotFoundError as exc:
+    if exc.name != "tools":
+        raise
+    # Direct execution: python3 tools/audit_uri_semantics.py from app/.
+    from audit_uri_provenance import DEFAULT_CHECKPOINT, DEFAULT_MATRIX, load_matrix
 
 # Exact, finite, public selector vocabularies; all other values are redacted.
 TRANSPORT_VALUES = frozenset({
