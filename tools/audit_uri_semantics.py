@@ -153,7 +153,7 @@ def semantic_audit(checkpoint: Path, registry: dict) -> dict:
     acc = defaultdict(lambda: {
         "rows": 0, "unlisted": Counter(), "selectors": defaultdict(Counter),
         "cs": defaultdict(Counter), "extra": defaultdict(Counter),
-        "contexts": defaultdict(Counter), "cooccurrences": defaultdict(Counter),
+        "contexts": Counter(), "cooccurrences": defaultdict(Counter),
     })
     with checkpoint.open(encoding="utf-8") as stream:
         for line in stream:
