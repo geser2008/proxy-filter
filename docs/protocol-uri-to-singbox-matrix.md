@@ -1365,6 +1365,72 @@ cat /tmp/proxyfilter-vmess-pcs-context.json
 `tls.certificate_public_key_sha256` **запрещено**.
 Production mapping и `_UNSUPPORTED` остаются неизменными.
 
+## VMess `pcs=""`: подтверждённая узкая нейтральность (2026-11-05)
+
+**Фактический локальный результат** `tools/audit_vmess_pcs_context.py`:
+`rows=200`, `invalid_checkpoint_rows=0`; все 200 имеют
+`pin_state=empty_string` и `insecure_state=off`, все без `cert`.
+Контексты (непересекающиеся):
+
+| TLS | ECH | URI |
+|---|---|---:|
+| `disabled_literal` | отсутствует | **135** |
+| `enabled_literal` | отсутствует | **60** |
+| `disabled_literal` | есть `ech` | **5** |
+| **Итого** | | **200** |
+
+`scy` присутствует у всех 200, `security` отсутствует.
+`scy` — шифр VMess и не определяет включение TLS.
+
+**Доказательства для единственного исключения:**
+
+1. В закреплённом
+   [`sing-box-extended/parser/link/vmess.go`](https://github.com/dioxine/sing-box-extended/blob/extended/parser/link/vmess.go)
+   (blob `d3a09711efedaab6f567ae71765109f23614e391`)
+   VMess parser разбирает поля из явного `switch` и **не
+   использует `pcs`**.
+2. `pcs=""` — пустое значение pin, не задающее конкретного
+   закреплённого сертификата. При включённом и выключенном TLS
+   отсутствие поля не меняет значение pin.
+3. `proxyfilter/singbox_backend.py` запрещает `pcs` по наличию
+   ключа, а не значению. Поэтому для этого точного случая поле
+   исключается **только во временном native mapping**,
+   как сделано ранее для нейтрального VMess `cs=""`.
+
+**Реализовано в эксперименте:** для VMess и **только** при
+`type(params["pcs"]) is str and params["pcs"] == ""`
+ключ `pcs` больше не вызывает общий `unsupported_connection_field`
+и не учитывается как `unclassified loss`.
+`params` и `original_raw` остаются без изменений.
+Все непустые и нестроковые значения `pcs` отвергаются.
+Все другие протоколы и aliases certificate pin остаются под
+прежним запретом. При `pcs=""` плюс `ech` / `echConfigList`
+отказ сохраняется по ECH; новые значения `fm` и прочих
+connection-sensitive полей тоже блокируют результат.
+
+**Отличие от Podkop:** он в ряде случаев игнорирует даже
+**непустой** pin с warning или молча; PF по-прежнему не
+разрешает непустые значения. Это исключение не является
+переходом к `best effort`.
+
+**Ожидаемая верхняя граница:** 195 ранее отклонённых VMess URI
+могут пройти дальше первого gate (135 без TLS + 60 с TLS).
+Пять с `ech` продолжат отвергаться, а иные проверки способны
+сократить реальный прирост. Не утверждать `+195 safe_native`
+до нового локального аудита. Это подтверждение нейтральности
+конкретного URI-поля для целевого парсера, а не доказательство
+совпадения поведения всех native transport/TLS реализаций.
+
+Из `app/`:
+
+```bash
+python3 -m unittest tests.test_native_experiment tests.test_audit_native_coverage tests.test_audit_vmess_blockers tests.test_audit_vmess_pcs_context -v
+python3 tools/audit_native_coverage.py \
+  --checkpoint ../data/work/03-safe.jsonl \
+  --output /tmp/proxyfilter-native-after-empty-pcs.json
+jq '.protocols.vmess' /tmp/proxyfilter-native-after-empty-pcs.json
+```
+
 ## Зафиксированные пробелы реализации и правила gate
 
 1. **Версионная схема:** upstream JSON documentation может описывать поля после 1.14.3; получить version-specific schema и выполнить `sing-box check` установленным бинарником.
