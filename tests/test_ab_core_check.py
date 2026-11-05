@@ -185,6 +185,16 @@ class ABCheckTests(unittest.TestCase):
             self.assertEqual(run.last_summary["by_protocol_outcome"],
                              {"vless:mapped:pass:check_failed": 1})
 
+    def test_opaque_core_error_has_safe_keyword_category(self):
+        raw = "FATAL: REALITY handshake error for PRIVATE-TOKEN.example"
+        category = classify_check_failure(raw, "")
+        self.assertEqual(category, "reality_mentioned")
+        self.assertNotIn("PRIVATE-TOKEN", category)
+        self.assertEqual(
+            classify_check_failure("FATAL: failed for PRIVATE-TOKEN.example", ""),
+            "other_check_failure",
+        )
+
     def test_focus_report_picks_only_native_mismatches(self):
         p = valid_proxy()
         first = p.original_raw
