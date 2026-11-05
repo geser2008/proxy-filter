@@ -268,6 +268,69 @@ class NativeExperimentTests(unittest.TestCase):
         result = convert_uri_to_native(p)
         self.assertNotIn("x_padding_bytes", result.outbound["transport"])
 
+    def test_podkop_plain_tcp_http_header_without_tls(self):
+        p = proxy("vless", {
+            "uuid": UUID, "type": "tcp", "security": "none",
+            "headerType": "http", "host": "one.example,two.example",
+            "path": "/one",
+        })
+        before = dict(p.params)
+        with self.assertRaises(EngineError):
+            convert_uri_to_native(p)
+        result = convert_uri_to_native(p, profile="podkop-engine")
+        self.assertEqual(result.outbound["transport"]["type"], "http")
+        self.assertEqual(result.outbound["transport"]["host"],
+                         ["one.example", "two.example"])
+        self.assertEqual(result.outbound["transport"]["path"], "/one")
+        self.assertEqual(p.params, before)
+        self.assertEqual(p.original_raw, "vless://redacted")
+
+    def test_podkop_plain_tcp_http_header_with_tls_fails(self):
+        for security in ("tls", "reality"):
+            with self.subTest(security=security):
+                p = proxy("vless", {"uuid": UUID, "type": "tcp",
+                                    "security": security, "headerType": "http"})
+                with self.assertRaises(NativeMappingError) as caught:
+                    convert_uri_to_native(p, profile="podkop-engine")
+                self.assertEqual(caught.exception.code, "http_header_with_tls")
+
+    def test_podkop_tcp_http_multiple_paths_not_guessed(self):
+        p = proxy("vless", {"uuid": UUID, "type": "tcp", "security": "none",
+                            "headerType": "http", "path": "/first,/second"})
+        with self.assertRaises(NativeMappingError) as caught:
+            convert_uri_to_native(p, profile="podkop-engine")
+        self.assertEqual(caught.exception.code, "unrepresentable_tcp_http_path")
+
+    def test_podkop_xmux_numeric_ranges_are_serialized(self):
+        extra = '{"xmux":{"maxConnections":2,"hKeepAlivePeriod":30}}'
+        p = proxy("vless", {"uuid": UUID, "type": "xhttp", "extra": extra})
+        result = convert_uri_to_native(p, profile="podkop-engine")
+        self.assertEqual(result.outbound["transport"]["xmux"], {
+            "max_connections": "2", "h_keep_alive_period": 30,
+        })
+        self.assertEqual(p.params["extra"], extra)
+
+    def test_podkop_xmux_invalid_combinations_fail_closed(self):
+        cases = (
+            ('{"xmux":{"maxConnections":2,"maxConcurrency":"4-8"}}',
+             "conflicting_xhttp_xmux_limits"),
+            ('{"xmux":{"maxConnections":"0-10"}}',
+             "invalid_xhttp_xmux_range"),
+            ('{"xmux":{"maxConnections":2.5}}',
+             "invalid_xhttp_xmux_range"),
+            ('{"xmux":{"hKeepAlivePeriod":"30"}}',
+             "invalid_xhttp_xmux_keepalive"),
+            ('{"xmux":{"futureOption":4}}',
+             "unsupported_xhttp_xmux_field"),
+            ('{"xmux":null}', "invalid_xhttp_xmux_type"),
+        )
+        for extra, expected in cases:
+            with self.subTest(extra=extra):
+                p = proxy("vless", {"uuid": UUID, "type": "xhttp", "extra": extra})
+                with self.assertRaises(NativeMappingError) as caught:
+                    convert_uri_to_native(p, profile="podkop-engine")
+                self.assertEqual(caught.exception.code, expected)
+
     def test_podkop_engine_vless_xhttp_json_text_is_opt_in(self):
         extra = '{"xPaddingBytes":"12-24","xmux":{"maxConcurrency":"4-8"}}'
         p = proxy("vless", {"uuid": UUID, "type": "xhttp",
