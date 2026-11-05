@@ -204,5 +204,83 @@
       "extended": "rejected",
       "podkop-engine": "rejected"
     }
+  },
+  {
+    "id": "vless-tcp-http-no-tls",
+    "protocol": "vless",
+    "uri": "vless://00000000-0000-0000-0000-000000000001@example.org:443?type=tcp&security=none&headerType=http&host=one.example%2Ctwo.example&path=%2Fone",
+    "params": {
+      "uuid": "00000000-0000-0000-0000-000000000001",
+      "type": "tcp",
+      "security": "none",
+      "headerType": "http",
+      "host": "one.example,two.example",
+      "path": "/one"
+    },
+    "expected_native": {
+      "extended": "rejected",
+      "podkop-engine": "ok"
+    }
+  },
+  {
+    "id": "vless-tcp-http-with-tls",
+    "protocol": "vless",
+    "uri": "vless://00000000-0000-0000-0000-000000000001@example.org:443?type=tcp&security=tls&headerType=http",
+    "params": {
+      "uuid": "00000000-0000-0000-0000-000000000001",
+      "type": "tcp",
+      "security": "tls",
+      "headerType": "http"
+    },
+    "expected_native": {
+      "extended": "rejected",
+      "podkop-engine": "rejected"
+    }
+  },
+  {
+    "id": "vless-xhttp-json-xmux-numeric",
+    "protocol": "vless",
+    "uri": "vless://00000000-0000-0000-0000-000000000001@example.org:443?type=xhttp&security=tls&extra=%7B%22xmux%22%3A%7B%22maxConnections%22%3A2%2C%22hKeepAlivePeriod%22%3A30%7D%7D",
+    "params": {
+      "uuid": "00000000-0000-0000-0000-000000000001",
+      "type": "xhttp",
+      "security": "tls",
+      "extra": "{\"xmux\":{\"maxConnections\":2,\"hKeepAlivePeriod\":30}}"
+    },
+    "expected_native": {
+      "extended": "rejected",
+      "podkop-engine": "ok"
+    }
+  },
+  {
+    "id": "vless-xhttp-json-xmux-conflict",
+    "protocol": "vless",
+    "uri": "vless://00000000-0000-0000-0000-000000000001@example.org:443?type=xhttp&security=tls&extra=%7B%22xmux%22%3A%7B%22maxConnections%22%3A2%2C%22maxConcurrency%22%3A%224-8%22%7D%7D",
+    "params": {
+      "uuid": "00000000-0000-0000-0000-000000000001",
+      "type": "xhttp",
+      "security": "tls",
+      "extra": "{\"xmux\":{\"maxConnections\":2,\"maxConcurrency\":\"4-8\"}}"
+    },
+    "expected_native": {
+      "extended": "rejected",
+      "podkop-engine": "rejected"
+    }
+  },
+  {
+    "id": "vless-tcp-http-multiple-paths",
+    "protocol": "vless",
+    "uri": "vless://00000000-0000-0000-0000-000000000001@example.org:443?type=tcp&security=none&headerType=http&path=%2Ffirst%2C%2Fsecond",
+    "params": {
+      "uuid": "00000000-0000-0000-0000-000000000001",
+      "type": "tcp",
+      "security": "none",
+      "headerType": "http",
+      "path": "/first,/second"
+    },
+    "expected_native": {
+      "extended": "rejected",
+      "podkop-engine": "rejected"
+    }
   }
 ]
