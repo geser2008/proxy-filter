@@ -1431,6 +1431,76 @@ python3 tools/audit_native_coverage.py \
 jq '.protocols.vmess' /tmp/proxyfilter-native-after-empty-pcs.json
 ```
 
+## VMess после `pcs=""`: проверка на checkpoint и оставшиеся потери (2026-11-05)
+
+**Локальный прогон пользователя** после узкого исключения
+`pcs=""`: `62` теста, `1 FAIL` в
+`test_context_counts_only_first_rejections_and_hides_values`.
+Сам `native` аудит обработал все 8848 URI (`invalid=0`).
+VMess: `rows=546`, `safe_native=180`, `lossy_native=72`,
+`rejected=294`; причины отказов:
+`transport_fields_on_tcp=168`,
+`unsupported_vmess_header=118`,
+`unsupported_transport=2`,
+`unsupported_connection_field=6`.
+В общей статистике: `safe_native=6453`,
+`lossy_native=114`, `rejected=2281`.
+
+**Вывод:** по сравнению с предыдущим VMess baseline
+`safe=180, lossy=2, rejected=364` после открытия нейтрального
+`pcs=""` прошли ещё **70** записей, но все 70 получили
+`no_unclassified_loss=false`. Поэтому `safe_native`
+**не вырос**. Само `pcs=""` уже специально исключено из
+`dropped_fields`; отнесение новых записей к `lossy`
+вызвано **другими, пока не классифицированными** полями.
+Нельзя автоматически объявить их META или игнорировать ради
+процента покрытия.
+
+**Отдельная ошибка теста:** fixture `pcs=""` больше не
+соответствовала контракту анализатора, который подсчитывает
+`pcs` только в **первых отказах**. Тест исправлен:
+для отрицательного случая с `cert` используется непустой
+`pcs`; ожидаемые три rejected fixture сохраняются.
+Это не изменение поведения конвертера.
+
+Для исследования добавлен read-only
+`tools/audit_vmess_lossy_fields.py`.
+Он считает только VMess записи с `no_unclassified_loss=false`,
+включая число таких записей с `pcs=""`, и выдаёт
+`by_field_category`, `by_combination`,
+`other_unregistered_only`. Показываются лишь заранее
+разрешённые имена из этой матрицы, все остальные сводятся к
+`other_unregistered`. Значения параметров, endpoint,
+секреты и произвольные имена не выводятся.
+Счётчики по отдельным именам могут перекрываться.
+Реальное распределение оставшихся полей **ещё не получено**.
+
+Из `app/` после `git pull`:
+
+```bash
+python3 -m unittest \
+  tests.test_native_experiment \
+  tests.test_audit_native_coverage \
+  tests.test_audit_vmess_blockers \
+  tests.test_audit_vmess_pcs_context \
+  tests.test_audit_vmess_lossy_fields -v
+python3 tools/audit_vmess_lossy_fields.py \
+  --checkpoint ../data/work/03-safe.jsonl \
+  --output /tmp/proxyfilter-vmess-lossy-fields.json
+cat /tmp/proxyfilter-vmess-lossy-fields.json
+```
+
+`tools/audit_vmess_pcs_context.py` после исключения
+`pcs=""` **не должен** больше показывать прежние
+`rows=200`: это инструмент *первых отказов*, не
+инвентаризатор всех присутствующих пустых pin. Для ретроспективного
+разбора нужны уже сохранённые результаты прежнего прогона.
+
+**Решение:** `pcs=""` исключение оставить узким,
+`lossy_native` не переводить в `safe_native` без
+отдельного исследования конкретных имен и эквивалентности.
+Production не менять.
+
 ## Зафиксированные пробелы реализации и правила gate
 
 1. **Версионная схема:** upstream JSON documentation может описывать поля после 1.14.3; получить version-specific schema и выполнить `sing-box check` установленным бинарником.
