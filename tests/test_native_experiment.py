@@ -193,6 +193,20 @@ class NativeExperimentTests(unittest.TestCase):
                 self.assertEqual(p.params, original)
                 self.assertEqual(p.original_raw, f"{protocol}://redacted")
 
+    def test_nonempty_cs_is_not_mapped_to_native_tls_without_parser_equivalence(self):
+        for protocol, identity in (
+            ("vless", {"uuid": UUID, "type": "ws", "security": "tls"}),
+            ("vmess", {"id": UUID, "net": "ws", "tls": "tls"}),
+            ("trojan", {"password": "secret", "type": "ws"}),
+        ):
+            with self.subTest(protocol=protocol):
+                p = proxy(protocol, {**identity, "cs": "TLS_A:TLS_B"})
+                original = dict(p.params)
+                with self.assertRaises(NativeMappingError) as captured:
+                    convert_uri_to_native(p)
+                self.assertEqual(captured.exception.code, "unsupported_tls_cipher_suites")
+                self.assertEqual(p.params, original)
+
     def test_absent_cs_does_not_invent_cipher_suites(self):
         p = proxy("vmess", {"id": UUID, "scy": "auto", "net": "ws",
                             "tls": "tls", "path": "/socket"})
