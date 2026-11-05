@@ -1501,6 +1501,62 @@ cat /tmp/proxyfilter-vmess-lossy-fields.json
 отдельного исследования конкретных имен и эквивалентности.
 Production не менять.
 
+## VMess `vcn`: 70 оставшихся потерь и узкое исключение (2026-11-05)
+
+**Локальный результат:** 64 unittest прошли (`OK`).
+По `tools/audit_vmess_lossy_fields.py`: среди 72 VMess
+`lossy_native` у 70 единственное потерянное поле — `vcn`,
+у двух — `other_unregistered`; ровно 70/72 имеют
+`pcs=""`. **Значения `vcn` этим отчётом не раскрываются
+и их распределение ещё не установлено.**
+
+**Семантика:** `vcn` — набор проверяемых имён сертификата,
+**не** TLS `sni` и не `tls.utls.fingerprint`.
+[Podkop LINKS.md / TLS](https://github.com/podkop-net/podkop-engine/blob/main/docs/LINKS.md)
+сообщает, что при несовпадении `vcn` с `sni` игнорирует
+параметр с предупреждением; при совпадении хотя бы одного
+имени либо выключенной проверке — молча. Это политика
+`best effort`, не доказательство эквивалентности.
+В целевом
+[`sing-box-extended/parser/link/vmess.go`](https://github.com/dioxine/sing-box-extended/blob/extended/parser/link/vmess.go)
+(blob `d3a09711efedaab6f567ae71765109f23614e391`)
+`vcn` отсутствует среди обрабатываемых полей VMess.
+
+**Изменение экспериментального адаптера:** только для
+`protocol=="vmess"` и **строго** `type(vcn) is str and vcn==""`
+поле признаётся отсутствующим override и исключается из
+`dropped_fields` как проверенный нейтральный маркер.
+Исходные `params` и `original_raw` не изменяются.
+Любые непустые и нестроковые значения `vcn` остаются
+`unclassified loss`, не `safe_native`; для VLESS/Trojan
+исключения нет. Это не разрешает игнорировать непустой
+список проверяемых имён даже при `vcn==sni` —
+для такого преобразования нужны отдельные доказательства.
+
+**Диагностика:** `tools/audit_vmess_vcn_context.py` считает
+в VMess URI только `empty_string`, `nonempty_string`,
+`non_string`, а также фиксированные категории TLS и `pcs`.
+Не выводит URI, адреса, значения `vcn` или произвольные имена.
+Его отчёт нужен, чтобы узнать, сколько из 70 записей
+реально попадают под новое узкое исключение. Не приписывать
+новому коду `+70 safe_native` до локального аудита.
+
+Из `app/` после `git pull`:
+
+```bash
+python3 -m unittest \
+  tests.test_native_experiment tests.test_audit_native_coverage \
+  tests.test_audit_vmess_lossy_fields tests.test_audit_vmess_vcn_context -v
+python3 tools/audit_vmess_vcn_context.py \
+  --checkpoint ../data/work/03-safe.jsonl \
+  --output /tmp/proxyfilter-vmess-vcn-context.json
+python3 tools/audit_native_coverage.py \
+  --checkpoint ../data/work/03-safe.jsonl \
+  --output /tmp/proxyfilter-native-after-empty-vcn.json
+cat /tmp/proxyfilter-vmess-vcn-context.json
+jq '.protocols.vmess' /tmp/proxyfilter-native-after-empty-vcn.json
+```
+
 ## Зафиксированные пробелы реализации и правила gate
 
 1. **Версионная схема:** upstream JSON documentation может описывать поля после 1.14.3; получить version-specific schema и выполнить `sing-box check` установленным бинарником.
