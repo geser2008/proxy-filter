@@ -68,6 +68,24 @@ class NativeExperimentTests(unittest.TestCase):
         with self.assertRaisesRegex(EngineError, "unsupported VLESS encryption"):
             convert_uri_to_native(p)
 
+    def test_unknown_transport_never_falls_back_to_tcp(self):
+        p = proxy("vless", {"uuid": UUID, "type": "future-transport"})
+        with self.assertRaisesRegex(EngineError, "unsupported transport selector"):
+            convert_uri_to_native(p)
+
+    def test_tcp_with_ws_path_does_not_silently_lose_path(self):
+        p = proxy("vless", {"uuid": UUID, "type": "tcp", "path": "/hidden"})
+        with self.assertRaisesRegex(EngineError, "transport-specific fields"):
+            convert_uri_to_native(p)
+
+    def test_reality_fingerprint_not_invented(self):
+        p = proxy("vless", {
+            "uuid": UUID, "security": "reality",
+            "pbk": "public-key-placeholder",
+        })
+        with self.assertRaisesRegex(EngineError, "without explicit uTLS fingerprint"):
+            convert_uri_to_native(p)
+
     def test_extended_input_not_accepted(self):
         p = proxy("vless", {"uuid": UUID})
         p.original_format = "clash"
