@@ -237,8 +237,30 @@ def compare_one(proxy: ProxyConfig, extended_binary: str, native_binary: str,
     return result
 
 
+def load_native_mismatch_hashes(report: Path) -> set[str]:
+    """Select only A=pass/B=check_failed entries from a prior sanitized report."""
+    hashes: set[str] = set()
+    with report.open(encoding="utf-8") as stream:
+        for line in stream:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if not isinstance(row, dict):
+                raise ValueError("invalid focus report row")
+            if row.get("extended") != "pass" or row.get("native") != "check_failed":
+                continue
+            digest = row.get("uri_sha256")
+            if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise ValueError("focus report contains an invalid URI digest")
+            hashes.add(digest)
+    if not hashes:
+        raise ValueError("focus report has no extended-pass/native-fail matches")
+    return hashes
+
+
 def run(checkpoint: Path, output: Path, extended_binary: str, native_binary: str,
-        limit: int, timeout: float) -> dict[str, int]:
+        limit: int, timeout: float,
+        focus_hashes: set[str] | None = None) -> dict[str, int]:
     if checkpoint.name != "03-safe.jsonl":
         raise ValueError("A/B check accepts only the 03-safe.jsonl checkpoint")
     if not checkpoint.is_file():
@@ -264,6 +286,12 @@ def run(checkpoint: Path, output: Path, extended_binary: str, native_binary: str
                 continue
             try:
                 row = json.loads(line)
+                if focus_hashes is not None:
+                    if not isinstance(row, dict):
+                        continue
+                    raw = row.get("original_raw")
+                    if not isinstance(raw, str) or hashlib.sha256(raw.encode("utf-8")).hexdigest() not in focus_hashes:
+                        continue
                 proxy = ProxyConfig.from_dict(row)
                 report = compare_one(proxy, extended_binary, native_binary, timeout)
             except (ValueError, KeyError, TypeError):
@@ -310,6 +338,10 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=Path("/tmp/proxyfilter-ab-core.jsonl"))
     parser.add_argument("--extended-bin", default="sing-box")
     parser.add_argument("--native-bin", default="sing-box")
+    parser.add_argument(
+        "--focus-report", type=Path,
+        help="Recheck only extended-pass/native-fail URI hashes from a previous A/B JSONL report",
+    )
     parser.add_argument("--limit", type=int, default=100, help="0 = all")
     parser.add_argument("--timeout", type=float, default=20.0)
     args = parser.parse_args()
@@ -323,8 +355,15 @@ def main() -> None:
         parser.error(str(exc))
     print(f"sing-box extended: {versions['extended_version']}")
     print(f"sing-box native:   {versions['native_version']}")
+    focus_hashes = None
+    if args.focus_report is not None:
+        try:
+            focus_hashes = load_native_mismatch_hashes(args.focus_report)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            parser.error(f"invalid --focus-report: {type(exc).__name__}")
+        print(f"focus: {len(focus_hashes)} native mismatch URI hashes")
     summary = run(args.checkpoint, args.output, args.extended_bin,
-                  args.native_bin, args.limit, args.timeout)
+                  args.native_bin, args.limit, args.timeout, focus_hashes)
     print(f"report: {args.output}")
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
     print(json.dumps(run.last_summary, ensure_ascii=False, sort_keys=True))
