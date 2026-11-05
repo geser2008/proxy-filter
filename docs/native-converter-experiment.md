@@ -244,3 +244,38 @@ explicit `fingerprint` certificate pin, including profiles also specifying
 could otherwise omit the pin. The refusal code is
 `unsupported_certificate_fingerprint`. A successful `sing-box check`
 does not prove that omitted certificate pins are harmless.
+
+## Phase 4e: focused mismatch checks
+
+Full phase 4d report: 8,848 profiles. The principal unresolved discrepancy is
+320 extended-pass/native-check-failed profiles (309 VLESS, 10 VMess, 1 Trojan).
+A full rerun is unnecessary to investigate this specific class.
+
+The A/B runner now accepts an existing *sanitized* A/B JSONL file as
+`--focus-report`. It selects **only** URI SHA256 hashes whose extended
+check passed and whose native check failed, then matches those hashes against
+the current `03-safe.jsonl`. No raw links or credentials are read from the
+focus report. The source checkpoint must still be locally available.
+If the source checkpoint has changed, selected records might not be found.
+
+```bash
+git pull
+python3 -m unittest tests.test_native_experiment tests.test_ab_core_check -v
+python3 tools/ab_core_check.py \
+  --focus-report /tmp/proxyfilter-ab-core-phase4d.jsonl \
+  --limit 0 \
+  --output /tmp/proxyfilter-ab-core-focused.jsonl
+```
+
+The error classifier adds low-confidence `*_mentioned` categories (e.g.
+`reality_mentioned`, `tls_mentioned`, `certificate_mentioned`) when
+`sing-box check` fails but the earlier parser does not recognize its error.
+These categories say **only that a keyword was present**, not that this
+feature caused the failure. Raw stderr/stdout still never goes into JSONL.
+
+The tool also reports `conversion_value_shape` for recognized invalid
+boolean mapper values (e.g. `empty_string`, `nonempty_string`,
+`number`), without disclosing the value. In the phase 4d report all
+80 VMess `backend_invalid_boolean` cases referred to `insecure`;
+changing empty/invalid values to `false` has NOT been implemented because
+semantic equivalence with the extended parser has not been established.
