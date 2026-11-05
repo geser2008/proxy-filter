@@ -154,9 +154,14 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
     # is not a documented equivalent of an absent TLS cipher suite override.
     # Until parser-oracle equivalence is established, fail closed in the
     # isolated experiment instead of silently producing a different TLS shape.
-    if any(key in params and params[key] == "" for key in
-           ("cs", "cipher_suites", "cipher-suites")):
+    cipher_keys = ("cs", "cipher_suites", "cipher-suites")
+    if any(key in params and params[key] == "" for key in cipher_keys):
         raise NativeMappingError("empty_tls_cipher_suites")
+    # dioxine/sing-box-extended parser/link/{vless,vmess,trojan}.go
+    # does not consume 'cs'. Mapping its value into native TLS cipher_suites
+    # would silently change the target parser's connection behavior.
+    if any(key in params for key in cipher_keys):
+        raise NativeMappingError("unsupported_tls_cipher_suites")
 
     if protocol == "vless" and "encryption" in params and params["encryption"] != "none":
         raise NativeMappingError("unsupported_vless_encryption")
