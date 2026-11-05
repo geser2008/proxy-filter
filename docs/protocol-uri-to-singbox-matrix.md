@@ -891,6 +891,82 @@ oracle-equivalence доказательством.
    production parser/dedup/publish на основании поведения
    сторонних клиентов.
 
+## Differential harness v1: offline fixtures и два oracle-профиля
+
+Новые файлы в экспериментальной части:
+- `tools/native_differential.py` — offline-сравнение native результата
+  с заранее сохранённым результатом целевого `sing-box-extended`
+  и, опционально, локальным `podkop-engine tools decode-link`;
+- `tests/fixtures/native_differential.json` — 14 полностью
+  синтетических случаев (VLESS, VMess и Trojan), включая XHTTP
+  Base64URL(JSON), JSON-text, JSON null, invalid, unsupported field,
+  TLS `cs` и HTTP header;
+- `tests/test_native_differential.py` — проверки результата,
+  конфиденциальности, статусов и сравнений.
+
+Запуск из `app/`:
+
+```bash
+python3 -m unittest tests.test_native_differential -v
+python3 tools/native_differential.py \
+  --fixtures tests/fixtures/native_differential.json \
+  --output /tmp/proxyfilter-native-differential.json
+```
+
+При наличии совместимого **локально установленного**
+`podkop-engine`:
+
+```bash
+python3 tools/native_differential.py \
+  --podkop-binary /path/to/podkop-engine-binary \
+  --output /tmp/proxyfilter-native-differential-podkop.json
+```
+
+`decode-link --compact` получает URI **через stdin**, а не через
+argv, shell не используется. Внешний процесс запускается только по
+явному CLI-аргументу. Он может запускать плагины или иметь побочные
+эффекты в собственной реализации; поэтому fixtures должны оставаться
+синтетическими.
+
+`sing-box-extended` как независимый oracle пока **не запускается
+автоматически**, поскольку в проверенной версии не подтверждён
+CLI-интерфейс, выдающий результат URI parser. Для воспроизводимого
+сравнения принимается вручную полученный JSON:
+
+```json
+{
+  "vless-ws-tls": {
+    "status": "ok",
+    "outbound": {
+      "type": "vless"
+    }
+  },
+  "vless-xhttp-json-text": {
+    "status": "rejected"
+  }
+}
+```
+
+Это **схема входного oracle-файла, не реальные ожидаемые JSON**:
+фактическое поле `outbound` должно содержать полный объект,
+полученный именно от целевого парсера. Использовать
+`--target-oracle /path/to/captured.json` только после такого
+снятия результатов. Нельзя создавать oracle из результатов native
+mapper — это круговая проверка.
+
+Отчёт по умолчанию не включает URI, endpoint, credential,
+содержимое JSON outbounds и stderr. Состояния сравнения:
+`unavailable`, `status_mismatch`, `both_rejected`,
+`unclassified_loss`, `structural_equal_unverified`,
+`structural_difference`. **Структурное совпадение не доказывает
+поведенческую эквивалентность**, а отсутствие default-полей не
+нормализуется догадками.
+
+Этот harness сравнивает только явно предоставленные результаты.
+Нельзя использовать `expected_native_passed` как показатель
+совместимости с внешним ядром. Production и реальная checkpoint-база
+не затрагиваются.
+
 ## Зафиксированные пробелы реализации и правила gate
 
 1. **Версионная схема:** upstream JSON documentation может описывать поля после 1.14.3; получить version-specific schema и выполнить `sing-box check` установленным бинарником.
