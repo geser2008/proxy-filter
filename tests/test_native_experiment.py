@@ -50,7 +50,7 @@ class NativeExperimentTests(unittest.TestCase):
         p = proxy("trojan", {
             "password": "secret", "sni": "one.example", "server_name": "two.example",
         })
-        with self.assertRaisesRegex(EngineError, "conflicting URI aliases"):
+        with self.assertRaisesRegex(EngineError, "conflicting_aliases"):
             convert_uri_to_native(p)
 
     def test_equal_aliases_are_allowed(self):
@@ -62,22 +62,22 @@ class NativeExperimentTests(unittest.TestCase):
 
     def test_known_unsupported_field_fails_instead_of_dropping(self):
         p = proxy("vless", {"uuid": UUID, "fm": '{"tcp":[]}'})
-        with self.assertRaisesRegex(EngineError, "unsupported connection-relevant"):
+        with self.assertRaisesRegex(EngineError, "unsupported_connection_field"):
             convert_uri_to_native(p)
 
     def test_invalid_vless_encryption_fails(self):
         p = proxy("vless", {"uuid": UUID, "encryption": "aes-128-gcm"})
-        with self.assertRaisesRegex(EngineError, "unsupported VLESS encryption"):
+        with self.assertRaisesRegex(EngineError, "unsupported_vless_encryption"):
             convert_uri_to_native(p)
 
     def test_unknown_transport_never_falls_back_to_tcp(self):
         p = proxy("vless", {"uuid": UUID, "type": "future-transport"})
-        with self.assertRaisesRegex(EngineError, "unsupported transport selector"):
+        with self.assertRaisesRegex(EngineError, "unsupported_transport"):
             convert_uri_to_native(p)
 
     def test_tcp_with_ws_path_does_not_silently_lose_path(self):
         p = proxy("vless", {"uuid": UUID, "type": "tcp", "path": "/hidden"})
-        with self.assertRaisesRegex(EngineError, "transport-specific fields"):
+        with self.assertRaisesRegex(EngineError, "transport_fields_on_tcp"):
             convert_uri_to_native(p)
 
     def test_reality_fingerprint_not_invented(self):
@@ -85,13 +85,13 @@ class NativeExperimentTests(unittest.TestCase):
             "uuid": UUID, "security": "reality",
             "pbk": "public-key-placeholder",
         })
-        with self.assertRaisesRegex(EngineError, "without explicit uTLS fingerprint"):
+        with self.assertRaisesRegex(EngineError, "reality_missing_fingerprint"):
             convert_uri_to_native(p)
 
     def test_extended_input_not_accepted(self):
         p = proxy("vless", {"uuid": UUID})
         p.original_format = "clash"
-        with self.assertRaisesRegex(EngineError, "share URI"):
+        with self.assertRaisesRegex(EngineError, "not_uri"):
             convert_uri_to_native(p)
 
     def test_supported_hy2_alias(self):
@@ -117,7 +117,7 @@ class NativeExperimentTests(unittest.TestCase):
 
     def test_vmess_nontrivial_tcp_header_rejected(self):
         p = proxy("vmess", {"id": UUID, "net": "tcp", "type": "http"})
-        with self.assertRaisesRegex(EngineError, "unsupported VMess TCP header"):
+        with self.assertRaisesRegex(EngineError, "unsupported_vmess_header"):
             convert_uri_to_native(p)
 
     def test_vless_xhttp_base64url_extra_decoded_only_in_copy(self):
@@ -134,12 +134,12 @@ class NativeExperimentTests(unittest.TestCase):
     def test_xhttp_plain_json_in_share_uri_is_not_base64url(self):
         p = proxy("vless", {"uuid": UUID, "type": "xhttp",
                              "extra": '{"mode":"auto"}'})
-        with self.assertRaisesRegex(EngineError, "Base64URL"):
+        with self.assertRaisesRegex(EngineError, "invalid_xhttp_extra_encoding"):
             convert_uri_to_native(p)
 
     def test_conflicting_transport_aliases_detected(self):
         p = proxy("vless", {"uuid": UUID, "type": "ws", "net": "grpc"})
-        with self.assertRaisesRegex(EngineError, "conflicting transport aliases"):
+        with self.assertRaisesRegex(EngineError, "conflicting_transport_aliases"):
             convert_uri_to_native(p)
 
     def test_tuic_native_outbound(self):
