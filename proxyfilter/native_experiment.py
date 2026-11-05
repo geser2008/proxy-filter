@@ -150,6 +150,14 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
     if protocol in {"hysteria2", "tuic"} and "fingerprint" in params:
         raise NativeMappingError("unsupported_certificate_fingerprint", ("fingerprint",))
 
+    # The shared backend would turn cs="" into cipher_suites=[""], which
+    # is not a documented equivalent of an absent TLS cipher suite override.
+    # Until parser-oracle equivalence is established, fail closed in the
+    # isolated experiment instead of silently producing a different TLS shape.
+    if any(key in params and params[key] == "" for key in
+           ("cs", "cipher_suites", "cipher-suites")):
+        raise NativeMappingError("empty_tls_cipher_suites")
+
     if protocol == "vless" and "encryption" in params and params["encryption"] != "none":
         raise NativeMappingError("unsupported_vless_encryption")
 
