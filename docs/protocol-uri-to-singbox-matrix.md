@@ -460,7 +460,7 @@ TLS 1.3 особенности и поведение с uTLS fingerprint. **Не
 `UNLISTED` в будущем прогоне, но **не улучшит mapper** само по себе.
 
 - **[XH1]** [Hiddify sing-box XHTTP transport reference](https://hiddify.com/core/sing-box/features/transports/xhttp/): `x_padding_bytes` — диапазон длины XHTTP padding, не декоративная метка. Способ экспортирования через URI varies by client.
-- **[PQ1]** [3x-ui REALITY share-link compatibility](https://github.com/MHSanaei/3x-ui/docs/content/docs/en/config/reality.mdx): `support-x25519mlkem768` передаётся как необязательный hint в VLESS URI; это не универсальный нормативный параметр URI. См. также [issue #6555](https://github.com/MHSanaei/3x-ui/issues/6555) и [issue #6730](https://github.com/MHSanaei/3x-ui/issues/6730).
+- **[PQ1]** [3x-ui REALITY share-link compatibility](https://github.com/MHSanaei/3x-ui/blob/main/docs/content/docs/en/config/reality.mdx): `support-x25519mlkem768` передаётся как необязательный hint в VLESS URI; это не универсальный нормативный параметр URI. См. также [issue #6555](https://github.com/MHSanaei/3x-ui/issues/6555) и [issue #6730](https://github.com/MHSanaei/3x-ui/issues/6730).
 
 **Критерий исправления ingest:** если ключ явно похож на ошибочную
 текстовую метку (`Telegram`, `POST`), сначала проверить исходный
