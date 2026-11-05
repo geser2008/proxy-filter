@@ -73,6 +73,27 @@ class UriSemanticAuditTests(unittest.TestCase):
                       "TLS_AES_128_GCM_SHA256", "/private", "password"):
             self.assertNotIn(value, output)
 
+    def test_context_counters_accumulate_across_rows(self):
+        report = self._audit([
+            {"config": {"protocol": "vless", "params": {
+                "type": "ws", "security": "tls",
+            }}},
+            {"config": {"protocol": "vless", "params": {
+                "type": "ws", "security": "tls",
+            }}},
+            {"config": {"protocol": "vless", "params": {
+                "type": "grpc", "security": "reality",
+            }}},
+        ])
+        summary = report["protocols"]["vless"]
+        self.assertEqual(summary["rows"], 3)
+        self.assertEqual(summary["contexts"], {
+            "transport:ws": 2,
+            "transport:grpc": 1,
+            "security:tls": 2,
+            "security:reality": 1,
+        })
+
     def test_invalid_rows_counted_without_leaking(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "03-safe.jsonl"
