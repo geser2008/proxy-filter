@@ -1049,6 +1049,52 @@ python3 tools/native_differential.py --native-profile podkop-engine \
     --podkop-binary /path/to/podkop-engine
 ```
 
+## Реальный Podkop oracle: безопасный локальный прогон
+
+Инструмент `tools/native_differential.py` теперь перед прогоном
+выполняет предзапусковую проверку `tools decode-link --help`,
+не передавая туда URI. Неподдерживающий команду бинарник
+приводит к ошибке запуска, а не к `unavailable` для всех fixtures.
+Синтетические URI передаются через **stdin**. Статусы и
+исходные значения из stderr не раскрываются.
+
+`podkop_mismatch_ids` в отчёте содержит только ID несовпавших
+fixtures. При структурном расхождении
+`podkop_differing_fields` перечисляет только заранее разрешённые
+имена полей верхнего уровня; ни значения, ни произвольные
+vendor-ключи не публикуются. `podkop_oracle_checked` показывает,
+для скольких fixtures реально получен статус от внешнего процесса.
+
+Пример (на ноутбуке из каталога `app/`, без `sudo`):
+
+```bash
+python3 -m unittest tests.test_native_experiment tests.test_native_differential -v
+/path/to/sing-box-podkop tools decode-link --help
+python3 tools/native_differential.py \
+    --native-profile podkop-engine \
+    --podkop-binary /path/to/sing-box-podkop \
+    --output /tmp/native-podkop-real-oracle.json
+```
+
+Указанный путь — пример: инструмент не устанавливает Podkop
+и не предполагает, что `/usr/bin/sing-box` на ноутбуке
+поддерживает `decode-link`. Выпуски
+[podkop-engine](https://github.com/podkop-net/podkop-engine/releases)
+предназначены для OpenWrt: бинарник подходящей архитектуры
+из пакета `ipk`/`apk` **может быть несовместим** с Manjaro
+из-за libc/динамической линковки. Не заменять пакетный sing-box
+на работающем роутере ради тестов; предпочтителен отдельный
+исполняемый файл на ноутбуке или изолированная среда.
+
+Важно: `expected_native_passed=19` не равно успешному сравнению
+с oracle. В отчёте нужно смотреть `podkop_oracle_checked`,
+`podkop_comparisons` и `podkop_mismatch_ids`. Даже
+`structural_equal_unverified` не доказывает сетевую
+эквивалентность, а `structural_difference` может включать
+конфигурационные поля тестового окружения (например,
+`tag`, `domain_resolver`). Никакие данные из реальных
+подписок не отправляются внешнему бинарнику.
+
 ## Зафиксированные пробелы реализации и правила gate
 
 1. **Версионная схема:** upstream JSON documentation может описывать поля после 1.14.3; получить version-specific schema и выполнить `sing-box check` установленным бинарником.
