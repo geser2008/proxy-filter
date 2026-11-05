@@ -254,7 +254,9 @@ def convert_uri_to_native(proxy: Any, *, profile: str = "extended") -> NativeCon
             # podkop-engine docs/LINKS.md: HTTP/1.1 disguise over plain TCP.
             # With TLS sing-box's HTTP transport would use HTTP/2.
             tls_selector = params.get("tls")
-            if (params.get("security") in {"tls", "reality"}
+            security_selector = params.get("security")
+            if ((isinstance(security_selector, str)
+                 and security_selector.lower() in {"tls", "reality"})
                     or (isinstance(tls_selector, str) and tls_selector.lower()
                         in {"tls", "reality", "true", "1"})
                     or tls_selector is True or isinstance(tls_selector, dict)):
