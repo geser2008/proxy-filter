@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from proxyfilter.model import ProxyConfig, SourceInfo
-from tools.ab_core_check import compare_one, run
+from tools.ab_core_check import compare_one, run, inspect_core_version, inspect_pair
 
 UUID = "00000000-0000-0000-0000-000000000001"
 
@@ -26,6 +27,36 @@ def valid_proxy() -> ProxyConfig:
 
 
 class ABCheckTests(unittest.TestCase):
+    def test_version_check_accepts_same_extended_build(self):
+        completed = subprocess.CompletedProcess(
+            args=["sing-box", "version"], returncode=0,
+            stdout="sing-box version 1.14.3-extended-2.7.3-lite\\nEnvironment: linux/amd64\\n",
+            stderr="",
+        )
+        with patch("tools.ab_core_check.subprocess.run", return_value=completed) as call:
+            versions = inspect_pair("sing-box", "sing-box")
+        self.assertEqual(versions["extended_version"], "1.14.3-extended-2.7.3-lite")
+        self.assertEqual(call.call_count, 2)
+
+    def test_version_check_rejects_standard_core_for_baseline(self):
+        with patch("tools.ab_core_check.inspect_core_version", return_value="1.14.3"):
+            with self.assertRaisesRegex(RuntimeError, "sing-box-extended"):
+                inspect_pair("sing-box", "sing-box")
+
+    def test_version_check_rejects_mixed_revisions(self):
+        with patch("tools.ab_core_check.inspect_core_version",
+                   side_effect=["1.14.3-extended-2.7.3-lite", "1.14.4-extended-2.7.3-lite"]):
+            with self.assertRaisesRegex(RuntimeError, "identical core versions"):
+                inspect_pair("one", "two")
+
+    def test_version_command_failure_rejected(self):
+        completed = subprocess.CompletedProcess(
+            args=["sing-box", "version"], returncode=1, stdout="", stderr="broken"
+        )
+        with patch("tools.ab_core_check.subprocess.run", return_value=completed):
+            with self.assertRaisesRegex(RuntimeError, "returned 1"):
+                inspect_core_version("sing-box")
+
     def test_same_proxy_two_configurations_with_no_mutation(self):
         p = valid_proxy()
         initial_params = dict(p.params)
