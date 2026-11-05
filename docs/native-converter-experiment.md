@@ -157,3 +157,36 @@ python3 tools/ab_core_check.py --limit 0 \
 
 The console summary now includes per-protocol outcomes and conversion reasons.
 A full checkpoint core check is not a network connectivity benchmark.
+
+## Phase 4c: field-level diagnostics (still experimental)
+
+The complete earlier checkpoint contained 8,848 profiles: 2,345 native
+conversion refusals, of which 1,136 were in the aggregate
+`unsupported_connection_field` category. The new version reports the
+**names only** of statically recognized unsupported fields:
+`conversion_fields`, plus `conversion_fields` and
+`by_protocol_conversion_field` counters in the printed summary.
+`transport_fields_on_tcp` also reports which of the fixed
+`host/path/headers/serviceName/service_name` fields caused the refusal.
+No source values, endpoint names or raw exception messages are copied.
+
+Because an arbitrary URI query *key* can itself contain private user text,
+`dropped_fields[].name` now uses a fixed diagnostic allowlist.
+An unrecognized name is emitted as `<other_field>` and its reason as
+`unclassified`; the original input is left intact.
+
+Use from `app/`:
+
+```bash
+git pull
+python3 -m unittest tests.test_native_experiment tests.test_ab_core_check -v
+python3 tools/ab_core_check.py --limit 0 \
+  --output /tmp/proxyfilter-ab-core-detailed.jsonl
+```
+
+This run will expose which **registered unsupported keys** are prevalent
+without needing to disclose proxy URIs. It will not automatically explain
+`backend_mapping_error` or `other_check_failure`: categorization of
+unknown mapper/core messages remains deliberately conservative. Do not
+interpret a `pass` as a real network connection, or ignore source fields
+merely because `sing-box check` accepts the generated JSON.
