@@ -288,11 +288,25 @@ class NativeExperimentTests(unittest.TestCase):
     def test_podkop_plain_tcp_http_header_with_tls_fails(self):
         for security in ("tls", "reality"):
             with self.subTest(security=security):
-                p = proxy("vless", {"uuid": UUID, "type": "tcp",
-                                    "security": security, "headerType": "http"})
+                params = {"uuid": UUID, "type": "tcp",
+                          "security": security, "headerType": "http"}
+                if security == "reality":
+                    # Exercise the transport incompatibility only after the
+                    # independent REALITY parameter requirements are met.
+                    params.update({"fp": "chrome", "pbk": "synthetic-public-key"})
+                p = proxy("vless", params)
                 with self.assertRaises(NativeMappingError) as caught:
                     convert_uri_to_native(p, profile="podkop-engine")
                 self.assertEqual(caught.exception.code, "http_header_with_tls")
+
+    def test_podkop_tcp_http_reality_missing_fingerprint_precedes_transport(self):
+        p = proxy("vless", {
+            "uuid": UUID, "type": "tcp", "security": "reality",
+            "headerType": "http", "pbk": "synthetic-public-key",
+        })
+        with self.assertRaises(NativeMappingError) as caught:
+            convert_uri_to_native(p, profile="podkop-engine")
+        self.assertEqual(caught.exception.code, "reality_missing_fingerprint")
 
     def test_podkop_tcp_http_multiple_paths_not_guessed(self):
         p = proxy("vless", {"uuid": UUID, "type": "tcp", "security": "none",
