@@ -164,7 +164,7 @@ _SAFE_FIELD_NAMES = frozenset((
     "spider_x", "smux", "pinSHA256", "pin_sha256", "fastopen",
     "realm-opts", "token", "authority", "headers", "host", "path",
     "serviceName", "service_name", "security", "allowinsecure",
-    "peer", "type", "encryption", "ws", "wspath", "headerType",
+    "peer", "type", "encryption", "fingerprint", "ws", "wspath", "headerType",
     "headertype", "pbk", "sid", "pool", "prefix", "udp", "v",
     "ps", "name", "tag", "note", "network",
 ))
