@@ -7,8 +7,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from proxyfilter.engine import EngineError
 from proxyfilter.model import ProxyConfig, SourceInfo
-from tools.ab_core_check import compare_one, run, inspect_core_version, inspect_pair, classify_check_failure
+from tools.ab_core_check import compare_one, run, inspect_core_version, inspect_pair, classify_check_failure, classify_mapper_failure
 
 UUID = "00000000-0000-0000-0000-000000000001"
 
@@ -134,6 +135,14 @@ class ABCheckTests(unittest.TestCase):
         text = json.dumps(row)
         self.assertNotIn("secret-credential-as-key", text)
         self.assertNotIn("sensitive", text)
+
+    def test_known_legacy_mapper_error_has_safe_category(self):
+        exc = EngineError("unsupported TCP transport header type: SECRET-SENTINEL")
+        self.assertEqual(classify_mapper_failure(exc),
+                         "backend_unsupported_tcp_header")
+        self.assertNotIn("SECRET", classify_mapper_failure(exc))
+        self.assertEqual(classify_mapper_failure(ValueError("SECRET-SENTINEL")),
+                         "backend_mapping_error")
 
     def test_core_failure_is_classified_without_echoing_sensitive_values(self):
         sensitive = "user:secret@example.org"
