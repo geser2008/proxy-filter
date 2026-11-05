@@ -279,3 +279,33 @@ boolean mapper values (e.g. `empty_string`, `nonempty_string`,
 80 VMess `backend_invalid_boolean` cases referred to `insecure`;
 changing empty/invalid values to `false` has NOT been implemented because
 semantic equivalence with the extended parser has not been established.
+
+## Phase 4f: outbound transport shape of failing native checks
+
+Focused A/B report contained 320 stable extended-PASS/native-FAIL cases:
+309 VLESS, 10 VMess, 1 Trojan. Of these, 291 VLESS errors were
+`transport_mentioned`, which does **not** identify the actual failing
+transport kind or specific field.
+
+The focused runner now records `native_transport` (`none`, `ws`,
+`grpc`, `http`, `httpupgrade`, `xhttp`, or `other`) and
+`native_transport_fields`, a sorted set of field names restricted to
+a static allowlist. Unsupported/unexpected names become `other`.
+These are derived from the **generated native outbound**, not from
+arbitrary user-supplied URI names or values. No header/path/server/secret
+values are emitted. The console summary groups results and errors by
+protocol and native transport type.
+
+Run the existing focus report again after `git pull` and the unit tests:
+
+```bash
+python3 -m unittest tests.test_native_experiment tests.test_ab_core_check -v
+python3 tools/ab_core_check.py \
+  --focus-report /tmp/proxyfilter-ab-core-phase4d.jsonl \
+  --limit 0 \
+  --output /tmp/proxyfilter-ab-core-transport.jsonl
+```
+
+This is diagnostic instrumentation only. A transport keyword in core
+stderr does not establish that the transport itself was invalid, and no
+production code or mapper semantics changed.
