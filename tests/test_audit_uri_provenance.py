@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
 
-from tools.audit_uri_provenance import DEFAULT_MATRIX, audit, load_matrix
+from tools.audit_uri_provenance import DEFAULT_MATRIX, audit, load_matrix, resolve_field_hash
 
 
 class UriProvenanceAuditTests(unittest.TestCase):
@@ -98,6 +99,18 @@ class UriProvenanceAuditTests(unittest.TestCase):
             for fragment in ("secret-uuid", "secret-value", "secret-hash",
                              "UNTRUSTED-private@example.com", "sensitive"):
                 self.assertNotIn(fragment, serialized)
+
+    def test_local_hash_resolution(self):
+        key = "vendor-field"
+        digest = hashlib.sha256(key.encode()).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "03-safe.jsonl"
+            row = {"config": {"protocol": "vless", "params": {key: "VALUE"}}}
+            path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            self.assertEqual(resolve_field_hash(path, digest),
+                             {"vless": {key: 1}})
+            with self.assertRaises(ValueError):
+                resolve_field_hash(path, "bad")
 
     def test_matrix_layout_change_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
