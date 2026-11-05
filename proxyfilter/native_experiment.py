@@ -150,17 +150,19 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
     if protocol in {"hysteria2", "tuic"} and "fingerprint" in params:
         raise NativeMappingError("unsupported_certificate_fingerprint", ("fingerprint",))
 
-    # The shared backend would turn cs="" into cipher_suites=[""], which
-    # is not a documented equivalent of an absent TLS cipher suite override.
-    # Until parser-oracle equivalence is established, fail closed in the
-    # isolated experiment instead of silently producing a different TLS shape.
+    # Verified target parser/link/vmess.go ignores the URI key "cs"
+    # entirely. An explicit VMess cs="" therefore does not set TLS cipher
+    # suites. Drop it ONLY in the temporary mapping copy below: the shared
+    # backend would otherwise emit cipher_suites=[""], changing behavior.
+    # Other aliases and nonempty values remain fail-closed; do not generalize
+    # VMess's parser behavior to VLESS or Trojan.
     cipher_keys = ("cs", "cipher_suites", "cipher-suites")
-    if any(key in params and params[key] == "" for key in cipher_keys):
+    neutral_vmess_empty_cs = protocol == "vmess" and params.get("cs") == ""
+    if any(key in params and params[key] == "" for key in cipher_keys
+           if not (key == "cs" and neutral_vmess_empty_cs)):
         raise NativeMappingError("empty_tls_cipher_suites")
-    # dioxine/sing-box-extended parser/link/{vless,vmess,trojan}.go
-    # does not consume 'cs'. Mapping its value into native TLS cipher_suites
-    # would silently change the target parser's connection behavior.
-    if any(key in params for key in cipher_keys):
+    if any(key in params for key in cipher_keys
+           if not (key == "cs" and neutral_vmess_empty_cs)):
         raise NativeMappingError("unsupported_tls_cipher_suites")
 
     if protocol == "vless" and "encryption" in params and params["encryption"] != "none":
@@ -217,6 +219,9 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
         for key in sorted(params) if key not in known
     )
     mapped = {key: value for key, value in params.items() if key in known}
+    if neutral_vmess_empty_cs:
+        # Verified parser-neutral omission, never a source-data mutation.
+        mapped.pop("cs", None)
     if protocol == "vmess":
         # sing-box-extended parser/link/vmess.go enables insecure only for
         # literal "1" or "true"; an empty URI value leaves it false.
