@@ -139,6 +139,11 @@ def run(checkpoint: Path, output: Path, extended_binary: str, native_binary: str
         limit: int, timeout: float) -> dict[str, int]:
     if checkpoint.name != "03-safe.jsonl":
         raise ValueError("A/B check accepts only the 03-safe.jsonl checkpoint")
+    if not checkpoint.is_file():
+        raise FileNotFoundError(
+            f"checkpoint not found: {checkpoint}. "
+            "Use --checkpoint to specify an existing 03-safe.jsonl."
+        )
     counts: Counter[str] = Counter()
     output.parent.mkdir(parents=True, exist_ok=True)
     with checkpoint.open(encoding="utf-8") as source, output.open("w", encoding="utf-8") as sink:
@@ -162,7 +167,11 @@ def run(checkpoint: Path, output: Path, extended_binary: str, native_binary: str
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--checkpoint", type=Path, default=Path("data/work/03-safe.jsonl"))
+    parser.add_argument(
+        "--checkpoint", type=Path,
+        default=Path(__file__).resolve().parents[2] / "data/work/03-safe.jsonl",
+        help="Path to 03-safe.jsonl (default: sibling data/work of app/)",
+    )
     parser.add_argument("--output", type=Path, default=Path("/tmp/proxyfilter-ab-core.jsonl"))
     parser.add_argument("--extended-bin", default="sing-box")
     parser.add_argument("--native-bin", default="sing-box")
@@ -171,6 +180,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.limit < 0 or args.timeout <= 0:
         parser.error("--limit must be nonnegative and --timeout positive")
+    if not args.checkpoint.is_file():
+        parser.error(f"checkpoint not found: {args.checkpoint}")
     try:
         versions = inspect_pair(args.extended_bin, args.native_bin)
     except RuntimeError as exc:
