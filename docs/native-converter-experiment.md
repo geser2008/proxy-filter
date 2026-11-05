@@ -394,3 +394,38 @@ the focused test, a full checkpoint pass is required to compute updated
 totals. Even when both `sing-box check` variants pass, equivalence of
 ALPN, path, XHTTP mode and actual on-wire behavior remains unproven
 until runtime network A/B testing.
+
+## Phase 4i: full-checkpoint results and conservative VMess empty-insecure mapping
+
+After the XHTTP padding fix, the complete 8,848-profile A/B run had:
+
+- 6,313 extended-PASS/native-PASS profiles
+- 2,441 native mapping refusals
+- 29 extended-PASS/native-check-failed profiles (18 VLESS, 10 VMess, 1 Trojan)
+- 44 extended-check-failed/native-PASS profiles, and 21 both-check-failed
+  mapped profiles (these groups are *not* proof of equivalence).
+
+Among mapper refusals, 80 VMess profiles had an empty string as `insecure`
+and previously yielded `backend_invalid_boolean`. In the extended fork,
+`parser/link/vmess.go` sets `TLSOptions.Insecure` only when that URI
+parameter literally equals `1` or `true`; an empty value leaves TLS
+certificate validation enabled. The experiment now omits **only**
+`insecure=""` from the temporary native mapping copy. It neither
+modifies `original_raw` nor changes nonempty invalid values. Regression
+tests assert TLS verification is not disabled.
+
+Recheck locally:
+
+```bash
+git pull
+python3 -m unittest tests.test_native_experiment tests.test_ab_core_check -v
+python3 tools/ab_core_check.py --limit 0 \
+  --output /tmp/proxyfilter-ab-core-phase4i.jsonl
+```
+
+Do not extend this transformation to unrelated protocols or parameters
+without confirming the parser's semantics first. The unresolved 29 native
+check failures need further targeted investigation; the 2,441 refusals
+remain dominated by unsupported connection fields and conservative
+guards. This remains experimental-only; no production ingest, deduplication,
+identity, DB schema or URI renderer code has been changed.
