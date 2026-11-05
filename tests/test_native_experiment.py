@@ -305,8 +305,8 @@ class NativeExperimentTests(unittest.TestCase):
                     }))
                 self.assertEqual(exc.exception.code, "invalid_vmess_http_field")
 
-    def test_vmess_nontrivial_tcp_header_rejected(self):
-        p = proxy("vmess", {"id": UUID, "net": "tcp", "type": "http"})
+    def test_vmess_nontrivial_unsupported_tcp_header_rejected(self):
+        p = proxy("vmess", {"id": UUID, "net": "tcp", "type": "srtp"})
         with self.assertRaisesRegex(EngineError, "unsupported_vmess_header"):
             convert_uri_to_native(p)
 
