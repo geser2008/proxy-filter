@@ -332,6 +332,61 @@ class NativeExperimentTests(unittest.TestCase):
         self.assertTrue(output["tls"]["enabled"])
         self.assertNotIn("cipher_suites", output["tls"])
 
+    def test_vmess_plain_tcp_empty_placeholders_are_neutral(self):
+        for header in ("none", "", None):
+            for tls in ("none", "tls"):
+                with self.subTest(header=header, tls=tls):
+                    params = {"id": UUID, "net": "tcp", "tls": tls,
+                              "host": "", "path": "", "serviceName": ""}
+                    if header is not None:
+                        params["type"] = header
+                    p = proxy("vmess", params)
+                    original = dict(p.params)
+                    result = convert_uri_to_native(p)
+                    baseline = convert_uri_to_native(proxy("vmess", {
+                        key: value for key, value in params.items()
+                        if key not in ("host", "path", "serviceName")
+                    }))
+                    self.assertEqual(result.outbound, baseline.outbound)
+                    self.assertTrue(result.no_unclassified_loss)
+                    self.assertEqual(result.dropped_fields, ())
+                    self.assertEqual(p.params, original)
+                    self.assertEqual(p.original_raw, "vmess://redacted")
+
+    def test_vmess_plain_tcp_nonempty_or_nonstring_fields_stay_rejected(self):
+        for key, value in (("host", "cover.example"), ("path", "/cover"),
+                           ("host", None), ("path", 0),
+                           ("serviceName", "rpc"), ("headers", "")):
+            with self.subTest(key=key, value=value):
+                with self.assertRaises(NativeMappingError) as caught:
+                    convert_uri_to_native(proxy("vmess", {
+                        "id": UUID, "net": "tcp", "type": "none", key: value,
+                    }))
+                self.assertEqual(caught.exception.code, "transport_fields_on_tcp")
+                self.assertEqual(caught.exception.fields, (key,))
+
+    def test_vmess_empty_tcp_fields_do_not_hide_nonempty_sibling(self):
+        with self.assertRaises(NativeMappingError) as caught:
+            convert_uri_to_native(proxy("vmess", {
+                "id": UUID, "net": "tcp", "type": "none",
+                "host": "", "path": "/nonempty",
+            }))
+        self.assertEqual(caught.exception.fields, ("path",))
+
+    def test_other_protocols_tcp_empty_placeholders_still_rejected(self):
+        with self.assertRaises(NativeMappingError) as caught:
+            convert_uri_to_native(proxy("vless", {
+                "uuid": UUID, "type": "tcp", "host": "", "path": "",
+            }))
+        self.assertEqual(caught.exception.code, "transport_fields_on_tcp")
+
+    def test_vmess_raw_empty_placeholders_still_rejected(self):
+        with self.assertRaises(NativeMappingError) as caught:
+            convert_uri_to_native(proxy("vmess", {
+                "id": UUID, "net": "raw", "type": "none", "host": "",
+            }))
+        self.assertEqual(caught.exception.code, "transport_fields_on_tcp")
+
     def test_vmess_tcp_http_disguise_maps_to_native_transport(self):
         p = proxy("vmess", {
             "id": UUID, "net": "tcp", "type": "http",
