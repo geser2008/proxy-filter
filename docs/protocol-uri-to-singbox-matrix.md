@@ -864,6 +864,45 @@ TLS/REALITY, alias-конфликты, VMess, XHTTP и неизменность
 python3 -m unittest tests.test_native_experiment tests.test_audit_uri_provenance tests.test_audit_uri_semantics -v
 ```
 
+## Аудит покрытия native-конвертера на реальном checkpoint
+
+В `tools/audit_native_coverage.py` добавлен **read-only** проход по
+`data/work/03-safe.jsonl` (по умолчанию). Он не вызывает sing-box,
+не выполняет сетевых запросов, не меняет записи и не подключён к
+production pipeline. Строки реконструируются только во временные
+`ProxyConfig` и проверяются текущим `convert_uri_to_native(proxy)`.
+
+Основные показатели:
+- `native_ok_no_unclassified_loss` — native JSON сформирован без
+  сбрасывания нераспознанных полей (только кандидат на дальнейшую
+  проверку, а не доказательство эквивалентности);
+- `native_ok_unclassified_loss` — JSON сформирован, но неизвестные
+  исходные поля отброшены: **не безопасно для автоматического
+  переключения**;
+- `rejected` и `reasons` — отказ и агрегированная причина
+  из фиксированного набора кодов; `backend_rejected` без утечки
+  произвольного текста ошибки;
+- `invalid_rows` и `skipped_non_uri` — отдельно от URI-покрытия.
+
+Запуск из `app/` на ноутбуке:
+
+```bash
+python3 -m unittest tests.test_audit_native_coverage -v
+python3 tools/audit_native_coverage.py \
+  --checkpoint ../data/work/03-safe.jsonl \
+  --output /tmp/proxyfilter-native-coverage.json
+```
+
+Инструмент выводит агрегаты по протоколам и причинам отказов;
+в отчёте **нет** ссылок URI, хостов, UUID, паролей, сырых
+параметров и непроверенных имён полей. `hy2` агрегируется
+в `hysteria2`.
+
+Аудит измеряет лишь способность **сформировать структуру JSON**
+и характер потерь. Действительная принимаемость выходного JSON
+целевым sing-box, идентичность семантики и сетевая
+работоспособность этим аудитом **не проверяются**.
+
 ## Зафиксированные пробелы реализации и правила gate
 
 1. **Версионная схема:** upstream JSON documentation может описывать поля после 1.14.3; получить version-specific schema и выполнить `sing-box check` установленным бинарником.
