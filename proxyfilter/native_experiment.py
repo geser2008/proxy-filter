@@ -34,7 +34,8 @@ _PROTOCOL_FIELDS: dict[str, set[str]] = {
         packet-encoding packetEncoding""".split()),
     "vmess": _TLS | _TRANSPORT | _COMMON | set("""id uuid aid alterId alter_id
         security scy cipher packet_encoding packet-encoding packetEncoding
-        global_padding global-padding authenticated_length authenticated-length""".split()),
+        global_padding global-padding authenticated_length authenticated-length
+        method""".split()),
     "trojan": _TLS | _TRANSPORT | _COMMON | set("password security".split()),
     "ss": set("""method cipher password plugin plugin_opts plugin-opts network
         udp_over_tcp udp-over-tcp multiplex""".split()),
@@ -177,11 +178,11 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
         if not any(key in params for key in ("pbk", "public_key", "reality-opts")):
             raise NativeMappingError("reality_missing_public_key")
 
-    # A VMess share JSON "type" denotes TCP header type; unlike VLESS URI
-    # "type", it is not an alias for the transport network. Only the neutral
-    # explicit value "none" is currently supported.
+    # VMess legacy "type" is a TCP header/disguise selector, not "net".
+    # The target extended parser implements net=tcp&type=http using native
+    # HTTP transport. Do not generalize to other transports or disguises.
     if protocol == "vmess" and "type" in params:
-        if params["type"] not in ("", "none"):
+        if params["type"] not in ("", "none", "http"):
             raise NativeMappingError("unsupported_vmess_header")
     transport_keys = ("network", "net") if protocol == "vmess" else ("network", "net", "type")
     transport_aliases = [key for key in transport_keys if key in params]
@@ -189,6 +190,15 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
         params[key] != params[transport_aliases[0]] for key in transport_aliases[1:]
     ):
         raise NativeMappingError("conflicting_transport_aliases")
+    vmess_tcp_http = (
+        protocol == "vmess" and params.get("type") == "http"
+        and ("net" in params or "network" in params)
+        and next((params[key] for key in transport_keys if key in params), "") == "tcp"
+    )
+    if protocol == "vmess" and params.get("type") == "http" and not vmess_tcp_http:
+        raise NativeMappingError("unsupported_vmess_header")
+    if protocol == "vmess" and "method" in params and not vmess_tcp_http:
+        raise NativeMappingError("unmapped_vmess_http_method", ("method",))
     # Do not turn an unknown transport into an unintentional TCP outbound.
     if protocol in {"vless", "vmess", "trojan"}:
         selector = next((params[key] for key in transport_keys if key in params), "")
@@ -198,7 +208,23 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
         if "authority" in params:
             raise NativeMappingError("unsupported_authority", ("authority",))
         tcp_fields = ("host", "path", "headers", "serviceName", "service_name")
-        if selector in {"", "tcp", "raw"}:
+        if vmess_tcp_http:
+            # For this transport the target parser consumes host/path/method;
+            # arbitrary HTTP headers require separate representation evidence.
+            if "headers" in params:
+                raise NativeMappingError("unmapped_transport_headers", ("headers",))
+            for field in ("host", "path", "method"):
+                if field in params and not isinstance(params[field], str):
+                    raise NativeMappingError("invalid_vmess_http_field", (field,))
+            # v2rayN specifies comma-separated HTTP hosts, but the target
+            # extended parser writes a single-element host array. Reject the
+            # ambiguous case rather than silently choosing either behavior.
+            if "host" in params and "," in params["host"]:
+                raise NativeMappingError("ambiguous_vmess_http_hosts", ("host",))
+            if "serviceName" in params or "service_name" in params:
+                raise NativeMappingError("transport_fields_on_tcp",
+                                         tuple(k for k in ("serviceName", "service_name") if k in params))
+        elif selector in {"", "tcp", "raw"}:
             present_tcp_fields = tuple(key for key in tcp_fields if key in params)
             if present_tcp_fields:
                 raise NativeMappingError("transport_fields_on_tcp", present_tcp_fields)
@@ -222,6 +248,15 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
     if neutral_vmess_empty_cs:
         # Verified parser-neutral omission, never a source-data mutation.
         mapped.pop("cs", None)
+    if vmess_tcp_http:
+        http_transport: dict[str, Any] = {"type": "http"}
+        if "host" in mapped and mapped["host"]:
+            http_transport["host"] = [mapped["host"]]
+        if "path" in mapped and mapped["path"]:
+            http_transport["path"] = mapped["path"]
+        if "method" in mapped:
+            http_transport["method"] = mapped["method"]
+        mapped["transport"] = http_transport
     if protocol == "vmess":
         # sing-box-extended parser/link/vmess.go enables insecure only for
         # literal "1" or "true"; an empty URI value leaves it false.
