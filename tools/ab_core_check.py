@@ -26,6 +26,7 @@ from typing import Any
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from proxyfilter.engine import EngineError
 from proxyfilter.model import ProxyConfig
 from proxyfilter.native_experiment import NativeMappingError, convert_uri_to_native
 from proxyfilter.security import check_static_security
@@ -63,6 +64,32 @@ def inspect_pair(extended_binary: str, native_binary: str) -> dict[str, str]:
             "for both --extended-bin and --native-bin"
         )
     return {"extended_version": extended, "native_version": native}
+
+
+# Messages from the existing mapper are not trusted for reporting.
+# These anchored, source-reviewed patterns emit ONLY fixed reason codes.
+_MAPPER_PATTERNS = (
+    ("backend_unsupported_tcp_header", r"^unsupported TCP transport header type:"),
+    ("backend_unsupported_transport", r"^unsupported V2Ray transport:"),
+    ("backend_invalid_boolean", r"^invalid boolean value"),
+    ("backend_invalid_xhttp_json", r"^invalid XHTTP extra JSON:"),
+    ("backend_unsupported_xhttp_field", r"^unsupported XHTTP extra field:"),
+    ("backend_invalid_transport_headers", r"^(?:HTTP|HTTPUpgrade) transport headers must be an object$"),
+    ("backend_invalid_multiplex", r"^multiplex must be an object$"),
+    ("backend_unsupported_network", r"^unsupported (?:Shadowsocks|Hysteria2|TUIC) network:"),
+)
+
+
+def classify_mapper_failure(exc: Exception) -> str:
+    # Only known EngineError messages are inspected; arbitrary error text is
+    # never emitted. A mismatch remains unclassified.
+    if not isinstance(exc, EngineError):
+        return "backend_mapping_error"
+    message = str(exc)
+    for code, pattern in _MAPPER_PATTERNS:
+        if re.search(pattern, message):
+            return code
+    return "backend_mapping_error"
 
 
 _CHECK_PATTERNS = (
@@ -170,7 +197,7 @@ def compare_one(proxy: ProxyConfig, extended_binary: str, native_binary: str,
         # Third-party mapper errors may contain secrets: classify only by
         # exception TYPE, never by message.
         result["conversion"] = "rejected"
-        result["conversion_reason"] = "backend_mapping_error"
+        result["conversion_reason"] = classify_mapper_failure(exc)
         result["conversion_error_type"] = type(exc).__name__
         return result
 
