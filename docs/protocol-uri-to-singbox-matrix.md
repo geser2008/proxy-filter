@@ -1758,6 +1758,282 @@ jq '.protocols.vmess' /tmp/proxyfilter-native-after-vmess-empty-tcp.json
 другие причины отклонения и потерь не исключены.
 Production pipeline не изменён.
 
+## Сквозная контекстная матрица всех production URI-семейств (аудит 2026-11-05)
+
+**Область:** входом остаются только TXT/Base64(TXT), содержащие VLESS, VMess
+legacy Base64(JSON), Trojan, SS, Hysteria2/hy2 и TUIC URI. Внешние парсеры
+**не** расширяют production input до Clash/Xray/sing-box JSON, vmess:// URL-формы,
+\`hysteria2+realm://\` или HTTP/SOCKS. Это аналитическая матрица; код
+production и экспериментального конвертера здесь **не изменён**.
+
+### Как читать расширенную матрицу и что считается доказательством
+
+| Маркер | Значение | Следствие |
+|---|---|---|
+| **F** (format) | Нормативная схема URI либо документированный источник самого формата | Можно утверждать значение поля **в этом формате**, не его доступность в sing-box |
+| **E** (extended) | Прочитан \`parser/link/<protocol>.go\` конкретного \`shtorm-7/sing-box-extended\` tag \`v1.14.3-extended-2.7.3\` | **Только** фактическое поведение целевого link parser; его silent ignore не является общей спецификацией |
+| **P** (Podkop) | \`podkop-engine/docs/LINKS.md\` и для VMess патч \`patches/v1.14/0100-...patch\` | Сопоставление и политика warning/ignore/reject **другого** конвертера |
+| **L** (Launcher) | \`Leadaxe/singbox-launcher/contract/registry/protocols/*.json\` | Контракт и зафиксированный drift Go/Dart; не гарантирует соответствие нашей сборке |
+| **PF** | \`proxyfilter/ingest.py\`, \`native_experiment.py\`, \`singbox_backend.py\` | Что реализовано сейчас; это **не** дополнительное подтверждение протокольной семантики |
+| **M / C / GAP** | Однозначное структурное сопоставление / только при доказанном контексте / нет безопасного сопоставления | Даже M не равен \`sing-box check PASS\` и не означает network equivalence |
+| **N / A / R** | Нейтральный placeholder / активная настройка / риск несовместимости или потери | Контекст определяется протоколом, транспортом, TLS и типом значения; не только именем поля |
+
+**Алгоритм применимости:** (1) выбрать точный URI-family и оболочку,
+(2) проверить тип/encoding и дубли/алиасы, (3) распознать transport/TLS,
+(4) установить активные поля и их зависимости, (5) отдельно доказать
+нейтральность неактивных полей, (6) сопоставить backend-version и
+проверить outbound/native JSON. **\`absent\`, \`""\`, \`false\`,
+\`null\`, непустое значение — разные состояния**. Точка зрения E, P или L
+не разрешает чинить некорректный URI либо автоматически менять
+wire semantics.
+
+### 1. VLESS: контекстная применимость
+
+Формат: \`vless://UUID@server:port?...\`. Независимые референсы:
+[E: VLESS](https://github.com/shtorm-7/sing-box-extended/blob/v1.14.3-extended-2.7.3/parser/link/vless.go),
+[P: LINKS](https://github.com/podkop-net/podkop-engine/blob/main/docs/LINKS.md),
+[L: VLESS](https://github.com/Leadaxe/singbox-launcher/blob/main/contract/registry/protocols/vless.json).
+
+| Поле / контекст URI | Значение → JSON | Сравнение E / P / L и комментарий | Решение для PF |
+|---|---|---|---|
+| \`UUID@\`, authority, fragment | \`uuid\`, \`server\`, \`server_port\`; fragment → metadata/\`tag\` | E читает userinfo, hostname, port; tag из fragment. L требует учитывать UUID и отсутствие порта отдельно | M/C: проверять syntax/port, не дописывать отсутствующую аутентификацию |
+| \`encryption=none\` и прочие | Нет базового VLESS-JSON эквивалента; новые encryption extensions зависят от версии | E в просмотренном обработчике вообще не читает \`encryption\`; L знает post-quantum extension собственной сборки | GAP: любой не-\`none\` reject; отсутствие key не заменять догадкой |
+| \`security=tls/reality/none\` | \`tls.enabled\`, \`tls.reality.enabled\` | E включает только точные \`tls\`/\`reality\`, остальные значения обходит без ошибки; P строже распознаёт security | C: неизвестное/невалидное — reject, TLS-поля при none не объявлять нейтральными без проверки |
+| \`flow=xtls-rprx-vision\` | \`flow\` | E переносит только vision, прочие варианты **молча пропускает**; L дополнительно преобразует legacy \`-udp443\` | C/R: не принимать чужие flow через silent ignore |
+| \`sni\`, \`peer\`, \`serviceName\` | \`tls.server_name\` для SNI; \`transport.grpc.service_name\` только при gRPC | **Особая опасность E:** в Go \`switch\` объединены \`serviceName,sni,peer\` для TLS ServerName, а map iteration может перезаписывать значение; при gRPC \`serviceName\` обрабатывается также как gRPC service_name | C/R: \`serviceName\` **не** является универсальным SNI-алиасом; конфликты по смыслу, а не слепой общий alias |
+| \`fp\` | \`tls.utls.fingerprint\` | E включает uTLS даже для строки, валидность которой не доказана; P/L имеют свои enums/defaults | C: только проверенное значение; не спутать с certificate pin |
+| \`pbk\`, \`sid\` при REALITY | \`tls.reality.public_key\`, \`short_id\` | E выставляет параметры независимо от контроля валидности их комбинаций; P/L валидируют дополнительные условия | C/GAP: отсутствие \`pbk\` с reality не «чинить»; несовместимые \`flow\`, transport, REALITY gate |
+| \`type=tcp/raw\` + \`headerType\`, \`host/path\` | Без header — обычный TCP; \`headerType=http\` только в доказанном контексте | E **не создаёт** transport для \`type=tcp\` и не знает \`headerType\`; P поддерживает особый TCP HTTP-disguise без TLS | C/R: **не переносить** поля WS/HTTP по одному наличию; непустые \`host/path\` требуют отдельного applicability gate |
+| \`type=ws\` + \`host/path\`, \`ed/eh\` | \`transport.type=ws\`, \`headers.Host\`, \`path\`, early data | E использует \`v2rayTransportWs\`; P интерпретирует \`?ed=N\` внутри path в ряде ссылок; L содержит отдельные правила | C: проверить path percent-decoding, Host header, early-data envelope, не угадывать default |
+| \`type=grpc\`, \`serviceName\`, \`mode\` | \`transport.type=grpc\`, \`service_name\` | E переносит \`serviceName\`, но имеет описанную выше TLS alias-аномалию; P различает grpc service/mode | C: \`mode\` и stream path не терять; отдельно тестировать SNI |
+| \`type=http/h2\`, \`host/path\` | \`transport.type=http\` и HTTP options | E VLESS распознаёт **\`http\`**, \`host\` делит по \`,\`; \`h2\` в том же switch **не распознаётся**. P поддерживает другие алиасы | C/R: \`h2\` не считать автоматически эквивалентом E; Host CSV и HTTP/2 требуют fixtures |
+| \`type=httpupgrade\` | \`transport.type=httpupgrade\` | E VLESS обработчик **не** имеет case \`httpupgrade\`, хотя PF mapper может поддерживать outbound JSON | GAP в A/B: возможность native JSON ≠ поддержка исходного link parser |
+| \`type=xhttp\` + \`mode/host/path/extra\` | Extended XHTTP + nested xmux, padding и прочее | E Base64URL(JSON) extra; некоторые decode/parse errors пропускает, ALPN может выставить \`h2,http/1.1\`; L имеет свой expanded contract | C/R: валидировать full nested payload и ALPN/пустые значения, не принимать silent truncated extra |
+| \`packetEncoding\`, \`fm\`, \`spx\`, \`ech\`, \`pcs\`, \`vcn\` | Только при доказанной поддержке конкретного поля | E игнорирует многие Xray/vendor keys; P может делать best-effort и warning; \`pcs\` и \`fp\` не взаимозаменяемы | C/GAP: не игнорировать connection-critical поля и не превращать в META |
+
+**Граница для VLESS:** в E отсутствующая \`security\` не включает TLS,
+но даже если сторонний клиент выводит defaults, PF не должен добавлять
+\`fp=chrome\`, \`flow\` или REALITY keys без доказанного контракта.
+У разных клиентов \`type=http\`, \`headerType=http\` и \`type=h2\`
+могут обозначать **разные** исходные wire modes.
+
+### 2. VMess: Base64(JSON), а не URI query-форма
+
+Референсы:
+[E: VMess](https://github.com/shtorm-7/sing-box-extended/blob/v1.14.3-extended-2.7.3/parser/link/vmess.go),
+[P: VMess/TLS/transport](https://github.com/podkop-net/podkop-engine/blob/main/docs/LINKS.md),
+[L: VMess](https://github.com/Leadaxe/singbox-launcher/blob/main/contract/registry/protocols/vmess.json).
+
+| Поле и условие | JSON и активность | Сравнение и риск | PF контракт |
+|---|---|---|---|
+| \`add/port/id\`, \`ps/v\` | Endpoint/UUID; \`ps\` label, \`v\` версия контейнера | E игнорирует unknown JSON keys; целевой parser не равен generic VMessAEAD URI proposal | M/C: строгий JSON/числа/UUID; \`original_raw\` verbatim |
+| \`scy\` vs \`tls\` | \`security\` VMess cipher **vs** \`tls.enabled\` | E default \`scy=auto\`, TLS включается только точными \`1,true,tls\`; \`security\` у VLESS значит другое | C: независимые поля, никакого унифицированного \`security\` selector |
+| \`aid\` | \`alter_id\` | E \`strconv.Atoi\` с игнорированием ошибки; P/L содержат собственную нормализацию | C/R: не исправлять malformed \`aid\` в 0 |
+| \`net=tcp\` + \`type=none/""/absent\` | Обычный TCP без HTTP transport | E для \`net=tcp\` с \`type!=http\` делает \`continue\`, \`host/path/method/headers\` не потребляет; P при обычном TCP игнорирует transport-inapplicable fields | C/N: **даже непустые** \`host/path\` не обязательно активны; учитывать применимость, но для новых исключений нужны целевые fixtures |
+| \`net=tcp,type=http\` | \`transport.type=http\` + host/path/method/headers | E создаёт HTTP transport (Host единичной строкой), P CSV host и предупреждает об HTTP/1.1↔HTTP/2 при TLS | C/R: действующий PF gate TLS и CSV оставить, не склеивать семантики |
+| \`net=ws\` + \`host/path\` | WS transport/Host/path | E читает Host/path только для WS; L имеет дополнительный перенос \`?ed=N\`; P — другой decoding policy | C: Host/path активны; path с early data требует структурного parse |
+| \`net=h2\` | \`transport.type=http\` | E **принудительно включает TLS** при \`net=h2\`; \`host/path\` активны, Host как массив из одного элемента | C/R: **не** игнорировать отличие TLS и host CSV |
+| \`net=grpc\` | gRPC \`service_name\` | E использует **\`host\`**, не \`serviceName\`, для gRPC service_name; L регистрирует и другие варианты | C/R: \`host\`/ \`serviceName\` не объединять без реального parser proof |
+| \`type\` с \`net!=tcp\` | Не является transport selector | E смотрит \`type\` при TCP HTTP, P знает gRPC-related mode, L содержит converter drift | C/R: значение \`type=multi\` при gRPC нельзя объявить TCP header error без контекста |
+| \`pcs=""\`, \`vcn=""\` | Нет active certificate pin / verification-name override | E их не читает; собственные аудиты подтвердили 200 пустых значений каждого; P допускает большее игнорирование | **N только для строго пустой строки VMess**, уже реализовано в эксперименте; непустые \`pcs\` отказ, \`vcn\` lossy |
+| \`ech\`, \`echConfigList\` | TLS ECH | E VMess не читает; PF обнаружил 6 VMess first-rejections | GAP: не считать неподдерживаемое ECH нейтральным |
+| \`cs=""\` | Не появляется \`tls.cipher_suites\` | E ключ \`cs\` не читает; показано отдельной матрицей/тестами | N только для пустого VMess \`cs\` |
+| \`packet_encoding\` / \`xudp\` | \`packet_encoding\` | E понимает оба, с \`xudp=1/true\` устанавливает \`xudp\`; порядок Go map может влиять на приоритет двух полей | C: при конфликте двух форм reject/отдельный test |
+| \`headers\`, \`method\`, \`serviceName\` на обычном TCP | Неактивны для выбранного plain TCP в E | E их не использует при \`type!=http\`, P некоторые игнорирует; но \`headers\` может быть значимым в другой форме ссылки | N/C: не распространять безусловно на все net/type |
+| \`global_padding\`, \`authenticated_length\`, \`mux\`, \`pqv\` | Разные VMess outbound/extensions | E игнорирует ряд полей; L имеет иные postprocessing правила | C/GAP: ни наличие имени JSON, ни ignore E не доказывает семантическую нейтральность |
+
+**Данные checkpoint:** 546 VMess URI, 250 без неклассифицированных потерь,
+2 lossy и 294 первых отказа на последнем подтверждённом прогоне
+**до** последующего исключения пустых TCP placeholders.
+Из 168 \`transport_fields_on_tcp\` во всех \`net=tcp\` с host/path;
+ни одна из этих записей не доказывает сама по себе, что все значения
+semantically active. Контекстный аудит и различия VMess parser зафиксированы
+отдельно выше.
+
+### 3. Trojan: базовый TLS и транспортные расширения
+
+Референсы:
+[E: Trojan](https://github.com/shtorm-7/sing-box-extended/blob/v1.14.3-extended-2.7.3/parser/link/trojan.go),
+[P: Trojan](https://github.com/podkop-net/podkop-engine/blob/main/docs/LINKS.md),
+[L: Trojan](https://github.com/Leadaxe/singbox-launcher/blob/main/contract/registry/protocols/trojan.json).
+
+| Поле и контекст | JSON/семантика | Различия реализаций | PF правило |
+|---|---|---|---|
+| Пароль в userinfo | \`password\`; URL percent encoding | E \`linkURL.User.Username()\`; L отдельно исправлял разбор двоеточий в пароле | M/C: не делить пароль по \`:\` автоматически и не терять символы |
+| TLS по умолчанию | \`tls.enabled=true\` | E всегда включает TLS, не обрабатывает \`security=none\`; P/L знают расширенный selector, допускающий выключение TLS в некоторых форматах | **R:** URI \`security=none\` в PF и E может означать разное; без доказанного контрактного варианта не отключать TLS |
+| \`sni/peer/serviceName\` | TLS ServerName vs gRPC ServiceName | E объединяет все три как TLS name с **недетерминированным** overwrite Go map; при gRPC реально читает \`grpc-service-name\`, а не \`serviceName\` | C/R: \`serviceName\` нельзя безопасно считать TLS alias; различать \`grpc-service-name\` |
+| \`fp\`, \`alpn\`, \`insecure/allowInsecure/skip-cert-verify\` | uTLS, ALPN, verify policy | E распознаёт только часть spelling; P/L больше алиасов; malformed/unknown значения E может silently ignore | C: не ослаблять TLS verification и не подменять pin |
+| \`type=ws\` + \`host/path\` | WS transport | E поддерживает WS, path/Host активны | C: Host/path только в WS |
+| \`type=grpc\`, \`grpc-service-name\` | gRPC transport \`service_name\` | E читает **\`grpc-service-name\`**; типовой \`serviceName\` сам по себе может менять TLS.ServerName; P/L имеют другое naming | C/R: отдельная transport-specific форма, не угадывать алиас |
+| \`type=http/h2/httpupgrade/xhttp\` | Опциональные extended transport variants | E Trojan **не имеет этих case**, P/L могут поддерживать разные подмножества | GAP: native JSON support ≠ EXT parser equivalence; не делать fallback на обычный TLS |
+| \`headerType=http\` + \`type=tcp\` | Xray-style TCP HTTP disguise | E не обрабатывает \`headerType\`; P отклоняет комбинации с TLS/REALITY из-за HTTP/1.1↔HTTP/2 | C/GAP: отдельный wire-mode gate; Trojan TLS по умолчанию |
+| \`ech\`, \`pcs\`, \`fm\`, \`spx\` | TLS extensions / obfuscation | E может проигнорировать; P в ряде случаев выдает warnings | GAP: reject пока нет эквивалентного JSON и runtime |
+| \`network\`, \`multiplex\`, \`tfo\` | Dialer / multiplex / fast-open | E читает \`tfo,tcp-fast-open,tcp_fast_open\` на уровне outbounds; \`multiplex\` из ссылки не читает | C: не считать все JSON dialer поля URI keys |
+
+**Для Trojan нельзя переносить VMess-правила \`type=none\` и
+\`host/path\` буквально:** \`type\` — транспорт, а не TCP-header;
+включённый по умолчанию TLS меняет допустимость HTTP disguise.
+
+### 4. Shadowsocks: SIP002, SIP003 и legacy Base64
+
+Референсы:
+[F: SIP002](https://shadowsocks.org/doc/sip002.html),
+[E: Shadowsocks](https://github.com/shtorm-7/sing-box-extended/blob/v1.14.3-extended-2.7.3/parser/link/shadowsocks.go),
+[P: SS](https://github.com/podkop-net/podkop-engine/blob/main/docs/LINKS.md),
+[L: SS](https://github.com/Leadaxe/singbox-launcher/blob/main/contract/registry/protocols/shadowsocks.json).
+
+| Поле / формат | JSON | Особенность и отличие | PF правило |
+|---|---|---|---|
+| SIP002 Base64URL userinfo vs plain userinfo | \`method\`, \`password\` | SIP002 допускает base64URL либо plain для Stream/AEAD, но **для AEAD-2022 запрещает Base64URL userinfo**; E обработчик ожидает уже разобранные userinfo | **F/C**: сначала определить URI-форму и шифр, не объявлять все Base64 формы допустимыми для 2022 |
+| Legacy \`ss://base64(method:password@host:port)\` | Endpoint/credentials | Это **другая** оболочка, не обычный SIP002 encoded userinfo | LEGACY/C: отдельно распознавать форму; не исправлять повреждённый Base64 |
+| Разделитель \`:\` в пароле | \`password\` | Двоеточие отделяет только \`method\` от остального секрета, не разбивать все \`:\` | C: строго одно разделение, preserve escaped values |
+| \`plugin=name;options\` | \`plugin\`, \`plugin_opts\` | SIP002 требует percent-encoding URI и отдельного **backslash escaping** спецсимволов внутри plugin args; E делегирует двум helper функциям | **F/C:** одно URL decode не равно разбору SIP003 opts; сохранять escaped delimiters |
+| \`plugin_opts\` отдельно | \`plugin_opts\` | Это client extension, не канонический SIP002 query; L поддерживает как отдельное поле | C: при одновременном \`plugin\` с opts нельзя first-wins |
+| \`method\`, методы 2022 | outbound \`method\` | 2022 AEAD имеет отдельные требования к PSK длине/кодированию; L сверяет метод/пароль, E link handler не делает такую проверку | C/GAP: JSON check нужен; не заменять неизвестный cipher |
+| \`network=tcp/udp\` | \`network\` | Не предусмотрен каноническим SIP002 URI, но присутствует как расширение некоторых клиентов; E игнорирует | C/R: explicit network влияет на допустимый транспорт; не считать META |
+| \`udp_over_tcp\`, \`multiplex\` | соответствующие SS JSON options | Не SIP002 share query, но изменяют возможность UDP/мультиплексирования | C: доказать формат URI и тип bool/object по ядру |
+| \`type=ws\`, \`headerType=http\`, \`security=tls\` | Не SS transport по SIP002 | P может игнорировать некоторые neutral placeholder значения, но rejects non-neutral; E не читает | GAP: не переинтерпретировать как SS-over-V2Ray без доказательства |
+| Неизвестные query keys | Нет автоматического native mapping | Сам SIP002 демонстрирует query extensions, которые клиент вправе игнорировать, но это не означает что каждое из них metadata | C/GAP: namespace/provenance нужны для решения о drop |
+
+**Важно для парсера:** \`ss://\` – единственное из наших семейств
+с явно нормативным правилом **SIP002 + SIP003 plugin**; для userinfo,
+фрагмента и plugin действуют разные уровни экранирования. Не применять
+универсальный \`urllib.parse.unquote\` повторно.
+
+### 5. Hysteria2 / hy2: официальный URI и клиентские расширения
+
+Референсы:
+[F: Hysteria2 URI](https://v2.hysteria.network/docs/developers/URI-Scheme/),
+[E: Hysteria2](https://github.com/shtorm-7/sing-box-extended/blob/v1.14.3-extended-2.7.3/parser/link/hysteria2.go),
+[P: HY2](https://github.com/podkop-net/podkop-engine/blob/main/docs/LINKS.md),
+[L: HY2](https://github.com/Leadaxe/singbox-launcher/blob/main/contract/registry/protocols/hysteria2.json).
+
+| Поле / контекст | JSON/семантика | Сравнение реализаций | PF решение |
+|---|---|---|---|
+| \`hysteria2://\` и \`hy2://\` | Один протокол \`hysteria2\` | F допускает оба написания, порт по умолчанию **443** | C: не подставлять default без решения о сохранении provenance |
+| Userinfo \`auth@\`, включая \`user:pass@\` | **Единый** auth-параметр Hysteria2, затем \`password\` | F прямо задаёт special case \`username:password\`; E берёт только \`linkURL.User.Username()\` и может потерять password-часть | **CRITICAL/GAP**: наш \`ingest.parse_uri\` разбирает \`parts.username\`, затем **перезаписывает \`params.password\` значением \`parts.password\`**; для HY2 userpass это теряет username. Исправлять отдельно, с оригинальными percent-escaped fixtures |
+| Authority multi-port \`:443,5000-6000\` | \`server_ports\` / hopping | F поддерживает multi-port authority; E \`linkURL.Port()\` преобразует в \`uint16\` и не строит hopping; P/L имеют отдельный parser | **CRITICAL/GAP**: общий \`parts.port\` у PF нельзя считать достаточным разбором multiport; не подменять первым портом |
+| \`obfs=salamander/gecko\`, \`obfs-password\` | \`obfs.type\`, \`obfs.password\` | Оба значения указаны в актуальном F; E признаёт salamander/gecko, пароль читает отдельно; L иногда удаляет malformed obfs с warning | C/GAP: требовать согласованный тип+пароль, неподдерживаемый алгоритм не выключать молча |
+| \`sni\`, \`insecure=0/1\`, \`pinSHA256\`, \`ech\` | TLS SNI/verify/certificate fingerprint/ECH | **Все четыре** предусмотрены F; E обработчик читает только \`insecure\`/ \`skip-cert-verify\` из этого набора. E **не читает** SNI, pin, ECH | **CRITICAL/GAP:** native JSON не должен игнорировать SNI/pin/ECH только потому, что E их пропускает; pin — **хеш сертификата**, не SHA256 публичного ключа или uTLS fp |
+| \`insecure=1\` + certificate pin | Проверка сервера через pin возможна отдельно от системных CA | F и Hysteria client docs описывают pin; если убрать pin и оставить insecure=true, безопасность меняется существенно | **SECURITY/GAP**: запрещено игнорировать pin даже с \`insecure=1\` |
+| \`up/down\`, \`upmbps/downmbps\` | Bandwidth, policy-specific | Официальный F **не включает bandwidth в URI** и рекомендует не делиться этим через ссылку; E несмотря на это читает \`up/down\` c игнорированием ошибок, L имеет aliases | C/GAP: extension, тип и единицы подтверждать отдельно; нельзя «исправить» неверный bandwidth в 0 |
+| \`mport\`, \`hop_interval\` | Port hopping и duration | P/L поддерживают client extensions; F multiport authority отдельно | C/GAP: query alias не считать эквивалентом authority без проверки приоритета и unit |
+| \`fingerprint\`, \`fp\` | Может означать pin либо uTLS по реализации | L относит часть к uTLS, P предупреждает о несовместимости pin; E HY2 не читает | GAP: не угадывать смысл по имени, не переносить HY2 certificate pin в \`tls.utls\` |
+| \`network\`, \`realm\`, \`realm-opts\`, \`fastopen\` | QUIC/network/realm extensions | F Realm имеет **отдельные** схемы \`hysteria2+realm://\` / \`hysteria2+realm+http://\`; они **не** входят в production | GAP: не импортировать Realm через HY2-парсер без отдельного проектного решения |
+
+**Внимание: выявленная проблема существующего ingest не является
+следствием native experiment.** В \`ingest.py\` общая ветка
+\`urlsplit\` обрабатывает HY2 вместе с VLESS/Trojan/TUIC, требует
+обычный integer-port и разбивает userinfo по двоеточию. Она должна
+тестироваться на официальный Hysteria2 \`userpass\` и authority
+multi-port **до** утверждения полноты production ingest.
+Это отдельное потенциальное нарушение консервативной семантики:
+\`original_raw\` может остаться неизменён, но структурный
+\`params.password\` будет уже неэквивалентным.
+
+### 6. TUIC: protocol v5, клиентские URI-конвенции
+
+Референсы:
+[F: TUIC protocol v5 SPEC](https://github.com/tuic-protocol/tuic/blob/master/SPEC.md)
+(**сетевой протокол, не нормативный URI-формат**),
+[E: TUIC](https://github.com/shtorm-7/sing-box-extended/blob/v1.14.3-extended-2.7.3/parser/link/tuic.go),
+[P: TUIC](https://github.com/podkop-net/podkop-engine/blob/main/docs/LINKS.md),
+[L: TUIC](https://github.com/Leadaxe/singbox-launcher/blob/main/contract/registry/protocols/tuic.json).
+
+| Поле / условие | JSON/семантика | Сравнение | PF контракт |
+|---|---|---|---|
+| \`UUID:password@server:port\` | \`uuid\`, \`password\` | E берёт \`Username()\` и \`Password()\`; URI-синтаксис зависит от клиента, не от сетевого v5 SPEC | C: UUID и пароль проверять по точной ссылке, не принимать v4 token как v5 |
+| \`token\` | TUIC v4 legacy auth | E TUIC не читает; PF \`_UNSUPPORTED\` отвергает | GAP: v4 и v5 несовместимы, нужен отдельный family |
+| \`congestion_control=cubic/new_reno/bbr\` | \`congestion_control\` | E явно не записывает \`cubic\` (default), L иногда материализует default при emit; P проверяет enum | C: absent/default/explicit \`cubic\` различать до сравнения output |
+| \`udp_relay_mode\` | \`udp_relay_mode\` | E читает поле, но далее очищает его, когда \`udp_over_stream=true\`; L указывает на конфликт в ядре | **CRITICAL/C:** комбинация двух явных настроек требует отдельного gate, нельзя молча выбрасывать \`udp_relay_mode\` |
+| \`udp_over_stream=1/true\` | \`udp_over_stream\` | E включает Stream-mode и очищает \`UDPRelayMode\`; P/L интерпретируют варианты по своим правилам | C/R: не выдавать оба конфликтующих JSON fields |
+| \`zero_rtt_handshake\`, \`reduce_rtt\` | \`zero_rtt_handshake\` | E принимает оба алиаса и включает при точном \`1/true\`; L отмечает alias drift | C: несколько алиасов с разными значениями → конфликт, не first-wins |
+| \`heartbeat_interval\`, \`heartbeat\` | \`heartbeat\` duration | E читает только \`heartbeat_interval\` через Duration, L поддерживает другое spelling | C/R: единицы времени и пустой/отсутствующий heartbeat проверять отдельно |
+| \`sni\`, \`alpn\`, \`disable_sni\` | TLS ServerName/ALPN/disable_sni | E читает все три; L может автоматически поставить \`h3\` при отсутствии, P этого не делает без основания | C: не добавлять ALPN \`h3\` только потому, что это QUIC |
+| \`insecure\`, \`skip-cert-verify\`, \`allow_insecure\` | \`tls.insecure\` | E принимает три spellings, у иных клиентов набор отличается | C: конфликт алиасов и static security gate |
+| \`fp\` / \`fingerprint\` / \`pinSHA256\` | Разные понятия uTLS/pinning | E TUIC не читает certificate-pin и uTLS fp; L/P могут иметь разные опции | GAP: certificate fingerprint не превращать в TLS ClientHello fingerprint |
+| \`tfo\`, \`tcp-fast-open\`, \`tcp_fast_open\` | \`tcp_fast_open\` dialer property | E выставляет; для QUIC usefulness/context требует отдельного анализа | C: не приравнивать к \`fastopen\` другого протокола без источника |
+| \`network\`, \`idle_timeout\`, \`keep_alive_period\`, QUIC settings | JSON transport/client options | URI не стандартизует все dialer/QUIC опции, L registry знает больше target E | GAP/C: не подменять прочие клиентские расширения параметрами по умолчанию |
+
+**У TUIC v5 нельзя выводить норму URI из network SPEC.**
+Следует маркировать все спорные query aliases как EXT/OBSERVED
+до подтверждения экспортёра и не использовать aliases другого
+семейства лишь потому, что итоговое JSON поле имеет то же имя.
+
+### Контекстная таблица транспортных параметров (не смешивать между URI)
+
+| URI-family / transport | \`host\` | \`path\` | \`serviceName\` | \`type\` / \`net\` | TLS/ALPN implication |
+|---|---|---|---|---|---|
+| VLESS/Trojan \`type=tcp\` | Неактивен без TCP HTTP disguise | Неактивен без соответствующего header | Не активный gRPC service | \`type\` — transport | TLS задаётся \`security\` и протоколом |
+| VLESS/Trojan \`type=ws\` | WS Host header | WS path | Неактивен | \`type=ws\` | WS+TLS допустим, Host ≠ SNI |
+| VLESS/Trojan \`type=grpc\` | Обычно не transport Host | gRPC path только по конкретному формату | gRPC service name; **E имеет аномалию alias→SNI** | \`type=grpc\` | TLS и service-name независимы |
+| VLESS/Trojan \`type=http/h2\` | HTTP host/list | HTTP path | Неактивен | Variant-specific | HTTP/1.1 disguise ≠ native HTTP/2 |
+| VLESS/Trojan \`type=xhttp\` | XHTTP Host | XHTTP path | Неактивен | Variant + \`mode/extra\` | Extended, ALPN/mode version-specific |
+| VMess \`net=tcp,type=none\` | Не потребляется E | Не потребляется E | Не потребляется E | \`net\` — transport, \`type\` — TCP header | Не образует HTTP transport |
+| VMess \`net=tcp,type=http\` | HTTP host | HTTP path | Неактивен | TCP HTTP disguise | При TLS/HTTP2 gate |
+| VMess \`net=ws\` | WS Host | WS path | Неактивен | \`net=ws\`, \`type\` не selector | TLS отдельно |
+| VMess \`net=h2\` | HTTP host/list | HTTP path | Неактивен | \`net=h2\` | E принудительно включает TLS |
+| VMess \`net=grpc\` | E: gRPC service name | Только по подтверждённому source | Не универсальный alias | \`net=grpc\` | TLS отдельно |
+| SS | Не часть basic SIP002 | Не часть basic SIP002 | Не часть SS transport | \`type\` не selector V2Ray transport | Не добавлять TLS поверх SS по инерции |
+| HY2 / TUIC | Нет V2Ray Host/path semantics | Нет V2Ray path semantics | Нет V2Ray gRPC semantics | QUIC/protocol-specific | TLS обязателен; pin/ALPN отдельно |
+
+Здесь «неактивен» значит **поле не потребляется конкретным
+рассмотренным parser/transport**. Это не гарантия, что любой
+другой клиент проигнорирует его и не гарантия успешной работы
+сервера. Если импортёр использует иной URI dialect, требуется
+отдельный field registry и fixture.
+
+### Поправки к более ранним обобщениям в этом документе
+
+1. **Hysteria2 URI:** официальный H1 **содержит** \`pinSHA256\` и
+   \`ech\`, допускает \`user:pass\` в auth и multiport в authority.
+   Это не дополнительные «необязательные безобидные» поля;
+   \`up/down\` в официальную URI-схему **не входят**. Старые
+   таблицы выше, если говорят \`up/down\` «SPEC», читать как
+   client EXT/OBSERVED.
+2. **SS AEAD-2022:** plain \`method:password\` userinfo —
+   обязательная форма по SIP002; Base64URL userinfo допустимо
+   для других методов. Существование legacy Base64 не отменяет
+   норматива для 2022.
+3. **Trojan transport:** E поддерживает только WS и gRPC в
+   просмотренном обработчике. Наличие native JSON transport
+   другого типа не делает исходную ссылку эквивалентной E.
+4. **VMess \`net=h2\`:** E принудительно включает TLS; PF должен
+   учитывать это как отличия от остальных вариантов HTTP.
+5. **VLESS/Trojan \`serviceName\`:** в E есть перекрытие с
+   TLS.ServerName через Go map iteration. Это **особенность/риск
+   реализации E**, а не требование добавлять такой alias в PF.
+6. **TUIC \`udp_over_stream\`:** E очищает одновременно указанный
+   \`udp_relay_mode\` без ошибки. Для PF это конфликт, пока
+   эквивалентность и правило приоритета не доказаны.
+7. **Потенциальный баг HY2 ingest:** сохранить \`username:password\`
+   как **единый** auth и добавить парсинг multiport authority
+   по H1; до проверки отмечать реальную поддержку этих
+   официальных форм как **GAP**, а не M.
+8. **Поддержка и безопасность:** Podkop может принимать
+   URL с warning и потерей поля, Launcher умеет fallback/default;
+   PF не должен копировать их best-effort без доказанной
+   нейтральности. Ignore E и успешный JSON \`check\` не являются
+   доказательством wire equivalence.
+
+### Матрица регрессионных сценариев перед изменением конвертера
+
+| Семейство | Обязательный положительный fixture | Отрицательный/конфликтный fixture |
+|---|---|---|
+| VLESS | WS+TLS с раздельными Host/SNI; REALITY с explicit pbk/sid | \`serviceName\` конфликтует с SNI, неизвестный flow, XHTTP extra неверного encoding |
+| VMess | Plain TCP и \`type=none\` с заполненными host/path, TCP HTTP без TLS | TCP HTTP+TLS, противоречивые \`net/network\`, непустой pcs/ech |
+| Trojan | TLS+WS с отдельным Host/SNI; gRPC с \`grpc-service-name\` | \`security=none\` и чужой backend TLS policy, \`headerType=http\`+TLS |
+| SS | SIP002 encoded userinfo с SIP003 plugin и escaped opts; AEAD-2022 plain userinfo | AEAD-2022 encoded userinfo, damaged percent/Base64, conflicting plugin options |
+| HY2 | Userpass auth с \`:\`; port hopping в authority; certificate pin + SNI | Изменение auth при split userinfo, потеря hopping, \`insecure=1\` с потерянным pin |
+| TUIC | V5 UUID+password, network/TLS/ALPN, изолированные UDP modes | Одновременно \`udp_over_stream\` и \`udp_relay_mode\`, v4 token, conflict 0-RTT aliases |
+
+**Примечание о результатах:** это review исходников и нормативов.
+Актуальных runtime A/B по перечисленным новым пограничным случаям
+в этом разделе **нет**. Статистику 8 848/6 523 считать результатом
+последнего подтверждённого локального checkpoint, а не следствием
+дополнения матрицы.
+
+
 ## Зафиксированные пробелы реализации и правила gate
 
 1. **Версионная схема:** upstream JSON documentation может описывать поля после 1.14.3; получить version-specific schema и выполнить `sing-box check` установленным бинарником.
