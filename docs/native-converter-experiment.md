@@ -62,3 +62,45 @@ URI values or credentials.
    exit IP, and both semantic differences and dropped fields.
 5. No promotion to production before empirical evidence; no automatic fallback
    that would hide native mapper defects.
+
+## Phase 4a: independent core-check A/B (implemented)
+
+`tools/ab_core_check.py` compares **the identical** safe checkpoint URI
+through (A) the extended `type=parser` outbound and (B) the experimental
+native JSON outbound. Both use identical DNS, route and inbound settings.
+
+From the repository root, after fetching the branch:
+
+```bash
+python3 -m unittest tests.test_native_experiment tests.test_ab_core_check -v
+python3 tools/ab_core_check.py \
+  --checkpoint data/work/03-safe.jsonl \
+  --extended-bin /path/to/sing-box-extended \
+  --native-bin /path/to/sing-box \
+  --limit 100 \
+  --output /tmp/proxyfilter-ab-core.jsonl
+```
+
+The `--extended-bin` **must actually support** `type=parser`; upstream
+standard sing-box cannot validate that outbound. A single extended executable
+may be passed for both modes when its native JSON support is being compared
+against its URI parser. Use the same binary version where possible to isolate
+interpretation differences.
+
+Each JSONL record contains a SHA256 of the source URI, protocol, independent
+A/B `pass/check_failed/timeout/binary_error` statuses, mapping status, and
+dropped field **names/reasons**, with no raw credential values. The static
+security gate runs again even though the input is `03-safe`, and the script
+refuses other checkpoints to avoid accidentally probing rejected inputs.
+
+The core-check stage is *offline*: it **does not** establish a connection,
+measure latency, throughput or exit IP, and no `pass` implies semantic
+equivalence. Core-check differences should guide fixtures before a later,
+independently reported **network** A/B stage.
+
+The experimental mapper now distinguishes VMess legacy `type` (TCP header
+type) from `net` (transport), rejecting unsupported VMess HTTP header
+variants rather than treating them as networks. For XHTTP URI `extra`, it
+expects Base64URL(JSON) and decodes into a private copy for the extended
+native mapper; plain JSON text is not accepted as a share-URI `extra`.
+Even then, XHTTP remains version/build-specific and needs binary validation.
