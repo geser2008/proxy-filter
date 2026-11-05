@@ -176,6 +176,25 @@ class NativeExperimentTests(unittest.TestCase):
         with self.assertRaisesRegex(EngineError, "conflicting_transport_aliases"):
             convert_uri_to_native(p)
 
+    def test_hy2_certificate_pin_is_not_lost_when_utls_fp_present(self):
+        p = proxy("hy2", {
+            "password": "secret", "fingerprint": "pin-secret",
+            "fp": "chrome",
+        })
+        with self.assertRaises(NativeMappingError) as context:
+            convert_uri_to_native(p)
+        self.assertEqual(context.exception.code, "unsupported_certificate_fingerprint")
+        self.assertEqual(context.exception.fields, ("fingerprint",))
+        self.assertNotIn("pin-secret", str(context.exception))
+
+    def test_tuic_certificate_pin_is_not_lost_when_utls_fp_present(self):
+        p = proxy("tuic", {
+            "uuid": UUID, "password": "secret",
+            "fingerprint": "pin-secret", "fp": "chrome",
+        })
+        with self.assertRaisesRegex(EngineError, "unsupported_certificate_fingerprint"):
+            convert_uri_to_native(p)
+
     def test_tuic_native_outbound(self):
         p = proxy("tuic", {"uuid": UUID, "password": "secret"})
         result = convert_uri_to_native(p)
