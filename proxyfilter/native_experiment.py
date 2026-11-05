@@ -145,6 +145,11 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
     if unsupported:
         raise NativeMappingError("unsupported_connection_field", tuple(unsupported))
 
+    # HY2/TUIC "fingerprint" is a certificate pin, not the uTLS "fp".
+    # The shared mapper can silently ignore the pin when both are present.
+    if protocol in {"hysteria2", "tuic"} and "fingerprint" in params:
+        raise NativeMappingError("unsupported_certificate_fingerprint", ("fingerprint",))
+
     if protocol == "vless" and "encryption" in params and params["encryption"] != "none":
         raise NativeMappingError("unsupported_vless_encryption")
 
