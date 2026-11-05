@@ -125,6 +125,12 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
     if protocol in {"vless", "trojan"} and "security" in params:
         if params["security"] not in {"", "none", "tls", "reality"}:
             raise EngineError("unsupported TLS security selector")
+    if protocol == "vless" and params.get("security") == "reality":
+        if not any(key in params for key in ("fp", "client-fingerprint", "fingerprint")):
+            raise EngineError("REALITY without explicit uTLS fingerprint is ambiguous")
+        if not any(key in params for key in ("pbk", "public_key", "reality-opts")):
+            raise EngineError("REALITY without public key cannot be mapped")
+
     # Do not turn an unknown transport into an unintentional TCP outbound.
     if protocol in {"vless", "vmess", "trojan"}:
         selector = next((params[key] for key in ("network", "net", "type")
