@@ -142,10 +142,27 @@ _CHECK_PATTERNS = (
 )
 
 
+# Low-confidence hints for errors whose full text is not safe to store.
+# These codes describe only the presence of a known keyword, not root cause.
+_CHECK_MENTION_PATTERNS = (
+    ("reality_mentioned", r"(?i)\breality\b"),
+    ("utls_mentioned", r"(?i)\butls\b"),
+    ("xhttp_mentioned", r"(?i)\bxhttp\b"),
+    ("websocket_mentioned", r"(?i)\b(?:websocket|websocket[s]?)\b"),
+    ("grpc_mentioned", r"(?i)\bgrpc\b"),
+    ("certificate_mentioned", r"(?i)\bcertificate\b"),
+    ("tls_mentioned", r"(?i)\btls\b"),
+    ("transport_mentioned", r"(?i)\btransport\b"),
+)
+
+
 def classify_check_failure(stderr: str, stdout: str) -> str:
     """Fixed vocabulary only; never persist raw sing-box error text."""
     message = "\n".join((stderr or "", stdout or ""))
     for code, pattern in _CHECK_PATTERNS:
+        if re.search(pattern, message):
+            return code
+    for code, pattern in _CHECK_MENTION_PATTERNS:
         if re.search(pattern, message):
             return code
     return "other_check_failure"
