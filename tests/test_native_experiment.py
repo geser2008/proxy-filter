@@ -105,6 +105,29 @@ class NativeExperimentTests(unittest.TestCase):
         with self.assertRaisesRegex(EngineError, "not_uri"):
             convert_uri_to_native(p)
 
+    def test_hysteria2_security_is_not_silently_discarded(self):
+        p = proxy("hysteria2", {"password": "secret", "security": "tls"})
+        with self.assertRaisesRegex(EngineError, "unmapped_connection_field"):
+            convert_uri_to_native(p)
+
+    def test_trojan_peer_is_not_silently_discarded(self):
+        p = proxy("trojan", {"password": "secret", "peer": "example.org"})
+        with self.assertRaises(NativeMappingError) as captured:
+            convert_uri_to_native(p)
+        self.assertEqual(captured.exception.code, "unmapped_connection_field")
+        self.assertEqual(captured.exception.fields, ("peer",))
+
+    def test_shadowsocks_transport_type_is_not_silently_discarded(self):
+        p = proxy("ss", {"method": "aes-256-gcm", "password": "secret", "type": "ws"})
+        with self.assertRaisesRegex(EngineError, "unmapped_connection_field"):
+            convert_uri_to_native(p)
+
+    def test_metadata_still_passes_without_connection_loss(self):
+        p = proxy("ss", {"method": "aes-256-gcm", "password": "secret", "note": "free"})
+        result = convert_uri_to_native(p)
+        self.assertFalse(result.no_unclassified_loss)
+        self.assertEqual(result.dropped_fields[0].name, "note")
+
     def test_supported_hy2_alias(self):
         p = proxy("hy2", {"password": "secret", "sni": "example.org"})
         result = convert_uri_to_native(p)
