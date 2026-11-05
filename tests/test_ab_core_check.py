@@ -30,7 +30,7 @@ class ABCheckTests(unittest.TestCase):
     def test_version_check_accepts_same_extended_build(self):
         completed = subprocess.CompletedProcess(
             args=["sing-box", "version"], returncode=0,
-            stdout="sing-box version 1.14.3-extended-2.7.3-lite\\nEnvironment: linux/amd64\\n",
+            stdout="sing-box version 1.14.3-extended-2.7.3-lite\nEnvironment: linux/amd64\n",
             stderr="",
         )
         with patch("tools.ab_core_check.subprocess.run", return_value=completed) as call:
