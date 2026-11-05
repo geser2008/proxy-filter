@@ -254,6 +254,51 @@ class NativeExperimentTests(unittest.TestCase):
         self.assertEqual(p.params, original)
         self.assertEqual(p.original_raw, "vmess://redacted")
 
+    def test_vmess_tcp_http_tls_mismatch_is_rejected(self):
+        for tls in ("tls", "1", "true", "reality", "TLS", "unexpected"):
+            with self.subTest(tls=tls):
+                p = proxy("vmess", {
+                    "id": UUID, "net": "tcp", "type": "http",
+                    "tls": tls, "host": "cover.example",
+                })
+                before = dict(p.params)
+                with self.assertRaises(NativeMappingError) as caught:
+                    convert_uri_to_native(p)
+                self.assertEqual(caught.exception.code, "vmess_http_disguise_tls_conflict")
+                self.assertEqual(caught.exception.fields, ("tls",))
+                self.assertEqual(p.params, before)
+                self.assertEqual(p.original_raw, "vmess://redacted")
+
+    def test_vmess_tcp_http_explicit_no_tls_is_allowed(self):
+        for tls in ("", "none", "0", "false"):
+            with self.subTest(tls=tls):
+                result = convert_uri_to_native(proxy("vmess", {
+                    "id": UUID, "net": "tcp", "type": "http",
+                    "tls": tls, "host": "cover.example",
+                }))
+                self.assertEqual(result.outbound["transport"], {
+                    "type": "http", "host": ["cover.example"],
+                })
+                self.assertNotIn("tls", result.outbound)
+
+    def test_vmess_tcp_http_unknown_tls_type_fails_closed(self):
+        for tls in (True, 1, None, ["tls"]):
+            with self.subTest(tls=tls):
+                with self.assertRaises(NativeMappingError) as caught:
+                    convert_uri_to_native(proxy("vmess", {
+                        "id": UUID, "net": "tcp", "type": "http",
+                        "tls": tls,
+                    }))
+                self.assertEqual(caught.exception.code, "vmess_http_disguise_tls_conflict")
+
+    def test_vmess_ws_tls_unaffected_by_http_disguise_gate(self):
+        result = convert_uri_to_native(proxy("vmess", {
+            "id": UUID, "net": "ws", "type": "none",
+            "tls": "tls", "path": "/socket",
+        }))
+        self.assertEqual(result.outbound["transport"]["type"], "ws")
+        self.assertTrue(result.outbound["tls"]["enabled"])
+
     def test_vmess_tcp_http_without_optional_fields(self):
         result = convert_uri_to_native(proxy("vmess", {
             "id": UUID, "net": "tcp", "type": "http",
