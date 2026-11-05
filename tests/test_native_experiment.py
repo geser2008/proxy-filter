@@ -174,6 +174,32 @@ class NativeExperimentTests(unittest.TestCase):
         with self.assertRaisesRegex(EngineError, "invalid boolean value"):
             convert_uri_to_native(p)
 
+    def test_empty_cs_is_rejected_without_changing_source(self):
+        fixtures = (
+            ("vmess", {"id": UUID, "scy": "auto", "net": "ws", "tls": "tls", "cs": ""}),
+            ("vless", {"uuid": UUID, "security": "tls", "type": "ws", "cs": ""}),
+            ("trojan", {"password": "secret", "cs": ""}),
+            ("vmess", {"id": UUID, "tls": "tls", "cipher_suites": ""}),
+            ("vmess", {"id": UUID, "tls": "tls", "cipher-suites": ""}),
+        )
+        for protocol, params in fixtures:
+            with self.subTest(protocol=protocol, params=params):
+                p = proxy(protocol, params)
+                original = dict(p.params)
+                with self.assertRaises(NativeMappingError) as captured:
+                    convert_uri_to_native(p)
+                self.assertEqual(captured.exception.code, "empty_tls_cipher_suites")
+                self.assertEqual(captured.exception.fields, ())
+                self.assertEqual(p.params, original)
+                self.assertEqual(p.original_raw, f"{protocol}://redacted")
+
+    def test_absent_cs_does_not_invent_cipher_suites(self):
+        p = proxy("vmess", {"id": UUID, "scy": "auto", "net": "ws",
+                            "tls": "tls", "path": "/socket"})
+        output = convert_uri_to_native(p).outbound
+        self.assertTrue(output["tls"]["enabled"])
+        self.assertNotIn("cipher_suites", output["tls"])
+
     def test_vmess_nontrivial_tcp_header_rejected(self):
         p = proxy("vmess", {"id": UUID, "net": "tcp", "type": "http"})
         with self.assertRaisesRegex(EngineError, "unsupported_vmess_header"):
