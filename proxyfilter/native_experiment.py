@@ -118,12 +118,17 @@ class NativeConversion:
     no_unclassified_loss: bool
 
 
-def convert_uri_to_native(proxy: Any) -> NativeConversion:
+def convert_uri_to_native(proxy: Any, *, profile: str = "extended") -> NativeConversion:
     """Convert a URI proxy without changing identity or production configuration.
 
     Refuse recognized-but-unimplemented connection fields rather than silently
     dropping them. Unclassified fields are reported without leaking values.
     """
+    # Explicit, isolated parser profiles. The default remains the target
+    # sing-box-extended URI parser. podkop-engine's documented VLESS XHTTP
+    # extra accepts URL-query-decoded JSON text, not Base64URL(JSON).
+    if profile not in {"extended", "podkop-engine"}:
+        raise NativeMappingError("unknown_parser_profile")
     if not str(getattr(proxy, "original_format", "")).endswith("-uri"):
         raise NativeMappingError("not_uri")
     protocol = str(proxy.protocol).lower()
@@ -131,6 +136,9 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
         protocol = "hysteria2"
     if protocol not in _PROTOCOL_FIELDS:
         raise NativeMappingError("unsupported_protocol")
+    if profile == "podkop-engine" and protocol != "vless":
+        # Only VLESS XHTTP has been source-verified for this profile.
+        raise NativeMappingError("unverified_parser_profile_protocol")
     params = proxy.params
     if not isinstance(params, dict):
         raise NativeMappingError("invalid_params")
@@ -231,15 +239,26 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
     if protocol in {"vless", "vmess", "trojan"} and selector == "xhttp":
         if "extra" in mapped:
             encoded = mapped["extra"]
-            if not isinstance(encoded, str) or not re.fullmatch(r"[A-Za-z0-9_-]+={0,2}", encoded):
-                raise NativeMappingError("invalid_xhttp_extra_encoding")
-            try:
-                raw = base64.b64decode(
-                    encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True
-                )
-                parsed = json.loads(raw.decode("utf-8"))
-            except (binascii.Error, ValueError, UnicodeDecodeError) as exc:
-                raise NativeMappingError("invalid_xhttp_extra_json") from exc
+            if profile == "podkop-engine":
+                # podkop-engine docs/LINKS.md: URL-escaped JSON-object in
+                # the query. URI decoding was already performed by ingest.
+                # No Python-repr repair, no implicit alternate encoding.
+                if not isinstance(encoded, str):
+                    raise NativeMappingError("invalid_xhttp_extra_encoding")
+                try:
+                    parsed = json.loads(encoded)
+                except ValueError as exc:
+                    raise NativeMappingError("invalid_xhttp_extra_json") from exc
+            else:
+                if not isinstance(encoded, str) or not re.fullmatch(r"[A-Za-z0-9_-]+={0,2}", encoded):
+                    raise NativeMappingError("invalid_xhttp_extra_encoding")
+                try:
+                    raw = base64.b64decode(
+                        encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True
+                    )
+                    parsed = json.loads(raw.decode("utf-8"))
+                except (binascii.Error, ValueError, UnicodeDecodeError) as exc:
+                    raise NativeMappingError("invalid_xhttp_extra_json") from exc
             if not isinstance(parsed, dict):
                 raise NativeMappingError("invalid_xhttp_extra_type")
             mapped["extra"] = parsed
