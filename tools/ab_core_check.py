@@ -105,21 +105,9 @@ def _check_details(binary: str, config: dict[str, Any],
         return "check_failed", classify_check_failure(proc.stderr, proc.stdout)
 
 
-def _check(binary: str, config: dict[str, Any], timeout: float = 20.0) -> str:
-    """Compatibility entry for existing tests and clients."""
-    return _check_details(binary, config, timeout)[0]
-
-
 def _safe_check(binary: str, config: dict[str, Any],
                 timeout: float) -> tuple[str, str | None]:
-    # Compatibility: tests can mock _check. Real checks use the structured
-    # result path without invoking a core twice.
-    if _check is not _ORIGINAL_CHECK:
-        return _check(binary, config, timeout), None
     return _check_details(binary, config, timeout)
-
-
-_ORIGINAL_CHECK = _check
 
 
 def compare_one(proxy: ProxyConfig, extended_binary: str, native_binary: str,
