@@ -142,7 +142,18 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
             values = [params[name] for name in present]
             if any(type(value) is not type(values[0]) or value != values[0] for value in values[1:]):
                 raise NativeMappingError("conflicting_aliases")
-    unsupported = sorted(set(params) & _UNSUPPORTED)
+    # The pinned sing-box-extended VMess link parser does not consume "pcs".
+    # Only an exactly empty string is demonstrably a neutral, absent pin.
+    # Preserve nonempty or non-string PCS as unsupported. This exception is
+    # confined to the temporary mapping copy, never the source record.
+    neutral_vmess_empty_pcs = (
+        protocol == "vmess" and "pcs" in params
+        and type(params["pcs"]) is str and params["pcs"] == ""
+    )
+    unsupported = sorted(
+        (set(params) & _UNSUPPORTED)
+        - ({"pcs"} if neutral_vmess_empty_pcs else set())
+    )
     if unsupported:
         raise NativeMappingError("unsupported_connection_field", tuple(unsupported))
 
@@ -251,7 +262,8 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
         raise NativeMappingError("unmapped_connection_field", unmapped)
     dropped = tuple(
         DroppedField(str(key), "metadata" if key in _METADATA else "unclassified")
-        for key in sorted(params) if key not in known
+        for key in sorted(params)
+        if key not in known and not (key == "pcs" and neutral_vmess_empty_pcs)
     )
     mapped = {key: value for key, value in params.items() if key in known}
     if neutral_vmess_empty_cs:
