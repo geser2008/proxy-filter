@@ -82,6 +82,14 @@ _ALIASES = (
 )
 
 
+class NativeMappingError(EngineError):
+    """Safe diagnostic with a stable, non-secret reason code."""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
+
+
 @dataclass(frozen=True)
 class DroppedField:
     name: str
@@ -104,64 +112,64 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
     dropping them. Unclassified fields are reported without leaking values.
     """
     if not str(getattr(proxy, "original_format", "")).endswith("-uri"):
-        raise EngineError("experimental native converter requires a share URI")
+        raise NativeMappingError("not_uri")
     protocol = str(proxy.protocol).lower()
     if protocol == "hy2":
         protocol = "hysteria2"
     if protocol not in _PROTOCOL_FIELDS:
-        raise EngineError(f"unsupported native experiment protocol: {protocol}")
+        raise NativeMappingError("unsupported_protocol")
     params = proxy.params
     if not isinstance(params, dict):
-        raise EngineError("URI params must be an object")
+        raise NativeMappingError("invalid_params")
     # URI-level aliases can otherwise be selected arbitrarily by first-match.
     for group in _ALIASES:
         present = [name for name in group if name in params and name in _PROTOCOL_FIELDS[protocol]]
         if len(present) > 1:
             values = [params[name] for name in present]
             if any(type(value) is not type(values[0]) or value != values[0] for value in values[1:]):
-                raise EngineError("conflicting URI aliases: " + ", ".join(present))
+                raise NativeMappingError("conflicting_aliases")
     unsupported = sorted(set(params) & _UNSUPPORTED)
     if unsupported:
-        raise EngineError("unsupported connection-relevant URI field(s): " + ", ".join(unsupported))
+        raise NativeMappingError("unsupported_connection_field")
 
     if protocol == "vless" and "encryption" in params and params["encryption"] != "none":
-        raise EngineError("unsupported VLESS encryption (expected explicit 'none')")
+        raise NativeMappingError("unsupported_vless_encryption")
 
     if protocol in {"vless", "trojan"} and "security" in params:
         if params["security"] not in {"", "none", "tls", "reality"}:
-            raise EngineError("unsupported TLS security selector")
+            raise NativeMappingError("unsupported_tls_security")
     if protocol == "vless" and params.get("security") == "reality":
         if not any(key in params for key in ("fp", "client-fingerprint", "fingerprint")):
-            raise EngineError("REALITY without explicit uTLS fingerprint is ambiguous")
+            raise NativeMappingError("reality_missing_fingerprint")
         if not any(key in params for key in ("pbk", "public_key", "reality-opts")):
-            raise EngineError("REALITY without public key cannot be mapped")
+            raise NativeMappingError("reality_missing_public_key")
 
     # A VMess share JSON "type" denotes TCP header type; unlike VLESS URI
     # "type", it is not an alias for the transport network. Only the neutral
     # explicit value "none" is currently supported.
     if protocol == "vmess" and "type" in params:
         if params["type"] not in ("", "none"):
-            raise EngineError("unsupported VMess TCP header type")
+            raise NativeMappingError("unsupported_vmess_header")
     transport_keys = ("network", "net") if protocol == "vmess" else ("network", "net", "type")
     transport_aliases = [key for key in transport_keys if key in params]
     if len(transport_aliases) > 1 and any(
         params[key] != params[transport_aliases[0]] for key in transport_aliases[1:]
     ):
-        raise EngineError("conflicting transport aliases: " + ", ".join(transport_aliases))
+        raise NativeMappingError("conflicting_transport_aliases")
     # Do not turn an unknown transport into an unintentional TCP outbound.
     if protocol in {"vless", "vmess", "trojan"}:
         selector = next((params[key] for key in transport_keys if key in params), "")
         if selector not in {"", "tcp", "raw", "ws", "websocket", "grpc",
                             "http", "h2", "httpupgrade", "http-upgrade", "xhttp"}:
-            raise EngineError(f"unsupported transport selector: {selector!r}")
+            raise NativeMappingError("unsupported_transport")
         if "authority" in params:
-            raise EngineError("unsupported connection-relevant URI field: authority")
+            raise NativeMappingError("unsupported_authority")
         if selector in {"", "tcp", "raw"} and any(
             key in params for key in ("host", "path", "headers", "serviceName", "service_name")
         ):
-            raise EngineError("transport-specific fields on TCP cannot be mapped losslessly")
+            raise NativeMappingError("transport_fields_on_tcp")
         if selector in {"ws", "websocket", "grpc", "xhttp"} and "headers" in params:
-            raise EngineError("unmapped generic headers on selected transport")
+            raise NativeMappingError("unmapped_transport_headers")
 
     # The mapper currently does not consume security=none for VLESS, but the
     # explicit value is checked above for encryption, not inferred.
@@ -180,16 +188,16 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
         if "extra" in mapped:
             encoded = mapped["extra"]
             if not isinstance(encoded, str) or not re.fullmatch(r"[A-Za-z0-9_-]+={0,2}", encoded):
-                raise EngineError("XHTTP URI extra must be Base64URL(JSON)")
+                raise NativeMappingError("invalid_xhttp_extra_encoding")
             try:
                 raw = base64.b64decode(
                     encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True
                 )
                 parsed = json.loads(raw.decode("utf-8"))
             except (binascii.Error, ValueError, UnicodeDecodeError) as exc:
-                raise EngineError("invalid XHTTP Base64URL JSON extra") from exc
+                raise NativeMappingError("invalid_xhttp_extra_json") from exc
             if not isinstance(parsed, dict):
-                raise EngineError("XHTTP extra must decode to a JSON object")
+                raise NativeMappingError("invalid_xhttp_extra_type")
             mapped["extra"] = parsed
     # Never invoke ensure_id(), alter original_raw, or mutate source params.
     from copy import copy
