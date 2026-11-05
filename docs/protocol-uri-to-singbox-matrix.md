@@ -751,6 +751,43 @@ gate против реального sing-box-extended URI parser;
 `headerType=<other>`; (4) fixtures для спорных случаев.
 Production ingest и identity не менять.
 
+## Исходный код URI-парсера целевого sing-box-extended: верификация gate
+
+Сверено по ветке `extended` репозитория
+[dioxine/sing-box-extended](https://github.com/dioxine/sing-box-extended/tree/extended/parser/link)
+(не является утверждением об иных форках или версиях):
+
+- [VLESS parser](https://github.com/dioxine/sing-box-extended/blob/extended/parser/link/vless.go):
+  для `type=xhttp` выполняется
+  `common.DecodeBase64URLSafe(extra)`, затем `json.Unmarshal`.
+  Если декодирование или JSON-разбор не удаётся, значения из
+  `extra` **не применяются**. Это подтверждает, почему
+  JSON-text в 246 наблюдаемых ссылках не даёт тех же XHTTP настроек
+  в целевом URI-парсере, что JSON-text → native JSON.
+  Эксперимент продолжает *явно отклонять* JSON-text, а не
+  молча восстанавливать или игнорировать настройки.
+- [VMess parser](https://github.com/dioxine/sing-box-extended/blob/extended/parser/link/vmess.go),
+  [Trojan parser](https://github.com/dioxine/sing-box-extended/blob/extended/parser/link/trojan.go)
+  и VLESS parser: в проверенном коде отсутствует ветка,
+  применяющая параметр `cs` к TLS cipher suites. Непустое
+  `cs` → `cipher_suites` в native JSON может поэтому
+  изменить TLS handshake по сравнению с target URI parser.
+  Экспериментальный native mapper отклоняет как пустой
+  (`empty_tls_cipher_suites`), так и непустой
+  (`unsupported_tls_cipher_suites`) `cs` и его явные
+  алиасы, вместо небезопасного маппинга.
+
+Статистика 126 VMess с пустым `cs`, 45 VLESS с непустым `cs`
+и 2 Trojan с непустым `cs` — **наблюдения**, а не доказательство
+одинакового поведения вне указанного форка. Production backend,
+ingest, dedup и хранение не менялись.
+
+Возможный следующий эксперимент: локальное сравнение URI parser oracle
+и native JSON для синтетических XHTTP `extra` с известным набором
+полей (`xPaddingBytes`, `xmux`), в том числе JSON-text,
+Base64URL(JSON), invalid, JSON null. Не переносить поведение
+чужого форка автоматически на `dioxine/sing-box-extended`.
+
 ## Зафиксированные пробелы реализации и правила gate
 
 1. **Версионная схема:** upstream JSON documentation может описывать поля после 1.14.3; получить version-specific schema и выполнить `sing-box check` установленным бинарником.
