@@ -182,12 +182,52 @@ def audit(checkpoint: Path, registry: dict[str, dict[str, dict[str, Any]]]) -> d
     return report
 
 
+def resolve_field_hash(checkpoint: Path, digest: str) -> dict[str, dict[str, int]]:
+    """Resolve ONE audited field-name SHA-256 locally, without reading URI values.
+
+    Explicit opt-in diagnostic only: field names can themselves be sensitive;
+    never write the resolved names to the normal machine-shareable report.
+    """
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError("expected a lowercase SHA-256 hex digest")
+    matched: dict[str, Counter] = defaultdict(Counter)
+    with checkpoint.open(encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+                cfg = row["config"]
+                protocol = cfg["protocol"].lower()
+                if protocol == "hy2":
+                    protocol = "hysteria2"
+                params = cfg["params"]
+                if not isinstance(params, dict):
+                    continue
+            except (ValueError, TypeError, KeyError, AttributeError, json.JSONDecodeError):
+                continue
+            for key in params:
+                if (isinstance(key, str) and
+                        hashlib.sha256(key.encode("utf-8")).hexdigest() == digest):
+                    matched[protocol][key] += 1
+    return {proto: dict(counts) for proto, counts in sorted(matched.items())}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
     parser.add_argument("--matrix", type=Path, default=DEFAULT_MATRIX)
     parser.add_argument("--output", type=Path, default=Path("/tmp/proxyfilter-uri-provenance-audit.json"))
+    parser.add_argument(
+        "--resolve-hash", metavar="SHA256",
+        help="LOCAL ONLY: display field name matching a single audited SHA-256; "
+             "prints no URI, endpoint or field values",
+    )
     args = parser.parse_args()
+    if args.resolve_hash is not None:
+        matches = resolve_field_hash(args.checkpoint, args.resolve_hash)
+        print(json.dumps(matches, ensure_ascii=False, sort_keys=True))
+        return
     registry = load_matrix(args.matrix)
     result = audit(args.checkpoint, registry)
     args.output.parent.mkdir(parents=True, exist_ok=True)
