@@ -65,13 +65,35 @@ class UriSemanticAuditTests(unittest.TestCase):
         self.assertEqual(vm["contexts"]["transport:ws"], 1)
         self.assertEqual(vm["selectors"]["type"]["http"], 1)
         self.assertEqual(vm["cs"]["value_shape"]["suite-count:2"], 1)
+        self.assertEqual(vm["cs"]["tls_activation"]["tls"], 1)
+        self.assertNotIn("tls_marker", vm["cs"])
         vl = report["protocols"]["vless"]
         self.assertEqual(vl["extra"]["encoding"]["base64url-json"], 1)
         self.assertEqual(vl["cooccurrences"]["headerType_by_transport"]["xhttp"], 1)
+        self.assertEqual(
+            vl["cooccurrences"]["headerType_value_by_transport"]["xhttp / <other>"], 1
+        )
+        self.assertEqual(vl["extra"]["encoding_by_transport"]["xhttp / base64url-json"], 1)
         output = json.dumps(report)
         for value in ("private-uuid", "secret-private-value", "hidden",
                       "TLS_AES_128_GCM_SHA256", "/private", "password"):
             self.assertNotIn(value, output)
+
+    def test_cs_without_tls_is_not_mislabeled_as_active(self):
+        report = self._audit([
+            {"config": {"protocol": "vmess", "params": {
+                "net": "ws", "tls": "none", "cs": "",
+            }}},
+            {"config": {"protocol": "trojan", "params": {
+                "cs": "TLS_A:TLS_B", "password": "secret",
+            }}},
+        ])
+        self.assertEqual(
+            report["protocols"]["vmess"]["cs"]["tls_activation"]["none"], 1
+        )
+        self.assertEqual(
+            report["protocols"]["trojan"]["cs"]["tls_activation"]["<empty>"], 1
+        )
 
     def test_context_counters_accumulate_across_rows(self):
         report = self._audit([
