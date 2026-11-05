@@ -827,273 +827,42 @@ Base64URL(JSON), invalid, JSON null. Не переносить поведени�
 консервативном mapper. Для `proxy-filter` сохраняем исходное
 значение и отклоняем неподтверждённое эквивалентное преобразование.
 
-## Дополнительные reference implementations: Podkop, NetShift, Forkop
+## Сторонние парсеры: источники решений, не режимы proxy-filter
 
-Проверены исходные репозитории и документация (2026-11-05):
-- [itdoginfo/podkop](https://github.com/itdoginfo/podkop) — OpenWrt
-  маршрутизатор, исходный shell-парсер и подключение альтернативного ядра;
-- [xDarkOne/netshift](https://github.com/xDarkOne/netshift) — форк с
-  subscription URL, mixed subscription formats (URI, base64, Clash,
-  Xray JSON), автообновлением и выбором ядра;
-- [ushan0v/forkop](https://github.com/ushan0v/forkop) — поддержка
-  VLESS/VMess/Trojan/SS/HY2/TUIC и списков URI, Clash/mihomo,
-  sing-box, Xray, SIP008, base64; конкретная реализация URI→JSON
-  пока не подтверждена построчно;
-- **[podkop-net/podkop-engine](https://github.com/podkop-net/podkop-engine)**
-  — отдельное sing-box-ядро с командой
-  `sing-box tools decode-link --compact` и
-  [подробной матрицей](https://github.com/podkop-net/podkop-engine/blob/main/docs/LINKS.md),
-  содержащей протестированные URI→outbound cases.
+Проверенные источники: [Podkop](https://github.com/itdoginfo/podkop),
+[NetShift](https://github.com/xDarkOne/netshift),
+[Forkop](https://github.com/ushan0v/forkop),
+[podkop-engine: таблица URI → outbound](https://github.com/podkop-net/podkop-engine/blob/main/docs/LINKS.md),
+а также Throne и исходный URI-парсер целевого `dioxine/sing-box-extended`.
 
-### Почему podkop-engine особенно полезен
+Реализации отличаются в важных местах: например, XHTTP `extra` у
+podkop-engine принимает URL-экранированный JSON, а у проверенного
+парсера sing-box-extended — Base64URL(JSON). Их механическое объединение
+или автоматическое определение «подходящего» формата меняет семантику
+URI и нарушает принятый консервативный контракт.
 
-`decode-link` выдаёт sing-box outbound, проверенный сборкой самого
-ядра, либо предупреждение/отказ (status 0/2/1).
-Утверждение проекта: строки `docs/LINKS.md` проверены на
-`podkop-engine-full` r15, линиях 1.13.21 и 1.14.3.
-Это **independent oracle**, но не замена target oracle
-`dioxine/sing-box-extended`: поддерживаемые опции и defaults
-могут отличаться.
+**Архитектурное решение (2026-11-05):** в проекте остаётся один
+экспериментальный `convert_uri_to_native(proxy)` с поведением,
+ориентированным на целевое sing-box-extended. Отдельный профиль
+`podkop-engine`, CLI differential harness и внешний oracle удалены
+как не нужные production-задаче. Никакой внешний бинарник Podkop
+для работы или тестирования проекта не требуется.
 
-По таблице LINKS.md:
-- `type=xhttp&extra=%7B...%7D` — URL-экранированный JSON-object
-  превращается в XHTTP transport options; это соответствует
-  распространённым Xray subscription exports и форме 246 VLESS
-  `extra` в нашем checkpoint.
-- `headerType=http` при TCP без TLS допускает HTTP/1.1 transport;
-  с TLS/REALITY явный отказ, потому что sing-box HTTP transport
-  с TLS означает другой протокол HTTP/2.
-- `cs` с непустым значением получает предупреждение, что Xray
-  cipher suite override не поддерживается; молчаливо маппить его
-  как native TLS `cipher_suites` неправильно.
-- Заявлена сравнительная проверка 1533 links со старым shell-parser.
-  Считать это внешними benchmark-данными, не результатами
-  `proxy-filter`.
+Правила сторонних проектов можно переносить в единый адаптер лишь
+после проверки, что они сохраняют смысл исходного URI и поддерживаются
+целевым sing-box. Они не служат основанием для исправления повреждённых
+URI, добавления структурированных входных форматов или потери
+неизвестных параметров.
 
-**Важная граница:** NetShift и Forkop — конечные потребители
-подписок. То, что они принимают URI, ещё не доказывает, что каждое
-поле сохранило значение. Их успешный импорт не является
-oracle-equivalence доказательством.
+Сохранены существующие тесты `tests.test_native_experiment` на
+TLS/REALITY, alias-конфликты, VMess, XHTTP и неизменность
+`original_raw`. Эксперимент не подключён к production backend selector.
 
-### Интеграционный план
-
-1. Сохранить в differential harness отдельные профили сравнения:
-   `target_extended_uri`, `podkop_engine_decode_link` и
-   `native_backend` — с указанием версии ядра.
-2. Использовать `docs/LINKS.md` для создания синтетических fixtures
-   (XHTTP extra, headerType/TLS, cs, VMess type/net).
-3. Сравнивать *outbound структуру и diagnostics*, не утверждать
-   эквивалентность лишь по status=0.
-4. Не вводить Clash/Xray/sing-box JSON в production ingest:
-   широкая поддержка форматов NetShift/Forkop не меняет нашу
-   утверждённую границу TXT/Base64(TXT) → URI.
-5. Никаких автоматических исправлений encoding или изменений
-   production parser/dedup/publish на основании поведения
-   сторонних клиентов.
-
-## Differential harness v1: offline fixtures и два oracle-профиля
-
-Новые файлы в экспериментальной части:
-- `tools/native_differential.py` — offline-сравнение native результата
-  с заранее сохранённым результатом целевого `sing-box-extended`
-  и, опционально, локальным `podkop-engine tools decode-link`;
-- `tests/fixtures/native_differential.json` — 14 полностью
-  синтетических случаев (VLESS, VMess и Trojan), включая XHTTP
-  Base64URL(JSON), JSON-text, JSON null, invalid, unsupported field,
-  TLS `cs` и HTTP header;
-- `tests/test_native_differential.py` — проверки результата,
-  конфиденциальности, статусов и сравнений.
-
-Запуск из `app/`:
+Проверка из `app/` на ноутбуке:
 
 ```bash
-python3 -m unittest tests.test_native_differential -v
-python3 tools/native_differential.py \
-  --fixtures tests/fixtures/native_differential.json \
-  --output /tmp/proxyfilter-native-differential.json
+python3 -m unittest tests.test_native_experiment tests.test_audit_uri_provenance tests.test_audit_uri_semantics -v
 ```
-
-При наличии совместимого **локально установленного**
-`podkop-engine`:
-
-```bash
-python3 tools/native_differential.py \
-  --podkop-binary /path/to/podkop-engine-binary \
-  --output /tmp/proxyfilter-native-differential-podkop.json
-```
-
-`decode-link --compact` получает URI **через stdin**, а не через
-argv, shell не используется. Внешний процесс запускается только по
-явному CLI-аргументу. Он может запускать плагины или иметь побочные
-эффекты в собственной реализации; поэтому fixtures должны оставаться
-синтетическими.
-
-`sing-box-extended` как независимый oracle пока **не запускается
-автоматически**, поскольку в проверенной версии не подтверждён
-CLI-интерфейс, выдающий результат URI parser. Для воспроизводимого
-сравнения принимается вручную полученный JSON:
-
-```json
-{
-  "vless-ws-tls": {
-    "status": "ok",
-    "outbound": {
-      "type": "vless"
-    }
-  },
-  "vless-xhttp-json-text": {
-    "status": "rejected"
-  }
-}
-```
-
-Это **схема входного oracle-файла, не реальные ожидаемые JSON**:
-фактическое поле `outbound` должно содержать полный объект,
-полученный именно от целевого парсера. Использовать
-`--target-oracle /path/to/captured.json` только после такого
-снятия результатов. Нельзя создавать oracle из результатов native
-mapper — это круговая проверка.
-
-Отчёт по умолчанию не включает URI, endpoint, credential,
-содержимое JSON outbounds и stderr. Состояния сравнения:
-`unavailable`, `status_mismatch`, `both_rejected`,
-`unclassified_loss`, `structural_equal_unverified`,
-`structural_difference`. **Структурное совпадение не доказывает
-поведенческую эквивалентность**, а отсутствие default-полей не
-нормализуется догадками.
-
-Этот harness сравнивает только явно предоставленные результаты.
-Нельзя использовать `expected_native_passed` как показатель
-совместимости с внешним ядром. Production и реальная checkpoint-база
-не затрагиваются.
-
-## Использованная реализация Podkop: opt-in XHTTP JSON-text
-
-Перенесено **поведение**, а не исходный Go-код, на основании
-[podkop-engine `docs/LINKS.md`](https://github.com/podkop-net/podkop-engine/blob/main/docs/LINKS.md):
-VLESS `type=xhttp&extra=` принимает URL-escaped JSON object.
-У нас URI query уже распакован в `config.params`, поэтому для
-изолированного экспериментального профиля `podkop-engine`
-выполняется строгое `json.loads(extra)`, проверка top-level object
-и уже существующий маппинг полей XHTTP.
-
-- API: `convert_uri_to_native(proxy, profile="podkop-engine")`.
-  **По умолчанию `profile="extended"`** и Base64URL(JSON) для
-  целевого sing-box-extended — без изменений.
-- CLI: `python3 tools/native_differential.py --native-profile podkop-engine`.
-  Выбор профиля отчётливо отмечен в JSON-отчёте;
-  `expected_native` у fixtures относится к default `extended`
-  и будет отличаться для некоторых fixtures в Podkop-профиле.
-- Не допускаются `null`, Python dict repr, невалидный JSON,
-  неподтверждённые nested fields; никаких автокоррекций.
-- Профиль `podkop-engine` пока ограничен VLESS, поскольку
-  исследованный и подтверждённый пример относится к VLESS XHTTP.
-  Это **не** полноценная эмуляция `sing-box tools decode-link`,
-  и локальный бинарь остаётся независимым oracle.
-- Источник `original_raw` не меняется, код production ingest
-  и конфигурации публикации не модифицируются.
-
-Минимальная проверка:
-
-```bash
-python3 -m unittest tests.test_native_experiment tests.test_native_differential -v
-python3 tools/native_differential.py --native-profile extended
-python3 tools/native_differential.py --native-profile podkop-engine
-```
-
-Второй прогон без `--podkop-binary` **не запускает** реальный
-`podkop-engine` и **не подтверждает** структурную эквивалентность
-внешнему ядру. Его результат — локальный тест конкретного
-перенесённого правила.
-
-## Подтверждённые переносы Podkop v2: TCP HTTP и XHTTP xmux
-
-Из [podkop-engine docs/LINKS.md](https://github.com/podkop-net/podkop-engine/blob/main/docs/LINKS.md) перенесены в **опциональный** экспериментальный профиль `podkop-engine`:
-
-- VLESS `type=tcp/raw`, `headerType=http` **без TLS/REALITY**:
-  native `transport.type=http`; `host` может быть списком имён
-  через запятую; одиночный `path` переносится без изменений.
-  В случае TLS/REALITY — `http_header_with_tls`: HTTP/1.1
-  disguise Xray нельзя подменить HTTP/2.
-- Несколько путей `/first,/second` не сводятся автоматически к
-  одному: Xray может выбирать путь случайным образом, а sing-box
-  ожидает один путь. Причина отказа —
-  `unrepresentable_tcp_http_path`.
-- XHTTP `extra.xmux.maxConnections` и `maxConcurrency` одновременно
-  — `conflicting_xhttp_xmux_limits`. Числовые JSON-диапазоны,
-  которые можно представить десятичной строкой без потери, переводятся
-  в native строку; диапазоны со знаком, нулевой границей, неверным
-  типом и неизвестные поля **не исправляются** (fail closed).
-- `hKeepAlivePeriod` принимается только как целое число; неизвестные
-  ключи `xmux` отклоняются, а не теряются.
-
-Это *консервативное подмножество* поведения Podkop, не заявка
-на полное совпадение с ним. Бинарный `podkop-engine decode-link`
-остаётся отдельным oracle. Production ingest/backend не менялись.
-
-Синтетические дифференциальные fixtures теперь имеют отдельные
-`expected_native.extended` и
-`expected_native.podkop-engine` (19 случаев). Показатель
-`expected_native_passed` сравнивается только с ожиданием
-текущего профиля. Ошибки в поведении внешнего oracle этот счётчик
-не обнаруживает.
-
-Проверка из `app/`:
-
-```bash
-python3 -m unittest tests.test_native_experiment tests.test_native_differential -v
-python3 tools/native_differential.py --native-profile extended
-python3 tools/native_differential.py --native-profile podkop-engine
-# С независимым локальным oracle (если установлен):
-python3 tools/native_differential.py --native-profile podkop-engine \
-    --podkop-binary /path/to/podkop-engine
-```
-
-## Реальный Podkop oracle: безопасный локальный прогон
-
-Инструмент `tools/native_differential.py` теперь перед прогоном
-выполняет предзапусковую проверку `tools decode-link --help`,
-не передавая туда URI. Неподдерживающий команду бинарник
-приводит к ошибке запуска, а не к `unavailable` для всех fixtures.
-Синтетические URI передаются через **stdin**. Статусы и
-исходные значения из stderr не раскрываются.
-
-`podkop_mismatch_ids` в отчёте содержит только ID несовпавших
-fixtures. При структурном расхождении
-`podkop_differing_fields` перечисляет только заранее разрешённые
-имена полей верхнего уровня; ни значения, ни произвольные
-vendor-ключи не публикуются. `podkop_oracle_checked` показывает,
-для скольких fixtures реально получен статус от внешнего процесса.
-
-Пример (на ноутбуке из каталога `app/`, без `sudo`):
-
-```bash
-python3 -m unittest tests.test_native_experiment tests.test_native_differential -v
-/path/to/sing-box-podkop tools decode-link --help
-python3 tools/native_differential.py \
-    --native-profile podkop-engine \
-    --podkop-binary /path/to/sing-box-podkop \
-    --output /tmp/native-podkop-real-oracle.json
-```
-
-Указанный путь — пример: инструмент не устанавливает Podkop
-и не предполагает, что `/usr/bin/sing-box` на ноутбуке
-поддерживает `decode-link`. Выпуски
-[podkop-engine](https://github.com/podkop-net/podkop-engine/releases)
-предназначены для OpenWrt: бинарник подходящей архитектуры
-из пакета `ipk`/`apk` **может быть несовместим** с Manjaro
-из-за libc/динамической линковки. Не заменять пакетный sing-box
-на работающем роутере ради тестов; предпочтителен отдельный
-исполняемый файл на ноутбуке или изолированная среда.
-
-Важно: `expected_native_passed=19` не равно успешному сравнению
-с oracle. В отчёте нужно смотреть `podkop_oracle_checked`,
-`podkop_comparisons` и `podkop_mismatch_ids`. Даже
-`structural_equal_unverified` не доказывает сетевую
-эквивалентность, а `structural_difference` может включать
-конфигурационные поля тестового окружения (например,
-`tag`, `domain_resolver`). Никакие данные из реальных
-подписок не отправляются внешнему бинарнику.
 
 ## Зафиксированные пробелы реализации и правила gate
 
