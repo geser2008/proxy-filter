@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 import unittest
 
 from proxyfilter.engine import EngineError
@@ -104,6 +106,41 @@ class NativeExperimentTests(unittest.TestCase):
         self.assertEqual(result.outbound["type"], "vmess")
         self.assertEqual(result.outbound["security"], "auto")
         self.assertTrue(result.outbound["tls"]["enabled"])
+
+    def test_vmess_header_none_does_not_override_ws_transport(self):
+        p = proxy("vmess", {"id": UUID, "scy": "auto", "tls": "tls",
+                            "net": "ws", "type": "none", "path": "/socket"})
+        result = convert_uri_to_native(p)
+        self.assertEqual(result.outbound["transport"]["type"], "ws")
+        self.assertEqual(result.outbound["transport"]["path"], "/socket")
+        self.assertEqual(p.params["type"], "none")
+
+    def test_vmess_nontrivial_tcp_header_rejected(self):
+        p = proxy("vmess", {"id": UUID, "net": "tcp", "type": "http"})
+        with self.assertRaisesRegex(EngineError, "unsupported VMess TCP header"):
+            convert_uri_to_native(p)
+
+    def test_vless_xhttp_base64url_extra_decoded_only_in_copy(self):
+        extra = {"xPaddingBytes": "12-24", "mode": "stream-up"}
+        encoded = base64.urlsafe_b64encode(json.dumps(extra).encode()).decode().rstrip("=")
+        p = proxy("vless", {"uuid": UUID, "type": "xhttp",
+                             "path": "/x", "extra": encoded})
+        result = convert_uri_to_native(p)
+        self.assertEqual(result.outbound["transport"]["type"], "xhttp")
+        self.assertEqual(result.outbound["transport"]["x_padding_bytes"], "12-24")
+        self.assertEqual(result.outbound["transport"]["mode"], "stream-up")
+        self.assertEqual(p.params["extra"], encoded)
+
+    def test_xhttp_plain_json_in_share_uri_is_not_base64url(self):
+        p = proxy("vless", {"uuid": UUID, "type": "xhttp",
+                             "extra": '{"mode":"auto"}'})
+        with self.assertRaisesRegex(EngineError, "Base64URL"):
+            convert_uri_to_native(p)
+
+    def test_conflicting_transport_aliases_detected(self):
+        p = proxy("vless", {"uuid": UUID, "type": "ws", "net": "grpc"})
+        with self.assertRaisesRegex(EngineError, "conflicting transport aliases"):
+            convert_uri_to_native(p)
 
     def test_tuic_native_outbound(self):
         p = proxy("tuic", {"uuid": UUID, "password": "secret"})
