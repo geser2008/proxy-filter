@@ -212,8 +212,11 @@ class ABCheckTests(unittest.TestCase):
             checkpoint = Path(tmp) / "03-safe.jsonl"
             other = valid_proxy()
             other.original_raw = "vless://different-private-credential"
+            checkpoint_row = p.to_dict()
+            self.assertEqual(checkpoint_row["original"]["raw"], first)
+            self.assertNotIn("original_raw", checkpoint_row)
             checkpoint.write_text(
-                json.dumps(p.to_dict()) + "\n" + json.dumps(other.to_dict()) + "\n",
+                json.dumps(checkpoint_row) + "\n" + json.dumps(other.to_dict()) + "\n",
                 encoding="utf-8",
             )
             output = Path(tmp) / "focused.jsonl"
