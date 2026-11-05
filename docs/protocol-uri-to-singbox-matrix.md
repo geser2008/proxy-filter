@@ -1604,6 +1604,88 @@ jq '.protocols.vmess' /tmp/proxyfilter-native-after-empty-vcn.json
 Два остающихся `lossy_native` нельзя переименовать в
 `safe_native` без проверки нераспознанных полей.
 
+## VMess: разбор 168 первых отказов `transport_fields_on_tcp` (2026-11-05)
+
+**Локальный baseline после `pcs=""` и `vcn=""`:** из 546 VMess URI
+`safe_native=250`, `lossy_native=2`, `rejected=294`.
+Из отказов **168** получили `transport_fields_on_tcp`.
+**Точный состав полей в этих 168 записях пока неизвестен.**
+
+### Подтверждённая семантика
+
+Проверка `proxyfilter/native_experiment.py` выполняется при
+`net`/`network` равном пустому значению, `tcp` или `raw`,
+если VMess не представляет узко поддерживаемый `type=http`
+с явно `net=tcp`. Любой из **присутствующих** ключей
+`host`, `path`, `headers`, `serviceName`,
+`service_name` вызывает отказ независимо от значения.
+Если в VMess `type` задан другой неподдерживаемый header,
+он отклоняется **раньше** `transport_fields_on_tcp`.
+Потому 168 — **первые отказы**, а не все URI, содержащие
+названные ключи.
+
+[Podkop, описание VMess и TCP](https://github.com/podkop-net/podkop-engine/blob/main/docs/LINKS.md)
+подтверждает, что `net` — selector транспорта,
+а `type` в legacy VMess определяет TCP header:
+`none` означает отсутствие маскировки, `http`
+допускает `host`/`path` в HTTP-disguise
+с отдельным gate TLS/HTTP wire semantics.
+Podkop в некоторых случаях молча игнорирует `host` и `path`
+при обычном TCP. Это **не означает**, что допустимо без
+анализа выкидывать непустые параметры из другого клиента
+или принимать их за `metadata`.
+Проверенный
+[`sing-box-extended/parser/link/vmess.go`](https://github.com/dioxine/sing-box-extended/blob/extended/parser/link/vmess.go)
+использует `host`/`path` только для конкретных видов
+транспорта, а не как общие URI-параметры.
+
+### Следующий диагностический этап
+
+В экспериментальную ветку добавлен **read-only**
+`tools/audit_vmess_tcp_fields.py` для точного census
+первых отказов `transport_fields_on_tcp`.
+Он классифицирует `net` и `type` по закрытым
+категориям, состояния TLS и присутствующие транспортные
+ключи. Каждый ключ дополнительно классифицируется как
+`empty`, `nonempty` или `non_string`.
+Ни один исходный endpoint, URI, пароль, значение `host/path`
+или произвольное имя поля не попадает в отчёт.
+`by_field` может иметь пересечения, `contexts`
+взаимоисключающие.
+
+Дальнейшие варианты по результатам:
+
+- Пустые `host`/`path` при простом TCP:
+  сначала доказать нейтральность именно **пустой строки**
+  и проверить поведение backend; возможно исключение только
+  для экспериментального adapter.
+- Непустые `host`/`path` при `type=none`:
+  **не** переносить в HTTP transport без подтверждения
+  wire protocol; не считать неизвестной метаданной.
+- `serviceName`/`service_name` при TCP:
+  различать устаревшие UI-artifacts и содержательные
+  настройки; автоматически превращать в gRPC нельзя.
+- `headers`: потенциально содержательные HTTP headers,
+  не пропускать без проверенной эквивалентности.
+- VMess `type=http` с TLS:
+  сохранять ранее введённый gate против
+  несовпадения HTTP/1.1 и HTTP/2.
+
+Запуск из `app/` после `git pull`:
+
+```bash
+python3 -m unittest tests.test_audit_vmess_tcp_fields -v
+python3 tools/audit_vmess_tcp_fields.py \
+  --checkpoint ../data/work/03-safe.jsonl \
+  --output /tmp/proxyfilter-vmess-tcp-fields.json
+cat /tmp/proxyfilter-vmess-tcp-fields.json
+```
+
+Ожидаемый счётчик `rows=168` при прежнем checkpoint.
+До фактического отчёта **не** объявлять конкретное поле
+причиной большинства отказов. Production mapping
+и критерии `safe_native` не меняются.
+
 ## Зафиксированные пробелы реализации и правила gate
 
 1. **Версионная схема:** upstream JSON documentation может описывать поля после 1.14.3; получить version-specific schema и выполнить `sing-box check` установленным бинарником.
