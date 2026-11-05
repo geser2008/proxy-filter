@@ -99,6 +99,27 @@ def classify_mapper_fields(exc: Exception) -> list[str]:
     return []
 
 
+def diagnostic_value_shape(value: Any) -> str:
+    """Diagnostic type/shape only, never the value itself."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, str):
+        if not value:
+            return "empty_string"
+        if not value.strip():
+            return "whitespace_string"
+        return "nonempty_string"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    return "other"
+
+
 def classify_mapper_failure(exc: Exception) -> str:
     # Only known EngineError messages are inspected; arbitrary error text is
     # never emitted. A mismatch remains unclassified.
@@ -220,6 +241,8 @@ def compare_one(proxy: ProxyConfig, extended_binary: str, native_binary: str,
         fields = classify_mapper_fields(exc)
         if fields:
             result["conversion_fields"] = fields
+            if result["conversion_reason"] == "backend_invalid_boolean":
+                result["conversion_value_shape"] = diagnostic_value_shape(proxy.params.get(fields[0]))
         result["conversion_error_type"] = type(exc).__name__
         return result
 
@@ -273,6 +296,7 @@ def run(checkpoint: Path, output: Path, extended_binary: str, native_binary: str
     by_protocol_outcome: Counter[str] = Counter()
     by_conversion_reason: Counter[str] = Counter()
     by_protocol_reason: Counter[str] = Counter()
+    by_boolean_value_shape: Counter[str] = Counter()
     by_conversion_field: Counter[str] = Counter()
     by_protocol_conversion_field: Counter[str] = Counter()
     by_dropped_field: Counter[str] = Counter()
@@ -304,6 +328,8 @@ def run(checkpoint: Path, output: Path, extended_binary: str, native_binary: str
             by_protocol[protocol_name] += 1
             outcome = f"{protocol_name}:{report.get('conversion', 'unknown')}:{report.get('extended', 'not_run')}:{report.get('native', 'not_run')}"
             by_protocol_outcome[outcome] += 1
+            if report.get("conversion_value_shape"):
+                by_boolean_value_shape[f"{protocol_name}:{report['conversion_value_shape']}"] += 1
             if report.get("conversion_reason"):
                 by_conversion_reason[str(report["conversion_reason"])] += 1
                 by_protocol_reason[f"{protocol_name}:{report['conversion_reason']}"] += 1
@@ -320,6 +346,7 @@ def run(checkpoint: Path, output: Path, extended_binary: str, native_binary: str
         "by_protocol_outcome": dict(sorted(by_protocol_outcome.items())),
         "conversion_reasons": dict(sorted(by_conversion_reason.items())),
         "by_protocol_reason": dict(sorted(by_protocol_reason.items())),
+        "boolean_value_shapes": dict(sorted(by_boolean_value_shape.items())),
         "conversion_fields": dict(sorted(by_conversion_field.items())),
         "by_protocol_conversion_field": dict(sorted(by_protocol_conversion_field.items())),
         "dropped_fields": dict(sorted(by_dropped_field.items())),
