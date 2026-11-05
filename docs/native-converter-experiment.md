@@ -104,3 +104,33 @@ variants rather than treating them as networks. For XHTTP URI `extra`, it
 expects Base64URL(JSON) and decodes into a private copy for the extended
 native mapper; plain JSON text is not accepted as a share-URI `extra`.
 Even then, XHTTP remains version/build-specific and needs binary validation.
+
+### Preflight and direct invocation
+
+The A/B script accepts direct invocation (`python3 tools/ab_core_check.py`)
+from the project root as well as `python3 -m tools.ab_core_check`.
+Before reading the checkpoint, it calls `sing-box version` for **both**
+configured binaries, validates the extended build marker and requires identical
+version strings. The script prints both versions. Using the same extended
+binary in both arguments is the recommended experiment, because it isolates
+URI parsing from JSON mapping rather than comparing different core builds.
+
+```bash
+python3 tools/ab_core_check.py \
+  --checkpoint data/work/03-safe.jsonl \
+  --extended-bin "$(command -v sing-box)" \
+  --native-bin "$(command -v sing-box)" \
+  --limit 100 \
+  --output /tmp/proxyfilter-ab-core.jsonl
+```
+
+If the preflight fails, no A/B records are produced. The version marker check
+is a *sanity check*, not a substitute for testing actual `type=parser` support
+with `sing-box check`. On the same build both parser and native outbounds are
+validated independently against the same schema.
+
+Run the dedicated regression tests:
+
+```bash
+python3 -m unittest tests.test_ab_core_check -v
+```
