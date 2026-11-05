@@ -260,10 +260,20 @@ def convert_uri_to_native(proxy: Any) -> NativeConversion:
     ))
     if unmapped:
         raise NativeMappingError("unmapped_connection_field", unmapped)
+    # VMess legacy vcn is a certificate verification-name override, not SNI.
+    # The pinned target URI parser does not consume it. An exactly empty string
+    # requests no override and is neutral; nonempty/non-string values remain
+    # unclassified loss, not safe native coverage.
+    neutral_vmess_empty_vcn = (
+        protocol == "vmess" and type(params.get("vcn")) is str
+        and params["vcn"] == ""
+    )
     dropped = tuple(
         DroppedField(str(key), "metadata" if key in _METADATA else "unclassified")
         for key in sorted(params)
-        if key not in known and not (key == "pcs" and neutral_vmess_empty_pcs)
+        if key not in known
+        and not (key == "pcs" and neutral_vmess_empty_pcs)
+        and not (key == "vcn" and neutral_vmess_empty_vcn)
     )
     mapped = {key: value for key, value in params.items() if key in known}
     if neutral_vmess_empty_cs:
