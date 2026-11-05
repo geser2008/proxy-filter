@@ -193,6 +193,7 @@ VMess JSON/nested extra), `origin_class`, `source_ref`, `value_type`,
 | `pcs`, `vcn`, `ech`, `fm` | query | EXT/OBSERVED | Xray-specific расширения; для каждого поля требуется версия экспортёра [V2] |
 | `spider_x`, `final_mask`, `net`, `network` | query | OBSERVED | Алиасы/расширения PF; не часть доказанного базового VLESS URI |
 | `allowInsecure`, `insecure`, `disable_sni` | query | EXT/OBSERVED | Настройки TLS, риск смены security semantics; проверить конкретный клиент |
+| `cs` | query | OBSERVED | TLS cipher suites selector in some share-link exporters; Xray TLS config `cipherSuites` is a colon-separated string [C1,C2]. Не VLESS `encryption`, не `fp`. URI-нормативность не доказана |
 | `note`, `password`, `allowinsecure`, `pinSHA256`, `packet-encoding`, `udp` | config.params после ingest | OBSERVED | Зафиксированы аудитом 8 848; `note` — кандидат metadata, но не автоматически безопасное для соединения поле; `password` в VLESS требует отдельного анализа |
 
 #### VMess — legacy Base64(JSON), а не query URI
@@ -208,6 +209,7 @@ VMess JSON/nested extra), `origin_class`, `source_ref`, `value_type`,
 | `global_padding`, `authenticated_length`, `packetEncoding` | JSON внутри Base64 | OBSERVED | Есть в PF mapper/native schema, но [M1] не доказывает все эти share-ключи |
 | `security`, `cipher`, `alterId`, `network`, `uuid` | JSON внутри Base64 | OBSERVED | Алиасы PF, не приравнивать автоматически к исходным [M1] |
 | `vmess://UUID@host:port?...` | **другой формат** | EXT | [V1], предложение VMessAEAD URI; **не** смешивать с [M1] |
+| `cs` | JSON внутри Base64 | OBSERVED | В VMess legacy share JSON найдено в 126 записях. Нельзя выводить нормативность VMess JSON из документации Xray `cipherSuites`; [C1,C2] подтверждают назначение лишь как TLS expansion |
 | `name`, `skip-cert-verify`, `serviceName`, `ech`, `echConfigList` | JSON внутри Base64 / config.params | OBSERVED | Аудит 8 848: варианты полей и расширения; `name` кандидат META, остальные нельзя молча отбрасывать |
 
 #### Trojan — base URI и клиентские расширения
@@ -220,6 +222,7 @@ VMess JSON/nested extra), `origin_class`, `source_ref`, `value_type`,
 | `pbk`, `sid`, `ech` | query | EXT | [T1], REALITY/ECH клиентские расширения |
 | `extra`, `mode`, `pcs`, `fm` | query | OBSERVED | Не подтверждены ссылкой [T1] как универсальные поля Trojan URI |
 | `headerType`, `headers`, `authority`, `net`, `network` | query | OBSERVED | Нужна точная спецификация транспортного расширения |
+| `cs` | query | OBSERVED | TLS cipher suites; наблюдается в 2 Trojan URI. Вариант расширения экспортёров [C2], не универсальный Trojan URI стандарт |
 | `insecure`, `allow_insecure`, `allowinsecure`, `spx`, `flow`, `encryption`, `ed`, `eh`, `ws`, `Host`, `note` | query / config.params | OBSERVED | По аудиту 8 848; `insecure` — 466 конфигураций; распознавание не устанавливает допустимые значения и эквивалентность; `note` кандидат META |
 
 #### Shadowsocks — SIP002 и legacy
@@ -283,6 +286,8 @@ VMess JSON/nested extra), `origin_class`, `source_ref`, `value_type`,
 - **[T1]** [Potatso — Trojan share URI](https://docs.potatso.com/protocols/trojan/). Описывает клиентское представление `trojan://` и Xray-совместимые дополнения; это не спецификация сетевого Trojan-протокола.
 - **[S1]** [Shadowsocks — SIP002 URI scheme](https://shadowsocks.org/doc/sip002.html). Нормативное описание ссылки, `plugin`, структуры userinfo и правил percent/Base64URL encoding.
 - **[H1]** [Hysteria2 — official URI Scheme](https://v2.hysteria.network/docs/developers/URI-Scheme/). Нормативные поля `obfs`, `obfs-password`, `sni`, `insecure`, `pinSHA256`, `ech`; bandwidth исключён намеренно.
+- **[C1]** [Xray TLS transport documentation](https://xtls.github.io/en/config/transports/tls.html): `cipherSuites` задаёт разделённый `:` список TLS cipher suite names; это описание Xray JSON, **не** стандарт URI-поля `cs`.
+- **[C2]** [3x-ui issue / PR #6825](https://github.com/MHSanaei/3x-ui/pull/6825): предложение экспортировать TLS `cipherSuites` в share links как `cs` (VLESS/Trojan/VMess). Источник подтверждает используемую конвенцию, но не доказывает универсальную нормативность и не гарантирует включение изменений в релиз.
 - **[U1]** [TUIC protocol specification](https://github.com/tuic-protocol/tuic/blob/master/SPEC.md). Описывает **сетевой протокол**, а не нормативную `tuic://`-схему; URI-параметры нельзя считать SPEC на основании этого источника.
 - **[U2]** [sing-box TUIC outbound](https://sing-box.sagernet.org/configuration/outbound/tuic/). Описывает **native JSON** TUIC, а не поля `tuic://`; в таблице такие поля предварительно `OBSERVED` до нахождения документации конкретного URI-экспортёра.
 
@@ -352,6 +357,7 @@ VMess JSON/nested extra), `origin_class`, `source_ref`, `value_type`,
 | `pbk` / `public_key` | encoded public key | REALITY public key с форматом, размером и кодированием, установленными Xray | `security=reality`; конфликт алиасов — отказ; не придумывать отсутствующие значения | V/G [V2] |
 | `sid` / `short_id` | hex-like string | Формат и допустимая длина по REALITY; пустое значение не равно отсутствующему без доказательства | Только REALITY | V/G [V2] |
 | `spx`, `pqv`, `fm` | extension string | Специфичные REALITY/FinalMask расширения | Пока `GAP` или ограниченный mapper — явно фиксировать, не отбрасывать как META | V/G [V2] |
+| VLESS/VMess/Trojan: `cs`, `cipher_suites`, `cipher-suites` | colon-separated cipher list / URI string | Относится к TLS cipher suites; не `fp` (uTLS) и не VMess `scy`; кодирование/имена cipher suite не переписывать | Применимо только при реально активном TLS и при поддержке backend; пустое значение/список и конфликты алиасов не исправлять | V/G [C1,C2] |
 | `allowInsecure`, `insecure`, `skip-cert-verify` | bool-like | Синтаксис true/false **зависит от формата**; `""` не равен `true` | Отключает/меняет TLS verification; конфликт с проверкой pin и политикой безопасности | V/G |
 | Hysteria2: `pinSHA256` | certificate pin | Формат SHA-256 pin по официальному H1 | **Не** `tls.utls.fingerprint`; `fp` не синоним | P/G [H1] |
 | `pcs`, `vcn`, `ech` | extension string/encoded | Pin/ECH/verification специфичны для клиента; нужны версия и семантика | Не переинтерпретировать pin сертификата как uTLS | V/G |
@@ -402,6 +408,32 @@ VMess JSON/nested extra), `origin_class`, `source_ref`, `value_type`,
 | VLESS | `spx` | string × 372 | Проверить REALITY semantic loss, не считать metadata |
 | Trojan | `headerType` | string × 408 | Проверить non-neutral disguise и связь с transport |
 | Hysteria2 | `security` | string × 38 | Не нормативное поле H1; определить происхождение/условия |
+
+### Выявленное поле `cs`: аудит 2026-11-05
+
+Локальный запуск `--resolve-hash` подтвердил SHA-256 ключа
+`3b8b91c75627bee566dcb88f4805901b20a3eab2520bcff8d26c87157a035026`:
+
+| Протокол | Количество в checkpoint |
+|---|---:|
+| VLESS | 45 |
+| VMess (legacy JSON) | 126 |
+| Trojan | 2 |
+| **Итого** | **173** |
+
+Предполагаемая семантика — **TLS cipher suites**; это подтверждено
+[Xray TLS config][C1] и конвенцией `cs` в [C2]. При этом для VMess
+legacy Base64(JSON) документированность конкретного поля не доказана.
+Классификация во всех трёх таблицах остаётся `OBSERVED` до подтверждения
+официального URI-формата/экспортёра. В `proxyfilter/singbox_backend.py`
+уже имеется mapping `cs`/`cipher_suites`/`cipher-suites` →
+`tls.cipher_suites`, но успешная генерация не доказывает поддержку
+целевой сборкой и не гарантирует сохранение TLS-поведения.
+
+Рекомендуемые проверки перед native mapping: корректный список cipher
+suite names, правила значения `""`, активный TLS, несовместимые aliases,
+TLS 1.3 особенности и поведение с uTLS fingerprint. **Не** переносить
+это поле в VMess `scy`, `fp` или в metadata. Никакой silent drop.
 
 ### Разрешение оставшегося неизвестного имени локально
 
