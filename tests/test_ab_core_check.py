@@ -97,6 +97,14 @@ class ABCheckTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "03-safe"):
                 run(source, Path(tmp) / "report.jsonl", "extended", "native", 1, 3)
 
+    def test_missing_checkpoint_does_not_create_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = Path(tmp) / "03-safe.jsonl"
+            output = Path(tmp) / "result.jsonl"
+            with self.assertRaisesRegex(FileNotFoundError, "checkpoint not found"):
+                run(checkpoint, output, "extended", "native", 1, 3)
+            self.assertFalse(output.exists())
+
     def test_security_rejected_never_invokes_core(self):
         p = valid_proxy()
         p.params["insecure"] = "true"
