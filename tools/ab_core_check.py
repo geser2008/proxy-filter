@@ -80,6 +80,25 @@ _MAPPER_PATTERNS = (
 )
 
 
+_MAPPER_BOOLEAN_FIELDS = frozenset((
+    "tls", "insecure", "disable_sni", "global_padding",
+    "authenticated_length",
+))
+
+
+def classify_mapper_fields(exc: Exception) -> list[str]:
+    """Source-reviewed strict-boolean field labels, never argument values."""
+    if not isinstance(exc, EngineError):
+        return []
+    match = re.match(
+        r"^invalid boolean value for ([a-z_]+):",
+        str(exc),
+    )
+    if match and match.group(1) in _MAPPER_BOOLEAN_FIELDS:
+        return [match.group(1)]
+    return []
+
+
 def classify_mapper_failure(exc: Exception) -> str:
     # Only known EngineError messages are inspected; arbitrary error text is
     # never emitted. A mismatch remains unclassified.
@@ -198,6 +217,9 @@ def compare_one(proxy: ProxyConfig, extended_binary: str, native_binary: str,
         # exception TYPE, never by message.
         result["conversion"] = "rejected"
         result["conversion_reason"] = classify_mapper_failure(exc)
+        fields = classify_mapper_fields(exc)
+        if fields:
+            result["conversion_fields"] = fields
         result["conversion_error_type"] = type(exc).__name__
         return result
 
