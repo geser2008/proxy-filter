@@ -174,9 +174,24 @@ class NativeExperimentTests(unittest.TestCase):
         with self.assertRaisesRegex(EngineError, "invalid boolean value"):
             convert_uri_to_native(p)
 
-    def test_empty_cs_is_rejected_without_changing_source(self):
+    def test_vmess_empty_cs_is_parser_neutral_only_in_temporary_copy(self):
+        params = {"id": UUID, "scy": "auto", "net": "ws", "tls": "tls",
+                  "path": "/socket", "cs": ""}
+        p = proxy("vmess", params)
+        original = dict(p.params)
+        result = convert_uri_to_native(p)
+        baseline = convert_uri_to_native(proxy(
+            "vmess", {key: value for key, value in params.items() if key != "cs"}
+        ))
+        self.assertEqual(result.outbound, baseline.outbound)
+        self.assertTrue(result.no_unclassified_loss)
+        self.assertNotIn("cipher_suites", result.outbound["tls"])
+        self.assertEqual(result.dropped_fields, ())
+        self.assertEqual(p.params, original)
+        self.assertEqual(p.original_raw, "vmess://redacted")
+
+    def test_empty_cs_other_cases_still_rejected_without_changing_source(self):
         fixtures = (
-            ("vmess", {"id": UUID, "scy": "auto", "net": "ws", "tls": "tls", "cs": ""}),
             ("vless", {"uuid": UUID, "security": "tls", "type": "ws", "cs": ""}),
             ("trojan", {"password": "secret", "cs": ""}),
             ("vmess", {"id": UUID, "tls": "tls", "cipher_suites": ""}),
@@ -192,6 +207,15 @@ class NativeExperimentTests(unittest.TestCase):
                 self.assertEqual(captured.exception.fields, ())
                 self.assertEqual(p.params, original)
                 self.assertEqual(p.original_raw, f"{protocol}://redacted")
+
+    def test_vmess_empty_cs_does_not_bypass_conflicting_aliases(self):
+        p = proxy("vmess", {
+            "id": UUID, "tls": "tls", "cs": "",
+            "cipher_suites": "TLS_FAKE_VALUE",
+        })
+        with self.assertRaises(NativeMappingError) as caught:
+            convert_uri_to_native(p)
+        self.assertEqual(caught.exception.code, "unsupported_tls_cipher_suites")
 
     def test_nonempty_cs_is_not_mapped_to_native_tls_without_parser_equivalence(self):
         for protocol, identity in (
